@@ -1,4 +1,5 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import {
   and,
   eq,
@@ -10,16 +11,19 @@ import {
   rolePermissions,
   roles,
   sql,
+  tenants,
   userRoles,
   users,
   type Tx,
 } from '@hms/db';
 import { setup as S } from '@hms/shared';
 import { Paginated } from '@hms/shared';
+import { APP_CONFIG, type AppConfig } from '../../config';
 import { DbService } from '../../common/db/db.service';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../common/errors/errors';
 import { OutboxService } from '../../common/events/outbox.service';
 import { ctx, slugKey, temporaryPassword } from './setup.util';
+import { NotificationsService } from '../notifications/notifications.service';
 import { StaffService } from './staff.service';
 
 const ADMIN_ROLE = 'hospital_admin';
@@ -57,7 +61,41 @@ export class AccessService {
     private readonly db: DbService,
     private readonly outbox: OutboxService,
     private readonly staff: StaffService,
+    private readonly moduleRef: ModuleRef,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
+
+  /**
+   * Sends login details by SMS and email. NotificationsModule is looked up at call time, not imported,
+   * because it imports Patients, which imports Setup (a static import would be circular).
+   * Delivery happens after the transaction commits; problems are reported, never thrown.
+   */
+  private async sendCredentials(
+    tx: Tx,
+    template: 'staff.invited' | 'staff.password_reset',
+    user: { id: string; name: string; email: string | null; mobile: string | null },
+    tempPassword: string,
+    idempotencyKey: string,
+  ): Promise<S.CredentialDelivery[]> {
+    const notifications = this.moduleRef.get(NotificationsService, { strict: false });
+    const [tenant] = await tx.select({ code: tenants.code }).from(tenants).where(eq(tenants.id, ctx().tenantId)).limit(1);
+    const origin = this.config.API_CORS_ORIGINS.split(',')[0]!.trim().replace(/\/$/, '');
+    const result = await notifications.send(tx, {
+      to: { email: user.email ?? undefined, mobile: user.mobile ?? undefined },
+      template,
+      data: {
+        staffName: user.name,
+        hospitalCode: tenant?.code ?? '',
+        loginId: user.email ?? user.mobile ?? '',
+        tempPassword,
+        loginUrl: `${origin}/login`,
+      },
+      channels: [...(user.mobile ? (['sms'] as const) : []), ...(user.email ? (['email'] as const) : [])],
+      idempotencyKey,
+      source: { module: 'setup', refId: user.id },
+    });
+    return result.messages.map((m) => ({ channel: m.channel, status: m.status, reason: m.reason }));
+  }
 
   // ---------- users ----------
 
@@ -114,7 +152,9 @@ export class AccessService {
       if (input.staffProfile) await this.staff.writeProfile(tx, user!.id, input.staffProfile);
       await this.outbox.publish(tx, 'setup.user.created', { userId: user!.id, roleKeys });
       const dto = await this.readUser(tx, user!.id);
-      return generated ? { ...dto, temporaryPassword: generated } : dto;
+      if (!generated) return dto;
+      const delivery = await this.sendCredentials(tx, 'staff.invited', dto, generated, `setup:invite:${dto.id}`);
+      return { ...dto, temporaryPassword: generated, delivery };
     });
   }
 
@@ -174,17 +214,19 @@ export class AccessService {
   }
 
   /** Sets a new password (or generates one), unlocks the account and signs the user out everywhere. */
-  resetPassword(id: string, input: S.ResetPassword): Promise<{ temporaryPassword?: string }> {
+  resetPassword(id: string, input: S.ResetPassword): Promise<S.ResetPasswordResult> {
     const c = ctx();
     const generated = input.password ? undefined : temporaryPassword();
     return this.db.tx(async (tx) => {
-      await this.readUser(tx, id);
+      const user = await this.readUser(tx, id);
       await tx
         .update(users)
         .set({ passwordHash: await hashPassword(input.password ?? generated!), failedLoginCount: 0, lockedUntil: null, updatedBy: c.userId })
         .where(eq(users.id, id));
       await this.revokeSessions(tx, id);
-      return generated ? { temporaryPassword: generated } : {};
+      if (!generated) return {};
+      const delivery = await this.sendCredentials(tx, 'staff.password_reset', user, generated, `setup:reset:${id}:${Date.now()}`);
+      return { temporaryPassword: generated, delivery };
     });
   }
 
