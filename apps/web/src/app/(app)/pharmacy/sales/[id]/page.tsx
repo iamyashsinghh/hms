@@ -196,6 +196,7 @@ export default function SaleDetailPage({ params }: { params: Promise<{ id: strin
                   <TableCell>{formatDate(r.createdAt)}</TableCell>
                   <TableCell>{r.reason ?? '—'}</TableCell>
                   <TableCell className="uppercase">{r.refundMode}</TableCell>
+                  <TableCell className="font-mono text-xs">{[r.creditNoteNumber, r.billingRefundNumber].filter(Boolean).join(' · ') || '—'}</TableCell>
                   <TableCell className="text-right tabular-nums">{inr(r.refundAmount)}</TableCell>
                 </TableRow>
               ))}
