@@ -360,6 +360,7 @@ export interface AppointmentBookedEvent {
   patientId: string;
   doctorId: string;
   facilityId: string;
+  doctorName: string | null;
   start: string;
   appointmentNo: string;
 }
