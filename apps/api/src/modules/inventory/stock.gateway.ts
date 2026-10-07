@@ -1,8 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { eq, pharmacyStores, type Tx } from '@hms/db';
+import type { Tx } from '@hms/db';
 import type { pharmacy } from '@hms/shared';
 import { currentContext } from '../../common/context/request-context';
-import { badRequest, forbidden, notFound } from '../../common/errors/errors';
+import { badRequest, forbidden } from '../../common/errors/errors';
 import { PharmacyService } from '../pharmacy/pharmacy.service';
 
 export interface StoreInfo {
@@ -38,18 +38,10 @@ export class InventoryStockGateway {
     return new Map(items.map((i) => [i.id, i]));
   }
 
-  /**
-   * Store name and facility for documents. PharmacyService has no store lookup yet, so this reads
-   * inventory.stores directly (read-only); swap for PharmacyService.getStore once pharmacy adds it.
-   */
+  /** Store name and facility for documents (404 when not in this hospital). */
   async store(tx: Tx, id: string): Promise<StoreInfo> {
-    const [row] = await tx
-      .select({ id: pharmacyStores.id, facilityId: pharmacyStores.facilityId, name: pharmacyStores.name, isActive: pharmacyStores.isActive })
-      .from(pharmacyStores)
-      .where(eq(pharmacyStores.id, id))
-      .limit(1);
-    if (!row) throw notFound('Store');
-    return row;
+    const { facilityId, name, isActive } = await this.pharmacy.getStore(id, tx);
+    return { id, facilityId, name, isActive };
   }
 
   /** A store the caller may raise documents for: active and in one of the caller's facilities. */
