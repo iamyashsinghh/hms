@@ -241,6 +241,7 @@ export const billingCreditNotes = pg.table(
     patientId: uuid('patient_id').notNull(),
     amount: money('amount').notNull(),
     reason: text('reason').notNull(),
+    reference: text('reference'),
     createdBy: uuid('created_by'),
     createdAt: ts('created_at').notNull().defaultNow(),
   },

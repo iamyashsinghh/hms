@@ -1,4 +1,6 @@
-import { Module } from '@nestjs/common';
+import { Module, OnModuleInit } from '@nestjs/common';
+import type { billing as B } from '@hms/shared';
+import { EventBus } from '../../common/events/event-bus';
 import { BillingController } from './billing.controller';
 import { BillingRepository } from './billing.repository';
 import { BillingService } from './billing.service';
@@ -9,4 +11,16 @@ import { BillingService } from './billing.service';
  * Permissions and Zod contracts live in packages/shared/src/modules/billing.ts.
  */
 @Module({ controllers: [BillingController], providers: [BillingService, BillingRepository], exports: [BillingService] })
-export class BillingModule {}
+export class BillingModule implements OnModuleInit {
+  constructor(
+    private readonly bus: EventBus,
+    private readonly billing: BillingService,
+  ) {}
+
+  onModuleInit() {
+    // Online payments captured by the patient portal become receipts. Idempotent per intentId.
+    this.bus.on<B.PortalPaymentCaptured>('portal.payment.captured', (e) =>
+      this.billing.recordOnlinePayment(e.tenantId, e.payload).then(() => undefined),
+    );
+  }
+}
