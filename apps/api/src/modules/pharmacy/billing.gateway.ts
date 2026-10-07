@@ -44,4 +44,16 @@ export class PharmacyBillingGateway {
       });
     return this.billing.createInvoice(tx, { ...base, payNow: due > 0 ? { mode: input.payNow.mode, amount: due, ref: input.payNow.ref } : undefined });
   }
+
+  /** Amount of the invoice that can still be credited (read outside the caller's tx; the invoice is committed). */
+  async creditable(invoiceId: string): Promise<number> {
+    const inv = await this.billing.getInvoice(invoiceId);
+    return Math.max(0, Math.round((inv.total - inv.creditedAmount) * 100) / 100);
+  }
+
+  /** Credits returned goods on the sale's invoice; the already-paid part is refunded first. Idempotent on reference. */
+  returnOnInvoice(tx: Tx, invoiceId: string, input: { amount: number; reason: string; refundMode?: string; reference: string }) {
+    const refundMode = (['cash', 'upi', 'card'] as const).find((m) => m === input.refundMode);
+    return this.billing.returnOnInvoice(tx, invoiceId, { ...input, refundMode });
+  }
 }

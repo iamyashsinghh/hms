@@ -174,6 +174,25 @@ describe('stock, FEFO sales and returns', () => {
     expect(inv2.paidAmount).toBe(0);
   });
 
+  it('credits returns of an invoiced sale on the invoice and refunds the paid part, including round-off', async () => {
+    const item = await newItem();
+    await stockUp(item.id, [{ batchNo: 'CN', expiryDate: daysFromNow(200), mrp: 13.45, qty: 10 }]);
+    const sale = (await call(pharmacist, 'POST', '/sales', { storeId, patientId, paymentMode: 'cash', lines: [{ itemId: item.id, qty: 2 }] })).json();
+    const getInv = async () => (await app.inject({ method: 'GET', url: `/api/v1/billing/invoices/${sale.invoiceId}`, headers: bearer(admin) })).json();
+    const inv = await getInv();
+
+    const r1 = await call(pharmacist, 'POST', `/sales/${sale.id}/returns`, { reason: 'Unopened strip', lines: [{ saleLineId: sale.lines[0].id, qty: 1 }] });
+    expect(r1.statusCode, r1.body).toBe(201);
+    expect(r1.json()).toMatchObject({ refundAmount: 13.45, creditNoteNumber: expect.any(String), billingRefundNumber: expect.any(String) });
+    expect((await getInv()).creditedAmount).toBe(13.45);
+
+    const r2 = await call(pharmacist, 'POST', `/sales/${sale.id}/returns`, { lines: [{ saleLineId: sale.lines[0].id, qty: 1 }] });
+    expect(r2.statusCode, r2.body).toBe(201);
+    const after = await getInv();
+    expect(after.creditedAmount).toBe(inv.total); // last return credits the rounded remainder too
+    expect(r2.json().refundAmount).toBeCloseTo(inv.total - 13.45, 2);
+  });
+
   it('asks for a prescription before selling Schedule H drugs over the counter', async () => {
     const item = await newItem({ schedule: 'H' });
     await stockUp(item.id, [{ batchNo: 'H1', expiryDate: daysFromNow(200), mrp: 50, qty: 5 }]);
