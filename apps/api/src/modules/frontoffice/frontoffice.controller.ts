@@ -54,7 +54,7 @@ export class FrontofficeController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body(new ZodPipe(fo.cancelAppointmentSchema)) body: Out<typeof fo.cancelAppointmentSchema>,
   ): Promise<fo.Appointment> {
-    return this.fo.cancel(id, body.reason);
+    return this.fo.cancel(id, body);
   }
 
   @Post('appointments/:id/no-show')
