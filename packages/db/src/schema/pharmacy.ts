@@ -272,6 +272,10 @@ export const pharmacySaleReturns = pg.table(
     refundAmount: money('refund_amount').notNull(),
     refundMode: text('refund_mode'),
     reason: text('reason'),
+    /** Billing credit note / refund receipt for returns on an invoiced sale. */
+    creditNoteId: uuid('credit_note_id'),
+    creditNoteNumber: text('credit_note_number'),
+    billingRefundNumber: text('billing_refund_number'),
     createdBy: uuid('created_by'),
     createdAt: createdAt(),
   },

@@ -292,6 +292,15 @@ export class BillingRepository {
     return tx.select().from(billingPayments).where(eq(billingPayments.invoiceId, invoiceId)).orderBy(asc(billingPayments.receivedAt));
   }
 
+  async paymentByReference(tx: Tx, patientId: string, reference: string): Promise<PaymentRow | undefined> {
+    const [row] = await tx
+      .select()
+      .from(billingPayments)
+      .where(and(eq(billingPayments.patientId, patientId), eq(billingPayments.reference, reference), eq(billingPayments.mode, 'online')))
+      .limit(1);
+    return row;
+  }
+
   async paymentById(tx: Tx, id: string): Promise<PaymentRow | undefined> {
     const [row] = await tx.select().from(billingPayments).where(eq(billingPayments.id, id)).limit(1);
     return row;
@@ -341,6 +350,20 @@ export class BillingRepository {
   async insertCreditNote(tx: Tx, values: Omit<typeof billingCreditNotes.$inferInsert, 'tenantId'>): Promise<CreditNoteRow> {
     const [row] = await tx.insert(billingCreditNotes).values({ ...values, tenantId: CURRENT_TENANT }).returning();
     return row!;
+  }
+
+  async creditNoteByReference(tx: Tx, reference: string): Promise<CreditNoteRow | undefined> {
+    const [row] = await tx.select().from(billingCreditNotes).where(eq(billingCreditNotes.reference, reference)).limit(1);
+    return row;
+  }
+
+  async refundByReference(tx: Tx, invoiceId: string, reference: string): Promise<PaymentRow | undefined> {
+    const [row] = await tx
+      .select()
+      .from(billingPayments)
+      .where(and(eq(billingPayments.invoiceId, invoiceId), eq(billingPayments.kind, 'refund'), eq(billingPayments.reference, reference)))
+      .limit(1);
+    return row;
   }
 
   async creditNotesForInvoice(tx: Tx, invoiceId: string): Promise<CreditNoteRow[]> {

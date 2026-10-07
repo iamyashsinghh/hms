@@ -34,6 +34,11 @@ export async function seed(connectionString: string, log: (m: string) => void = 
       ['Priya Nair', 'nurse@demo.hms', '9000000006', 'nurse'],
       ['Arjun Das', 'billing@demo.hms', '9000000007', 'billing_clerk'],
       ['Kavita Singh', 'lab@demo.hms', '9000000008', 'lab_technician'],
+      ['Dr. Vikram Iyer', 'radiology@demo.hms', '9000000009', 'radiologist'],
+      ['Anil Yadav', 'store@demo.hms', '9000000010', 'store_keeper'],
+      ['Rekha Pillai', 'accounts@demo.hms', '9000000011', 'accountant'],
+      ['Sanjay Bose', 'hr@demo.hms', '9000000012', 'hr_manager'],
+      ['Nisha Menon', 'quality@demo.hms', '9000000013', 'quality_manager'],
     ];
     for (const [name, email, mobile, role] of staff) {
       await upsertUser(client, demo.tenantId, { name, email, mobile, password: DEMO_PASSWORD, roleKeys: [role] });
