@@ -260,6 +260,10 @@ CREATE TABLE ops.diet_orders (
   id uuid NOT NULL DEFAULT app.uuid_v7(),
   facility_id uuid NOT NULL,
   patient_id uuid NOT NULL,
+  -- Snapshot for the kitchen sheet, taken from the patient master when the diet is ordered.
+  patient_name text NOT NULL,
+  patient_uhid text NOT NULL,
+  allergies jsonb NOT NULL DEFAULT '[]'::jsonb,
   location text NOT NULL,
   diet_type text NOT NULL
     CHECK (diet_type IN ('normal', 'soft', 'liquid', 'clear_liquid', 'diabetic', 'renal', 'cardiac', 'low_salt', 'high_protein', 'npo')),

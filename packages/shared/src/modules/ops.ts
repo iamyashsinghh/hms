@@ -193,13 +193,13 @@ export const workOrderQuerySchema = listQuery.extend({
 export type WorkOrderQuery = Partial<z.input<typeof workOrderQuerySchema>>;
 
 /** Event `ops.asset.breakdown_reported`. */
-export interface AssetBreakdownReportedEvent {
+export type AssetBreakdownReportedEvent = {
   workOrderId: string;
   assetId: string;
   assetName: string;
   facilityId: string;
   criticality: AssetCriticality;
-}
+};
 
 // =====================================================================
 // CSSD
@@ -302,12 +302,12 @@ export interface CssdIssue {
 }
 
 /** Event `ops.cssd.cycle_failed` (sets in the load go back to dirty). */
-export interface CssdCycleFailedEvent {
+export type CssdCycleFailedEvent = {
   cycleId: string;
   number: string;
   facilityId: string;
   setIds: string[];
-}
+};
 
 // =====================================================================
 // Linen & laundry
@@ -481,13 +481,13 @@ export const tripQuerySchema = listQuery.extend({
 export type TripQuery = Partial<z.input<typeof tripQuerySchema>>;
 
 /** Event `ops.trip.completed`. */
-export interface TripCompletedEvent {
+export type TripCompletedEvent = {
   tripId: string;
   patientId: string | null;
   facilityId: string;
   invoiceId: string | null;
   distanceKm: number | null;
-}
+};
 
 // =====================================================================
 // Diet kitchen
