@@ -182,7 +182,7 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
                   {s.collectedAt && <div className="text-xs text-muted-foreground">Collected {formatDateTime(s.collectedAt)}</div>}
                 </TableCell>
                 <TableCell className="text-right">
-                  {open && canCollect && (
+                  {open && order.status !== 'completed' && canCollect && (
                     <div className="flex justify-end gap-1">
                       {s.status === 'pending' && (
                         <Button size="sm" variant="outline" onClick={() => act.mutate(() => api.lab.samples.collect(s.id))}>
