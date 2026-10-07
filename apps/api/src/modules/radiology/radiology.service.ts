@@ -473,7 +473,12 @@ export class RadiologyService {
    * (with the doctor's wording) so the desk can pick the test.
    */
   async importFromEncounter(e: EncounterSigned): Promise<number> {
-    const enc = await this.emr.get(e.encounterId, false);
+    // An event for a consultation that no longer exists (or never did) has nothing to import.
+    const enc = await this.emr.get(e.encounterId, false).catch((err: { getStatus?: () => number }) => {
+      if (err?.getStatus?.() === 404) return null;
+      throw err;
+    });
+    if (!enc) return 0;
     const lines = enc.orders.filter((o) => o.kind === 'radiology' && o.status !== 'cancelled');
     if (!lines.length) return 0;
     const ctx = currentContext()!;
