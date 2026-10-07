@@ -9,6 +9,7 @@ export const emrApi = (http: Http) => ({
 
   open: (body: emr.CreateEncounter) => http.post<emr.Encounter>('/emr/encounters', body),
   get: (id: string) => http.get<emr.Encounter>(`/emr/encounters/${id}`),
+  printEncounter: (id: string) => http.get<emr.PrintEncounter>(`/emr/encounters/${id}/print`),
   update: (id: string, body: emr.UpdateEncounter) => http.patch<emr.Encounter>(`/emr/encounters/${id}`, body),
   start: (id: string) => http.post<emr.Encounter>(`/emr/encounters/${id}/start`),
   addVitals: (id: string, body: emr.VitalsInput) => http.post<emr.Encounter>(`/emr/encounters/${id}/vitals`, body),
@@ -28,5 +29,6 @@ export const emrApi = (http: Http) => ({
 
   createCertificate: (body: emr.CreateCertificate) => http.post<emr.Certificate>('/emr/certificates', body),
   getCertificate: (id: string) => http.get<emr.Certificate>(`/emr/certificates/${id}`),
+  printCertificate: (id: string) => http.get<emr.PrintCertificate>(`/emr/certificates/${id}/print`),
   patientCertificates: (patientId: string) => http.get<emr.Certificate[]>(`/emr/patients/${patientId}/certificates`),
 });

@@ -69,17 +69,3 @@ export const TIMING_LABEL: Record<string, string> = {
   bedtime: 'At bedtime',
   any: '',
 };
-
-/** Hides the app shell when printing so only #print-area is on paper. */
-export function PrintStyles() {
-  return (
-    <style>{`
-      @media print {
-        @page { size: A4; margin: 12mm; }
-        body * { visibility: hidden !important; }
-        #print-area, #print-area * { visibility: visible !important; }
-        #print-area { position: absolute; inset: 0 auto auto 0; width: 100%; padding: 0; box-shadow: none; border: 0; }
-      }
-    `}</style>
-  );
-}

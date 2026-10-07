@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Patch, P
 import { emr, type Paginated } from '@hms/shared';
 import type { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
+import { RequireEntitlement } from '../platform';
 import { ZodPipe } from '../../common/validation/zod.pipe';
 import { EmrService } from './emr.service';
 import { searchIcd10 } from './icd10.data';
@@ -17,6 +18,7 @@ type QuickPrescriptionResult = emr.QuickPrescriptionResult;
 type TimelineEntry = emr.TimelineEntry;
 
 @Controller('emr')
+@RequireEntitlement('emr')
 export class EmrController {
   constructor(private readonly emr: EmrService) {}
 
@@ -61,6 +63,12 @@ export class EmrController {
   @RequirePermissions('emr.encounter.read')
   get(@Param('id', ParseUUIDPipe) id: string): Promise<Encounter> {
     return this.emr.get(id);
+  }
+
+  @Get('encounters/:id/print')
+  @RequirePermissions('emr.encounter.read')
+  printEncounter(@Param('id', ParseUUIDPipe) id: string): Promise<emr.PrintEncounter> {
+    return this.emr.printEncounter(id);
   }
 
   @Patch('encounters/:id')
@@ -161,6 +169,12 @@ export class EmrController {
   @RequirePermissions('emr.certificate.write')
   createCertificate(@Body(new ZodPipe(emr.createCertificateSchema)) body: Out<typeof emr.createCertificateSchema>): Promise<Certificate> {
     return this.emr.createCertificate(body);
+  }
+
+  @Get('certificates/:id/print')
+  @RequirePermissions('emr.certificate.read')
+  printCertificate(@Param('id', ParseUUIDPipe) id: string): Promise<emr.PrintCertificate> {
+    return this.emr.printCertificate(id);
   }
 
   @Get('certificates/:id')

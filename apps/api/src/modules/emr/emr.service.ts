@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { formatSeries, iso, nextCounter, type Tx } from '@hms/db';
+import { iso, type Tx } from '@hms/db';
 import { emr, type Paginated, type Patient } from '@hms/shared';
 
 type Addendum = emr.Addendum;
@@ -10,6 +10,8 @@ type CreateEncounter = emr.CreateEncounter;
 type Diagnosis = emr.Diagnosis;
 type DiagnosesInput = emr.DiagnosesInput;
 type Encounter = emr.Encounter;
+type PrintEncounter = emr.PrintEncounter;
+type PrintCertificate = emr.PrintCertificate;
 type EncounterNotes = emr.EncounterNotes;
 type EncounterPatient = emr.EncounterPatient;
 type EncounterSignedEvent = emr.EncounterSignedEvent;
@@ -34,6 +36,7 @@ import { OutboxService } from '../../common/events/outbox.service';
 import { currentContext } from '../../common/context/request-context';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../common/errors/errors';
 import { PatientsService } from '../patients/patients.service';
+import { SetupService } from '../setup/setup.service';
 import {
   EmrRepository,
   type AddendumRow,
@@ -98,6 +101,7 @@ export class EmrService {
     private readonly audit: AuditService,
     private readonly outbox: OutboxService,
     private readonly patients: PatientsService,
+    private readonly setup: SetupService,
   ) {}
 
   /** Runs a transaction and turns the database's sign-lock errors into a clean 409. */
@@ -121,11 +125,13 @@ export class EmrService {
     }
     const patient = await this.patients.get(input.patientId);
     const id = await this.db.tx(async (tx) => {
+      // Someone opening a consultation for another user: that user must be a doctor (404 otherwise).
+      if (doctorId !== ctx.userId) await this.setup.getDoctorInTx(tx, doctorId);
       const facilityId = ctx.facilityId ?? facilityHint ?? (await this.repo.soleFacilityId(tx));
       if (!facilityId) throw badRequest('facility_required', 'Pick the facility you are working in');
       const row = await this.repo.insertEncounter(tx, {
         tenantId: ctx.tenantId!,
-        encounterNo: formatSeries('OP', await nextCounter(tx, 'emr.encounter')),
+        encounterNo: await this.setup.nextNumber(tx, 'emr.encounter', { prefix: 'OP' }),
         facilityId,
         patientId: patient.id,
         doctorId,
@@ -285,7 +291,7 @@ export class EmrService {
           ? await this.repo.updatePrescription(tx, existing.id, { notes: parsed.notes ?? null, updatedBy: ctx.userId })
           : await this.repo.insertPrescription(tx, {
               tenantId: ctx.tenantId!,
-              rxNo: formatSeries('RX', await nextCounter(tx, 'emr.rx')),
+              rxNo: await this.setup.nextNumber(tx, 'emr.prescription', { prefix: 'RX' }),
               encounterId: id,
               patientId: fresh.patientId,
               doctorId: fresh.doctorId,
@@ -477,6 +483,63 @@ export class EmrService {
     });
   }
 
+  // ---------- printing ----------
+
+  /** Everything the printed prescription needs: the consultation, doctor credentials, letterhead and print template. */
+  printEncounter(id: string): Promise<PrintEncounter> {
+    return this.tx(async (tx) => {
+      const row = await this.repo.findEncounter(tx, id);
+      if (!row) throw notFound('Consultation');
+      await this.audit.recordView(tx, 'encounter_print', id);
+      const [encounter, header] = await Promise.all([this.fullDto(tx, row), this.printHeader(tx, row.doctorId, row.facilityId, 'prescription')]);
+      return { encounter, ...header };
+    });
+  }
+
+  printCertificate(id: string): Promise<PrintCertificate> {
+    return this.tx(async (tx) => {
+      const row = await this.repo.findCertificate(tx, id);
+      if (!row) throw notFound('Certificate');
+      const names = await this.repo.userNames(tx, [row.doctorId]);
+      const header = await this.printHeader(tx, row.doctorId, row.facilityId, 'letterhead');
+      return { certificate: toCertificate(row, names), ...header };
+    });
+  }
+
+  private async printHeader(tx: Tx, doctorId: string, facilityId: string, template: 'prescription' | 'letterhead') {
+    const [profile, tpl, doctor] = await Promise.all([
+      this.setup.getProfileInTx(tx),
+      this.setup.getPrintTemplateInTx(tx, template, facilityId),
+      // A user who has since lost the doctor role still prints, just without credentials.
+      this.setup.getDoctorInTx(tx, doctorId).catch(() => null),
+    ]);
+    return {
+      hospital: {
+        displayName: profile.displayName,
+        legalName: profile.legalName,
+        address: profile.address,
+        phone: profile.phone,
+        email: profile.email,
+        website: profile.website,
+        gstin: profile.gstin,
+        registrationNo: profile.registrationNo,
+        logoUrl: profile.logoUrl,
+        letterhead: profile.letterhead,
+      },
+      template: tpl,
+      doctor: doctor && {
+        userId: doctor.userId,
+        name: doctor.name,
+        qualification: doctor.qualification,
+        specialization: doctor.specialization,
+        departmentName: doctor.departmentName,
+        registrationNo: doctor.registrationNo,
+        registrationCouncil: doctor.registrationCouncil,
+        signatureUrl: doctor.signatureUrl,
+      },
+    };
+  }
+
   // ---------- favourites ----------
 
   listFavourites(): Promise<Favourite[]> {
@@ -514,7 +577,7 @@ export class EmrService {
       const snap = patientSnapshot(patient);
       const row = await this.repo.insertCertificate(tx, {
         tenantId: ctx.tenantId!,
-        certificateNo: formatSeries('MC', await nextCounter(tx, 'emr.certificate')),
+        certificateNo: await this.setup.nextNumber(tx, 'emr.certificate', { prefix: 'MC' }),
         kind: input.kind,
         patientId: patient.id,
         encounterId: input.encounterId ?? null,

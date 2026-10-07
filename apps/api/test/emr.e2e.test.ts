@@ -281,6 +281,25 @@ describe('emr check-in event', () => {
   });
 });
 
+describe('emr printing and doctor checks (Setup)', () => {
+  it('returns letterhead, print template and doctor credentials for the Rx', async () => {
+    const enc = (await inject('POST', '/emr/encounters', doctor, { patientId })).json();
+    const res = await inject('GET', `/emr/encounters/${enc.id}/print`, doctor);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.encounter.id).toBe(enc.id);
+    expect(body.hospital.displayName).toBeTruthy();
+    expect(body.template).toMatchObject({ paperSize: expect.any(String) });
+    expect(body.doctor).toMatchObject({ userId: doctorId, name: 'Dr. Asha Rao' });
+  });
+
+  it('will not open a consultation for a user who is not a doctor', async () => {
+    const nurseId = (await login(app, 'nurse@demo.hms')).user.id;
+    const res = await inject('POST', '/emr/encounters', doctor, { patientId, doctorId: nurseId });
+    expect(res.statusCode).toBe(404);
+  });
+});
+
 describe('emr order status from lab/radiology', () => {
   it('mirrors department progress on a signed consultation and never moves backwards', async () => {
     const enc = (await inject('POST', '/emr/encounters', doctor, { patientId })).json();

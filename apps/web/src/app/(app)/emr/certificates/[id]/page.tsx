@@ -5,24 +5,25 @@ import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, Printer } from 'lucide-react';
 import { api, errorMessage } from '@/lib/api';
-import { useAuth, usePermission } from '@/lib/auth';
+import { usePermission } from '@/lib/auth';
 import { formatDate, genderLabel } from '@/lib/format';
 import { NoAccess } from '@/components/no-access';
 import { Button, buttonVariants } from '@/components/ui/button';
-import { PrintStyles, ageFromDob } from '@/modules/emr/ui';
+import { ageFromDob } from '@/modules/emr/ui';
+import { Letterhead, PrintFooter, PrintStyles, Signature, paperWidth } from '@/modules/emr/print';
 
 const TITLE = { sick_leave: 'Medical Certificate for Leave', fitness: 'Certificate of Fitness', medical: 'Medical Certificate' } as const;
 
 export default function CertificatePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const canRead = usePermission('emr.certificate.read');
-  const { user, facility } = useAuth();
-  const { data: c, isPending, error } = useQuery({ queryKey: ['emr', 'certificate', id], queryFn: () => api.emr.getCertificate(id), enabled: canRead });
+  const { data, isPending, error } = useQuery({ queryKey: ['emr', 'certificate', id, 'print'], queryFn: () => api.emr.printCertificate(id), enabled: canRead });
 
   if (!canRead) return <NoAccess />;
   if (isPending) return <p className="text-sm text-muted-foreground">Loading…</p>;
   if (error) return <p className="text-sm text-destructive">{errorMessage(error)}</p>;
 
+  const c = data.certificate;
   const who = `${c.patient.name} (${ageFromDob(c.patient.dateOfBirth)}, ${genderLabel(c.patient.gender)}, UHID ${c.patient.uhid})`;
   let body: string;
   if (c.kind === 'sick_leave') {
@@ -35,7 +36,7 @@ export default function CertificatePage({ params }: { params: Promise<{ id: stri
 
   return (
     <div className="space-y-4">
-      <PrintStyles />
+      <PrintStyles template={data.template} />
       <div className="flex items-center justify-between">
         <Link href={`/emr/patients/${c.patient.id}`} className={buttonVariants({ variant: 'ghost', size: 'sm', className: '-ml-3' })}>
           <ArrowLeft /> Patient history
@@ -44,11 +45,8 @@ export default function CertificatePage({ params }: { params: Promise<{ id: stri
           <Printer /> Print
         </Button>
       </div>
-      <article id="print-area" className="mx-auto max-w-[210mm] rounded-lg border bg-white p-10 text-[14px] leading-7 text-black shadow-sm">
-        <header className="border-b-2 border-black pb-3 text-center">
-          <h1 className="text-xl font-bold">{user?.tenantName}</h1>
-          <p>{facility?.name}</p>
-        </header>
+      <article id="print-area" style={{ maxWidth: paperWidth(data) }} className="mx-auto rounded-lg border bg-white p-10 text-[14px] leading-7 text-black shadow-sm">
+        <Letterhead header={data} fallbackName={c.doctorName} showDoctor={false} />
         <div className="mt-4 flex justify-between text-sm">
           <span>No: {c.certificateNo}</span>
           <span>Date: {formatDate(c.issuedAt)}</span>
@@ -57,11 +55,9 @@ export default function CertificatePage({ params }: { params: Promise<{ id: stri
         <p className="mt-6">{body}</p>
         {c.remarks && <p className="mt-3 whitespace-pre-wrap">{c.remarks}</p>}
         <footer className="mt-20 flex justify-end">
-          <div className="text-center">
-            <p className="border-t border-black px-8 pt-1 font-semibold">{c.doctorName}</p>
-            <p className="text-xs">Signature &amp; seal</p>
-          </div>
+          <Signature header={data} fallbackName={c.doctorName} />
         </footer>
+        <PrintFooter header={data} />
       </article>
     </div>
   );
