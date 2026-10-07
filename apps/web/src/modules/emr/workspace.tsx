@@ -91,8 +91,11 @@ export function VitalsCard({ enc, editable }: { enc: Enc; editable: boolean }) {
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
             {VITAL_FIELDS.map((f) => (
               <div key={f.key}>
-                <Label className="text-xs text-muted-foreground">{f.label}</Label>
+                <Label htmlFor={`v-${f.key}`} className="text-xs text-muted-foreground">
+                  {f.label}
+                </Label>
                 <Input
+                  id={`v-${f.key}`}
                   type="number"
                   step={f.step ?? '1'}
                   inputMode="decimal"
@@ -570,8 +573,8 @@ export function OrdersCard({ enc, editable }: { enc: Enc; editable: boolean }) {
               </option>
             ))}
           </Select>
-          <Input className="sm:col-span-5" placeholder="Test / scan / procedure (e.g. CBC)" value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} />
-          <Select className="sm:col-span-2" value={draft.priority} onChange={(e) => setDraft((d) => ({ ...d, priority: e.target.value as 'routine' | 'urgent' }))}>
+          <Input className="sm:col-span-4" placeholder="Test / scan / procedure (e.g. CBC)" value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} />
+          <Select className="sm:col-span-3" value={draft.priority} onChange={(e) => setDraft((d) => ({ ...d, priority: e.target.value as 'routine' | 'urgent' }))}>
             <option value="routine">Routine</option>
             <option value="urgent">Urgent</option>
           </Select>

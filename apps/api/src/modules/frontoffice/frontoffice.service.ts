@@ -111,7 +111,7 @@ export class FrontofficeService implements OnModuleInit {
       }),
     );
     await this.history(tx, row, null, 'booked', 'booked', null, { slotStart: start });
-    await this.outbox.publish(tx, EV.appointmentBooked, this.apptEvent(row));
+    await this.outbox.publish(tx, EV.appointmentBooked, await this.apptEvent(tx, row));
     return this.toAppointment(tx, row, patient);
   }
 
@@ -167,12 +167,14 @@ export class FrontofficeService implements OnModuleInit {
         fromDoctorId: row.doctorId,
         toDoctorId: doctorId,
       });
-      await this.outbox.publish(tx, EV.appointmentRescheduled, { ...this.apptEvent(updated), previousStart: iso(row.slotStart) });
+      await this.outbox.publish(tx, EV.appointmentRescheduled, { ...(await this.apptEvent(tx, updated)), previousStart: iso(row.slotStart) });
       return (await this.toAppointments(tx, [updated]))[0]!;
     });
   }
 
-  cancel(id: string, reason: string): Promise<fo.Appointment> {
+  /** Contract (used by portal for online cancellation): FrontofficeService.cancel(appointmentId, {reason}). */
+  cancel(id: string, input: fo.CancelAppointment): Promise<fo.Appointment> {
+    const { reason } = fo.cancelAppointmentSchema.parse(input);
     return this.db.tx(async (tx) => {
       const row = await this.lockAppointment(tx, id);
       if (row.status === 'checked_in' && row.visitId) {
@@ -183,7 +185,7 @@ export class FrontofficeService implements OnModuleInit {
         }
       }
       const updated = await this.moveAppointment(tx, row, 'cancelled', 'cancelled', reason, { cancelReason: reason });
-      await this.outbox.publish(tx, EV.appointmentCancelled, { ...this.apptEvent(updated), reason });
+      await this.outbox.publish(tx, EV.appointmentCancelled, { ...(await this.apptEvent(tx, updated)), reason });
       return (await this.toAppointments(tx, [updated]))[0]!;
     });
   }
@@ -585,12 +587,14 @@ export class FrontofficeService implements OnModuleInit {
     return row;
   }
 
-  private apptEvent(row: AppointmentRow): Record<string, unknown> {
+  private async apptEvent(tx: Tx, row: AppointmentRow): Promise<Record<string, unknown>> {
+    const names = await this.repo.userNames(tx, [row.doctorId]);
     const e: fo.AppointmentBookedEvent = {
       appointmentId: row.id,
       patientId: row.patientId,
       doctorId: row.doctorId,
       facilityId: row.facilityId,
+      doctorName: names.get(row.doctorId) ?? null,
       start: iso(row.slotStart),
       appointmentNo: row.appointmentNo,
     };

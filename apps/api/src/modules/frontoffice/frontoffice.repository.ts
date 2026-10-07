@@ -233,7 +233,7 @@ export class FrontofficeRepository {
   // ---------- duplicates, merge, ABHA ----------
 
   /**
-   * Scores likely duplicates: ABHA match 100, mobile 40, name similarity up to 40, date of birth 20.
+   * Scores likely duplicates: ABHA match 100, mobile 40, name similarity up to 50, date of birth 20 (capped at 100).
    * Uses the pg_trgm index on patient names.
    */
   async duplicateCandidates(
@@ -247,7 +247,7 @@ export class FrontofficeRepository {
     const score = sql<number>`least(100, round(
         (case when ${q.abhaNumber ?? null}::text is not null and ${patients.abhaNumber} = ${q.abhaNumber ?? null} then 100 else 0 end)
       + (case when ${q.mobile ?? null}::text is not null and ${patients.mobile} = ${q.mobile ?? null} then 40 else 0 end)
-      + (${nameSim} * 40)
+      + (${nameSim} * 50)
       + (case when ${q.dateOfBirth ?? null}::date is not null and ${patients.dateOfBirth} = ${q.dateOfBirth ?? null}::date then 20 else 0 end)
     ))::int`;
     const match = [
