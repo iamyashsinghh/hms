@@ -338,7 +338,7 @@ export const createOptOutSchema = z
     address: z.string().trim().min(3).max(254),
     reason: z.string().trim().max(200).optional(),
   })
-  .refine((o) => o.channel === 'email' || o.channel === 'push' || o.channel === 'all' ? true : /^[6-9]\d{9}$/.test(o.address), {
+  .refine((o) => (o.channel === 'email' || o.channel === 'push' || o.channel === 'all' ? true : /^[6-9]\d{9}$/.test(o.address.replace(/\D/g, '').slice(-10))), {
     message: 'Enter a 10-digit Indian mobile number',
     path: ['address'],
   });
