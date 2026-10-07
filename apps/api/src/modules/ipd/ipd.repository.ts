@@ -24,6 +24,7 @@ import {
   type Tx,
 } from '@hms/db';
 import type { ipd as I } from '@hms/shared';
+import type { z } from 'zod';
 
 export type WardRow = typeof ipdWards.$inferSelect;
 export type BedRow = typeof ipdBeds.$inferSelect;
@@ -334,4 +335,3 @@ export class IpdRepository {
   }
 }
 
-import type { z } from 'zod';

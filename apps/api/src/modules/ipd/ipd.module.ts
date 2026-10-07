@@ -1,9 +1,21 @@
 import { Module } from '@nestjs/common';
+import { BillingModule } from '../billing/billing.module';
+import { PatientsModule } from '../patients/patients.module';
+import { SetupModule } from '../setup/setup.module';
+import { IpdController } from './ipd.controller';
+import { IpdPlanLimits } from './ipd.limits';
+import { IpdRepository } from './ipd.repository';
+import { IpdService } from './ipd.service';
 
 /**
  * IPD & Nursing. Owned by the "ipd" workstream (see PARALLEL_PLAN.md).
- * Layout: ipd.controller.ts (routes), ipd.service.ts (rules), ipd.repository.ts (Drizzle),
- * permissions and Zod contracts in packages/shared/src/modules/ipd.ts. Follow src/modules/patients as the example.
+ * Wards/beds, admissions, transfers, nursing charts, MAR, rounds, running bill (via BillingService)
+ * and discharge. Permissions and Zod contracts live in packages/shared/src/modules/ipd.ts.
  */
-@Module({})
+@Module({
+  imports: [BillingModule, PatientsModule, SetupModule],
+  controllers: [IpdController],
+  providers: [IpdService, IpdRepository, IpdPlanLimits],
+  exports: [IpdService],
+})
 export class IpdModule {}
