@@ -175,6 +175,97 @@ export const DEFAULT_TEMPLATES: readonly TemplateDef[] = [
     },
   },
   {
+    key: 'appointment.request_declined',
+    name: 'Online booking declined',
+    variables: ['hospitalName', 'patientName', 'date', 'time'],
+    channels: {
+      sms: { body: 'Dear {{patientName}}, {{hospitalName}} could not confirm your online appointment request for {{date}} at {{time}}. Please call us or pick another slot in the app.' },
+      whatsapp: { body: 'Dear {{patientName}}, *{{hospitalName}}* could not confirm your online appointment request for {{date}} at {{time}}. Please call us or pick another slot in the app.' },
+      push: { subject: 'Booking not confirmed', body: '{{date}} at {{time}}: please pick another slot' },
+    },
+  },
+  {
+    key: 'owner.daily_summary',
+    name: 'Owner daily summary',
+    variables: ['hospitalName', 'staffName', 'summaryDate', 'opdVisits', 'newPatients', 'billed', 'collections', 'pendingCount', 'pendingAmount'],
+    channels: {
+      whatsapp: { body: 'Good morning {{staffName}}. *{{hospitalName}}* on {{summaryDate}}:\nOPD visits: *{{opdVisits}}*\nNew patients: *{{newPatients}}*\nBilled: *Rs {{billed}}*\nCollected: *Rs {{collections}}*\nPending bills: {{pendingCount}} (Rs {{pendingAmount}})' },
+      sms: { body: '{{hospitalName}} {{summaryDate}}: OPD {{opdVisits}}, new {{newPatients}}, billed Rs {{billed}}, collected Rs {{collections}}, pending {{pendingCount}} bills Rs {{pendingAmount}}.' },
+      email: { subject: '{{hospitalName}} daily summary: {{summaryDate}}', body: 'Good morning {{staffName}},\n\n{{hospitalName}} on {{summaryDate}}:\nOPD visits: {{opdVisits}}\nNew patients: {{newPatients}}\nBilled: Rs {{billed}}\nCollected: Rs {{collections}}\nPending bills: {{pendingCount}} (Rs {{pendingAmount}})\n\nOpen HMS for the full dashboard.' },
+      push: { subject: 'Yesterday: Rs {{collections}} collected', body: 'OPD {{opdVisits}}, new patients {{newPatients}}, pending bills {{pendingCount}}' },
+    },
+  },
+  {
+    key: 'lab.critical',
+    name: 'Critical lab value (to doctor)',
+    variables: ['hospitalName', 'doctorName', 'patientName', 'uhid', 'testName', 'value', 'unit', 'flag', 'orderNo'],
+    channels: {
+      sms: { body: 'CRITICAL lab value for {{patientName}} ({{uhid}}): {{testName}} {{value}} {{unit}} {{flag}}. Please review. - {{hospitalName}}' },
+      push: { subject: 'Critical: {{testName}} {{value}} {{unit}}', body: '{{patientName}} ({{uhid}}) needs review' },
+      email: { subject: 'CRITICAL lab value: {{testName}} for {{patientName}}', body: 'Dear {{doctorName}},\n\n{{testName}} for {{patientName}} ({{uhid}}) is {{value}} {{unit}} ({{flag}}). Order {{orderNo}}.\n\nPlease review.\n\n{{hospitalName}}' },
+    },
+  },
+  {
+    key: 'radiology.critical',
+    name: 'Critical radiology finding (to doctor)',
+    variables: ['hospitalName', 'doctorName', 'patientName', 'uhid', 'studyName', 'impression'],
+    channels: {
+      sms: { body: 'CRITICAL finding on {{studyName}} for {{patientName}} ({{uhid}}): {{impression}} Please review. - {{hospitalName}}' },
+      push: { subject: 'Critical finding: {{studyName}}', body: '{{patientName}}: {{impression}}' },
+      email: { subject: 'CRITICAL finding: {{studyName}} for {{patientName}}', body: 'Dear {{doctorName}},\n\n{{studyName}} for {{patientName}} ({{uhid}}) has a critical finding:\n{{impression}}\n\nPlease review.\n\n{{hospitalName}}' },
+    },
+  },
+  {
+    key: 'report.ready',
+    name: 'Report ready (lab / radiology)',
+    variables: ['hospitalName', 'patientName', 'reportName'],
+    channels: {
+      sms: { body: 'Dear {{patientName}}, your {{reportName}} report from {{hospitalName}} is ready. Please collect it or view it in the patient app.' },
+      whatsapp: { body: 'Dear {{patientName}}, your *{{reportName}}* report from *{{hospitalName}}* is ready. Please collect it or view it in the patient app.' },
+      email: { subject: 'Your {{reportName}} report is ready', body: 'Dear {{patientName}},\n\nYour {{reportName}} report from {{hospitalName}} is ready. Please collect it or view it in the patient app.\n\n{{hospitalName}}' },
+      push: { subject: 'Report ready', body: 'Your {{reportName}} report from {{hospitalName}} is ready' },
+    },
+  },
+  {
+    key: 'quality.incident_alert',
+    name: 'Serious incident alert (to quality team)',
+    variables: ['hospitalName', 'staffName', 'incidentNo', 'severity', 'kind', 'category'],
+    channels: {
+      sms: { body: 'Incident {{incidentNo}} reported at {{hospitalName}}: {{kind}}, {{severity}} ({{category}}). Please review in HMS.' },
+      push: { subject: 'Incident {{incidentNo}}: {{severity}}', body: '{{kind}} ({{category}}). Please review.' },
+      email: { subject: 'Incident {{incidentNo}} reported: {{severity}}', body: 'Dear {{staffName}},\n\nIncident {{incidentNo}} was reported: {{kind}}, severity {{severity}}, category {{category}}.\n\nPlease review it in HMS.\n\n{{hospitalName}}' },
+    },
+  },
+  {
+    key: 'hr.leave_update',
+    name: 'Leave decision (to employee)',
+    variables: ['hospitalName', 'staffName', 'status', 'fromDate', 'toDate'],
+    channels: {
+      sms: { body: 'Dear {{staffName}}, your leave from {{fromDate}} to {{toDate}} has been {{status}}. - {{hospitalName}}' },
+      push: { subject: 'Leave {{status}}', body: '{{fromDate}} to {{toDate}}' },
+      email: { subject: 'Your leave has been {{status}}', body: 'Dear {{staffName}},\n\nYour leave from {{fromDate}} to {{toDate}} has been {{status}}.\n\n{{hospitalName}}' },
+    },
+  },
+  {
+    key: 'hr.payroll_finalized',
+    name: 'Payroll finalized (to admin / accounts)',
+    variables: ['hospitalName', 'staffName', 'month', 'employeeCount', 'netTotal'],
+    channels: {
+      email: { subject: 'Payroll for {{month}} finalized', body: 'Dear {{staffName}},\n\nPayroll for {{month}} has been finalized: {{employeeCount}} employees, net Rs {{netTotal}}.\n\n{{hospitalName}}' },
+      push: { subject: 'Payroll {{month}} finalized', body: '{{employeeCount}} employees, net Rs {{netTotal}}' },
+      sms: { body: 'Payroll for {{month}} finalized at {{hospitalName}}: {{employeeCount}} employees, net Rs {{netTotal}}.' },
+    },
+  },
+  {
+    key: 'complaint.resolved',
+    name: 'Complaint resolved',
+    variables: ['hospitalName', 'patientName', 'complaintNo'],
+    channels: {
+      sms: { body: 'Your complaint {{complaintNo}} at {{hospitalName}} has been resolved. Thank you for your feedback.' },
+      whatsapp: { body: 'Your complaint *{{complaintNo}}* at *{{hospitalName}}* has been resolved. Thank you for your feedback.' },
+    },
+  },
+  {
     key: 'custom.message',
     name: 'Custom message (typed by staff)',
     variables: ['hospitalName', 'patientName', 'message'],
@@ -187,6 +278,8 @@ export const DEFAULT_TEMPLATES: readonly TemplateDef[] = [
   },
 ];
 
+export type EventRecipient = 'patient' | 'doctor' | 'staff';
+
 export interface EventDef {
   topic: string;
   name: string;
@@ -194,16 +287,63 @@ export interface EventDef {
   templateKey: string;
   /** Channels the default rule sends on; empty means the rule starts switched off. */
   defaultChannels: readonly Channel[];
+  /** Who gets the message: the patient in payload.patientId, one staff user, or everyone with `roles`. */
+  recipient: EventRecipient;
+  /** recipient 'doctor' (any single staff user): payload key holding the user id. */
+  userField?: string;
+  /** recipient 'staff': system roles to alert. */
+  roles?: readonly string[];
+  /** recipient 'patient': payload key with a mobile to use when there is no patientId. */
+  mobileField?: string;
+  /** Only fire when at least one payload key has one of the listed values. */
+  matchAny?: Readonly<Record<string, readonly string[]>>;
+  /** Only fire when this payload key is null or absent (avoids repeating another module's message). */
+  unlessPresent?: string;
 }
+
+export const RECIPIENT_LABELS: Record<EventRecipient, string> = { patient: 'Patient', doctor: 'Doctor / staff member', staff: 'Staff (by role)' };
+
+/** Not an outbox event: the worker's 7 AM (IST) job runs this rule for every hospital, with yesterday's figures. */
+export const OWNER_SUMMARY_TOPIC = 'notifications.owner_summary.daily';
 
 /** Events the notifications module can react to. Hospitals switch rules on/off and pick channels. */
 export const NOTIFICATION_EVENTS: readonly EventDef[] = [
-  { topic: 'core.patient.registered', name: 'Patient registered', templateKey: 'patient.registered', defaultChannels: ['sms'] },
-  { topic: 'frontoffice.appointment.booked', name: 'Appointment booked', templateKey: 'appointment.booked', defaultChannels: ['sms', 'push'] },
-  { topic: 'frontoffice.appointment.cancelled', name: 'Appointment cancelled', templateKey: 'appointment.cancelled', defaultChannels: ['sms', 'push'] },
-  { topic: 'frontoffice.visit.checked_in', name: 'Patient checked in', templateKey: 'visit.checked_in', defaultChannels: [] },
-  { topic: 'billing.payment.received', name: 'Payment received', templateKey: 'payment.received', defaultChannels: ['sms'] },
-  { topic: 'emr.prescription.created', name: 'Prescription created', templateKey: 'prescription.created', defaultChannels: [] },
+  { topic: 'core.patient.registered', name: 'Patient registered', templateKey: 'patient.registered', defaultChannels: ['sms'], recipient: 'patient' },
+  { topic: 'frontoffice.appointment.booked', name: 'Appointment booked', templateKey: 'appointment.booked', defaultChannels: ['sms', 'push'], recipient: 'patient' },
+  { topic: 'frontoffice.appointment.cancelled', name: 'Appointment cancelled', templateKey: 'appointment.cancelled', defaultChannels: ['sms', 'push'], recipient: 'patient' },
+  { topic: 'frontoffice.visit.checked_in', name: 'Patient checked in', templateKey: 'visit.checked_in', defaultChannels: [], recipient: 'patient' },
+  { topic: 'billing.payment.received', name: 'Payment received', templateKey: 'payment.received', defaultChannels: ['sms'], recipient: 'patient' },
+  { topic: 'emr.prescription.created', name: 'Prescription created', templateKey: 'prescription.created', defaultChannels: [], recipient: 'patient' },
+  // Portal bookings that became real appointments are already messaged by the frontoffice rules,
+  // so these only fire for requests with no appointment yet.
+  { topic: 'portal.appointment.confirmed', name: 'Online booking confirmed', templateKey: 'appointment.booked', defaultChannels: ['sms', 'push'], recipient: 'patient', unlessPresent: 'appointmentId' },
+  { topic: 'portal.appointment.cancelled', name: 'Online booking cancelled', templateKey: 'appointment.cancelled', defaultChannels: ['sms', 'push'], recipient: 'patient', unlessPresent: 'appointmentId' },
+  { topic: 'portal.appointment.rejected', name: 'Online booking declined', templateKey: 'appointment.request_declined', defaultChannels: ['sms', 'push'], recipient: 'patient' },
+  { topic: 'lab.result.critical', name: 'Critical lab result', templateKey: 'lab.critical', defaultChannels: ['sms', 'push'], recipient: 'doctor', userField: 'doctorId' },
+  { topic: 'lab.report.verified', name: 'Lab report ready', templateKey: 'report.ready', defaultChannels: ['sms'], recipient: 'patient' },
+  { topic: 'radiology.report.critical', name: 'Critical radiology finding', templateKey: 'radiology.critical', defaultChannels: ['sms', 'push'], recipient: 'doctor', userField: 'referringDoctorId' },
+  { topic: 'radiology.report.finalized', name: 'Radiology report ready', templateKey: 'report.ready', defaultChannels: ['sms'], recipient: 'patient' },
+  {
+    topic: 'quality.incident.reported',
+    name: 'Serious incident reported',
+    templateKey: 'quality.incident_alert',
+    defaultChannels: ['sms', 'push'],
+    recipient: 'staff',
+    roles: ['quality_manager', 'hospital_admin'],
+    matchAny: { severity: ['severe', 'death'], kind: ['sentinel_event'] },
+  },
+  { topic: 'hr.leave.decided', name: 'Leave approved / rejected', templateKey: 'hr.leave_update', defaultChannels: ['sms', 'push'], recipient: 'doctor', userField: 'userId' },
+  { topic: 'hr.leave.cancelled', name: 'Leave cancelled', templateKey: 'hr.leave_update', defaultChannels: ['push'], recipient: 'doctor', userField: 'userId' },
+  { topic: 'hr.payroll.finalized', name: 'Payroll finalized', templateKey: 'hr.payroll_finalized', defaultChannels: ['email', 'push'], recipient: 'staff', roles: ['hospital_admin', 'accountant'] },
+  {
+    topic: 'notifications.owner_summary.daily',
+    name: 'Owner daily summary (7 AM)',
+    templateKey: 'owner.daily_summary',
+    defaultChannels: ['whatsapp', 'push'],
+    recipient: 'staff',
+    roles: ['owner'],
+  },
+  { topic: 'quality.complaint.resolved', name: 'Complaint resolved', templateKey: 'complaint.resolved', defaultChannels: ['sms'], recipient: 'patient', mobileField: 'complainantMobile' },
 ];
 
 /** Default cost per message in credits (1 credit = Rs 1). SMS is per 160-character part. */
@@ -341,6 +481,7 @@ export interface TemplatePreview {
 export interface Rule {
   eventTopic: string;
   eventName: string;
+  recipient: EventRecipient;
   templateKey: string;
   channels: Channel[];
   isActive: boolean;

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { eventData } from '../src/modules/notifications/notifications.dispatcher';
+import { eventData, matches } from '../src/modules/notifications/notifications.dispatcher';
+import { yesterdayIST } from '../src/modules/notifications/notifications.scheduler';
 import { ExpoPushProvider } from '../src/modules/notifications/providers/expo.provider';
 import { GupshupWhatsappProvider } from '../src/modules/notifications/providers/gupshup.provider';
 import { Msg91SmsProvider } from '../src/modules/notifications/providers/msg91.provider';
@@ -50,6 +51,31 @@ describe('render', () => {
   it('computes IST midnight', () => {
     expect(startOfTodayIST(new Date('2026-10-07T20:00:00Z')).toISOString()).toBe('2026-10-07T18:30:00.000Z');
     expect(startOfTodayIST(new Date('2026-10-07T10:00:00Z')).toISOString()).toBe('2026-10-06T18:30:00.000Z');
+  });
+
+  it('filters events with matchAny', () => {
+    const def = { topic: 't', name: 't', templateKey: 'a.b', defaultChannels: [], recipient: 'staff' as const, matchAny: { severity: ['severe'], kind: ['sentinel_event'] } };
+    expect(matches(def, { severity: 'mild', kind: 'incident' })).toBe(false);
+    expect(matches(def, { severity: 'severe' })).toBe(true);
+    expect(matches(def, { severity: 'mild', kind: 'sentinel_event' })).toBe(true);
+    expect(matches({ ...def, matchAny: undefined }, {})).toBe(true);
+    const portal = { ...def, matchAny: undefined, unlessPresent: 'appointmentId' };
+    expect(matches(portal, { appointmentId: 'a1' })).toBe(false);
+    expect(matches(portal, { appointmentId: null })).toBe(true);
+    expect(matches(portal, {})).toBe(true);
+    expect(eventData('radiology.report.critical', { impression: 'a '.repeat(100), studyName: 'CT' }).impression!.length).toBeLessThanOrEqual(140);
+    expect(eventData('quality.incident.reported', { kind: 'sentinel_event', severity: 'death' })).toEqual({ kind: 'sentinel event', severity: 'death' });
+  });
+
+  it('picks yesterday in IST for the 7 AM summary', () => {
+    expect(yesterdayIST(new Date('2026-10-07T01:30:00Z'))).toBe('2026-10-06'); // 07:00 IST
+    expect(yesterdayIST(new Date('2026-10-06T19:00:00Z'))).toBe('2026-10-06'); // 00:30 IST on the 7th
+  });
+
+  it('maps HR payloads', () => {
+    expect(eventData('hr.leave.decided', { status: 'approved', fromDate: '2026-10-10', toDate: '2026-10-12' })).toEqual({ status: 'approved', fromDate: '10 Oct 2026', toDate: '12 Oct 2026' });
+    expect(eventData('hr.leave.cancelled', { status: 'approved' }).status).toBe('cancelled');
+    expect(eventData('hr.payroll.finalized', { month: '2026-09', employeeCount: 42, netTotal: 1234567.5 })).toEqual({ month: '2026-09', employeeCount: '42', netTotal: '12,34,567.50' });
   });
 
   it('maps event payloads to template variables', () => {

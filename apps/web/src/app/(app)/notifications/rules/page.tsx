@@ -28,13 +28,14 @@ export default function RulesPage() {
 
   return (
     <>
-      <PageHeader title="Automatic messages" description="Messages sent to patients automatically when something happens in the hospital." />
+      <PageHeader title="Automatic messages" description="Messages sent automatically to patients, doctors and staff when something happens in the hospital." />
       {update.error && <p className="mb-4 text-sm text-destructive">{errorMessage(update.error)}</p>}
       <Card>
         <Table>
           <TableHeader>
             <TableRow className="hover:bg-transparent">
               <TableHead>When</TableHead>
+              <TableHead>To</TableHead>
               <TableHead>On</TableHead>
               <TableHead>Send by</TableHead>
             </TableRow>
@@ -42,13 +43,13 @@ export default function RulesPage() {
           <TableBody>
             {isPending ? (
               <TableRow>
-                <TableCell colSpan={3} className="py-10 text-center text-muted-foreground">
+                <TableCell colSpan={4} className="py-10 text-center text-muted-foreground">
                   Loading…
                 </TableCell>
               </TableRow>
             ) : error ? (
               <TableRow>
-                <TableCell colSpan={3} className="text-destructive">
+                <TableCell colSpan={4} className="text-destructive">
                   {errorMessage(error)}
                 </TableCell>
               </TableRow>
@@ -59,6 +60,7 @@ export default function RulesPage() {
                     <p className="font-medium">{r.eventName}</p>
                     <p className="font-mono text-xs text-muted-foreground">{r.templateKey}</p>
                   </TableCell>
+                  <TableCell>{n.RECIPIENT_LABELS[r.recipient]}</TableCell>
                   <TableCell>
                     <Checkbox
                       label={r.isActive ? 'On' : 'Off'}

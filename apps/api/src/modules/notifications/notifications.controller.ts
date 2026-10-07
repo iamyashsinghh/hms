@@ -3,12 +3,15 @@ import { notifications as n, type Paginated } from '@hms/shared';
 import { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
+import { RequireEntitlement } from '../platform';
 import { NotificationsService } from './notifications.service';
 
 const channelSchema = z.enum(n.CHANNELS);
 const templateKeySchema = z.string().regex(/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/);
 
+/** Everything except push tokens needs the 'notifications' module in the hospital's plan. */
 @Controller('notifications')
+@RequireEntitlement('notifications')
 export class NotificationsController {
   constructor(private readonly svc: NotificationsService) {}
 
@@ -146,22 +149,26 @@ export class NotificationsController {
   updateSettings(@Body(new ZodPipe(n.updateSettingsSchema)) body: n.UpdateSettings): Promise<n.Settings> {
     return this.svc.updateSettings(body);
   }
+}
 
-  // ---------- push devices ----------
+/** Push token registration stays open on every plan: the mobile apps call it after login. */
+@Controller('notifications/devices')
+export class NotificationsDevicesController {
+  constructor(private readonly svc: NotificationsService) {}
 
-  @Get('devices')
+  @Get()
   @RequirePermissions('notifications.device.register')
   myDevices(): Promise<n.Device[]> {
     return this.svc.myDevices();
   }
 
-  @Post('devices')
+  @Post()
   @RequirePermissions('notifications.device.register')
   registerDevice(@Body(new ZodPipe(n.registerDeviceSchema)) body: n.RegisterDevice): Promise<n.Device> {
     return this.svc.registerDevice(body);
   }
 
-  @Post('devices/unregister')
+  @Post('unregister')
   @HttpCode(204)
   @RequirePermissions('notifications.device.register')
   unregisterDevice(@Body(new ZodPipe(n.unregisterDeviceSchema)) body: { token: string }): Promise<void> {
