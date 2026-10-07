@@ -27,6 +27,8 @@ type PaymentReceivedEvent = B.PaymentReceivedEvent;
 type PriceList = B.PriceList;
 type PriceListInput = B.PriceListInput;
 type RefundInput = B.RefundInput;
+type InvoiceReturnInput = B.InvoiceReturnInput;
+type InvoiceReturnResult = B.InvoiceReturnResult;
 type PortalPaymentCaptured = B.PortalPaymentCaptured;
 type RefundIssuedEvent = B.RefundIssuedEvent;
 type Service = B.Service;
@@ -606,24 +608,33 @@ export class BillingService {
         if (amount > available) throw badRequest('over_refund', `Advance balance is only ₹${rupees(available)}`, { refundable: toNumber(rupees(available)) });
         facilityId = this.resolveFacility(d.facilityId);
       }
-      const shift = userId ? await this.repo.openShiftOf(tx, userId) : undefined;
-      const row = await this.repo.insertPayment(tx, {
-        number: formatSeries('RFD', await nextCounter(tx, 'billing.refund')),
-        kind: 'refund',
-        facilityId,
-        patientId,
-        invoiceId: d.invoiceId ?? null,
-        mode: d.mode,
-        amount: rupees(amount),
-        reference: d.reference ?? null,
-        notes: d.notes,
-        shiftId: shift?.id ?? null,
-        receivedBy: userId,
-      });
-      const event: RefundIssuedEvent = { paymentId: row.id, invoiceId: row.invoiceId, patientId, facilityId, amount: toNumber(row.amount), mode: d.mode };
-      await this.publish(tx, 'billing.refund.issued', { ...event });
+      const row = await this.insertRefund(tx, { facilityId, patientId, invoiceId: d.invoiceId ?? null, mode: d.mode, amount, reference: d.reference, notes: d.notes });
       return paymentDto(row);
     });
+  }
+
+  private async insertRefund(
+    tx: Tx,
+    r: { facilityId: string; patientId: string; invoiceId: string | null; mode: B.PaymentMode; amount: number; reference?: string; notes: string },
+  ): Promise<PaymentRow> {
+    const { userId } = await this.repo.scope(tx);
+    const shift = userId ? await this.repo.openShiftOf(tx, userId) : undefined;
+    const row = await this.repo.insertPayment(tx, {
+      number: formatSeries('RFD', await nextCounter(tx, 'billing.refund')),
+      kind: 'refund',
+      facilityId: r.facilityId,
+      patientId: r.patientId,
+      invoiceId: r.invoiceId,
+      mode: r.mode,
+      amount: rupees(r.amount),
+      reference: r.reference ?? null,
+      notes: r.notes,
+      shiftId: shift?.id ?? null,
+      receivedBy: userId,
+    });
+    const event: RefundIssuedEvent = { paymentId: row.id, invoiceId: row.invoiceId, patientId: r.patientId, facilityId: r.facilityId, amount: toNumber(row.amount), mode: r.mode };
+    await this.publish(tx, 'billing.refund.issued', { ...event });
+    return row;
   }
 
   listPayments(query: unknown): Promise<Paginated<Payment>> {
@@ -720,19 +731,81 @@ export class BillingService {
       if (amount > balance) {
         throw badRequest('credit_exceeds_balance', `Only ₹${rupees(balance)} is unpaid; refund the payment first to credit more`, { balance: toNumber(rupees(balance)) });
       }
-      const { userId } = await this.repo.scope(tx);
-      const cn = await this.repo.insertCreditNote(tx, {
-        number: formatSeries('CN', await nextCounter(tx, 'billing.credit_note')),
-        invoiceId,
-        patientId: inv.patientId,
-        amount: rupees(amount),
-        reason: d.reason,
-        createdBy: userId,
-      });
-      await this.repo.updateInvoice(tx, invoiceId, { creditedAmount: rupees(paise(inv.creditedAmount) + amount), updatedBy: userId });
-      await this.publish(tx, 'billing.credit_note.issued', { creditNoteId: cn.id, invoiceId, patientId: inv.patientId, amount: toNumber(cn.amount) });
+      await this.insertCreditNote(tx, inv, amount, d.reason);
       return this.invoiceTx(tx, invoiceId);
     });
+  }
+
+  /**
+   * Cross-module (e.g. pharmacy returns), inside the caller's transaction; works in the worker.
+   * Credits `amount` on a final invoice. Whatever exceeds the unpaid balance was already paid, so it is
+   * refunded first (needs `refundMode`). Idempotent on `reference`.
+   */
+  async returnOnInvoice(tx: Tx, invoiceId: string, input: InvoiceReturnInput): Promise<InvoiceReturnResult> {
+    const d = contracts.invoiceReturnSchema.parse(input);
+    const inv = await this.repo.invoiceById(tx, invoiceId, true);
+    if (!inv) throw notFound('Invoice');
+    if (d.reference) {
+      const prior = await this.repo.creditNoteByReference(tx, d.reference);
+      if (prior) {
+        if (prior.invoiceId !== invoiceId) throw conflict('reference_used', `Return ${d.reference} was already credited on another invoice`);
+        const refund = await this.repo.refundByReference(tx, invoiceId, d.reference);
+        return returnResult(inv, prior, refund);
+      }
+    }
+    if (inv.status !== 'final') throw conflict('invoice_not_final', 'Returns can only be credited on final invoices');
+    const amount = paise(d.amount);
+    const paid = paise(inv.paidAmount);
+    const credited = paise(inv.creditedAmount);
+    const total = paise(inv.total);
+    if (amount > total - credited) {
+      throw badRequest('credit_exceeds_invoice', `Only ₹${rupees(total - credited)} of this invoice can still be credited`, { creditable: toNumber(rupees(total - credited)) });
+    }
+    const refundAmount = Math.max(0, amount - (total - paid - credited));
+    let refund: PaymentRow | undefined;
+    let current = inv;
+    if (refundAmount > 0) {
+      if (!d.refundMode) throw badRequest('refund_mode_required', `₹${rupees(refundAmount)} was already paid and must be refunded; give refundMode`);
+      const { userId } = await this.repo.scope(tx);
+      current = await this.repo.updateInvoice(tx, invoiceId, { paidAmount: rupees(paid - refundAmount), updatedBy: userId });
+      refund = await this.insertRefund(tx, {
+        facilityId: inv.facilityId,
+        patientId: inv.patientId,
+        invoiceId,
+        mode: d.refundMode,
+        amount: refundAmount,
+        reference: d.reference,
+        notes: d.reason,
+      });
+    }
+    const cn = await this.insertCreditNote(tx, current, amount, d.reason, d.reference);
+    const after = (await this.repo.invoiceById(tx, invoiceId))!;
+    return returnResult(after, cn, refund);
+  }
+
+  /** Invoice row must be locked and final; amount (paise) must fit in the unpaid balance. */
+  private async insertCreditNote(tx: Tx, inv: InvoiceRow, amount: number, reason: string, reference?: string): Promise<CreditNoteRow> {
+    const { userId } = await this.repo.scope(tx);
+    const cn = await this.repo.insertCreditNote(tx, {
+      number: formatSeries('CN', await nextCounter(tx, 'billing.credit_note')),
+      invoiceId: inv.id,
+      patientId: inv.patientId,
+      amount: rupees(amount),
+      reason,
+      reference: reference ?? null,
+      createdBy: userId,
+    });
+    await this.repo.updateInvoice(tx, inv.id, { creditedAmount: rupees(paise(inv.creditedAmount) + amount), updatedBy: userId });
+    await this.publish(tx, 'billing.credit_note.issued', {
+      creditNoteId: cn.id,
+      number: cn.number,
+      invoiceId: inv.id,
+      patientId: inv.patientId,
+      facilityId: inv.facilityId,
+      amount: toNumber(cn.amount),
+      reference: cn.reference,
+    });
+    return cn;
   }
 
   // =====================================================================
@@ -973,5 +1046,17 @@ function paymentDto(p: PaymentRow): Payment {
 }
 
 function creditNoteDto(c: CreditNoteRow): CreditNote {
-  return { id: c.id, number: c.number, invoiceId: c.invoiceId, patientId: c.patientId, amount: toNumber(c.amount), reason: c.reason, createdAt: iso(c.createdAt) };
+  return { id: c.id, number: c.number, invoiceId: c.invoiceId, patientId: c.patientId, amount: toNumber(c.amount), reason: c.reason, reference: c.reference, createdAt: iso(c.createdAt) };
+}
+
+function returnResult(inv: InvoiceRow, cn: CreditNoteRow, refund: PaymentRow | undefined): InvoiceReturnResult {
+  return {
+    invoiceId: inv.id,
+    creditNoteId: cn.id,
+    creditNoteNumber: cn.number,
+    refundId: refund?.id ?? null,
+    refundNumber: refund?.number ?? null,
+    refundAmount: refund ? toNumber(refund.amount) : 0,
+    balance: (paise(inv.total) - paise(inv.paidAmount) - paise(inv.creditedAmount)) / 100,
+  };
 }

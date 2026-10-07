@@ -352,6 +352,20 @@ export class BillingRepository {
     return row!;
   }
 
+  async creditNoteByReference(tx: Tx, reference: string): Promise<CreditNoteRow | undefined> {
+    const [row] = await tx.select().from(billingCreditNotes).where(eq(billingCreditNotes.reference, reference)).limit(1);
+    return row;
+  }
+
+  async refundByReference(tx: Tx, invoiceId: string, reference: string): Promise<PaymentRow | undefined> {
+    const [row] = await tx
+      .select()
+      .from(billingPayments)
+      .where(and(eq(billingPayments.invoiceId, invoiceId), eq(billingPayments.kind, 'refund'), eq(billingPayments.reference, reference)))
+      .limit(1);
+    return row;
+  }
+
   async creditNotesForInvoice(tx: Tx, invoiceId: string): Promise<CreditNoteRow[]> {
     return tx.select().from(billingCreditNotes).where(eq(billingCreditNotes.invoiceId, invoiceId)).orderBy(asc(billingCreditNotes.createdAt));
   }

@@ -251,6 +251,28 @@ describe('cross-module contract', () => {
     expect(price.price).toBe(450);
   });
 
+  it('credits pharmacy returns on a bill, refunding what was already paid (returnOnInvoice)', async () => {
+    const billing = app.get(BillingService);
+    const db = app.get(DbService);
+    const inv = await db.asTenant({ tenantId }, (tx) =>
+      billing.createInvoice(tx, { patientId, facilityId, source: { module: 'pharmacy', refId: `S-${tag}` }, lines: [{ description: 'Syrup', qty: 2, unitPrice: 100 }], payNow: { mode: 'cash', amount: 150 } }),
+    );
+    // 200 billed, 150 paid, 50 due. Returning 120: 50 is credited off the due, 70 goes back in cash.
+    await expect(db.asTenant({ tenantId }, (tx) => billing.returnOnInvoice(tx, inv.invoiceId, { amount: 120, reason: 'Returned 1 bottle' }))).rejects.toThrow(/refundMode/);
+    const ret = { amount: 120, reason: 'Returned 1 bottle', refundMode: 'cash' as const, reference: `RET-${tag}` };
+    const r1 = await db.asTenant({ tenantId }, (tx) => billing.returnOnInvoice(tx, inv.invoiceId, ret));
+    expect(r1).toMatchObject({ refundAmount: 70, balance: 0 });
+    expect(r1.creditNoteNumber).toMatch(/^CN\d{6}$/);
+    expect(r1.refundNumber).toMatch(/^RFD\d{6}$/);
+    const r2 = await db.asTenant({ tenantId }, (tx) => billing.returnOnInvoice(tx, inv.invoiceId, ret));
+    expect(r2).toEqual(r1);
+    const after = (await call(clerk, 'GET', `/billing/invoices/${inv.invoiceId}`)).json();
+    expect(after).toMatchObject({ total: 200, paidAmount: 80, creditedAmount: 120, balance: 0 });
+    await expect(
+      db.asTenant({ tenantId }, (tx) => billing.returnOnInvoice(tx, inv.invoiceId, { amount: 81, reason: 'Too much', refundMode: 'cash' })),
+    ).rejects.toThrow();
+  });
+
   it('records portal online payments once, keeping any excess as advance', async () => {
     const inv = (await call(clerk, 'POST', '/billing/invoices', { patientId, finalize: true, lines: [{ serviceCode: CONS }] })).json();
     const before = (await call(clerk, 'GET', `/billing/patients/${patientId}/account`)).json().depositBalance;

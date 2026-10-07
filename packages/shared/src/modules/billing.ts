@@ -408,6 +408,31 @@ export const creditNoteSchema = z.object({
 });
 export type CreditNoteInput = z.input<typeof creditNoteSchema>;
 
+/**
+ * BillingService.returnOnInvoice (cross-module, e.g. pharmacy returns): credits `amount` against a final
+ * invoice. If more than the unpaid balance is credited, the excess is refunded first with `refundMode`.
+ */
+export const invoiceReturnSchema = z.object({
+  amount: positiveMoney,
+  reason: z.string().trim().min(3).max(500),
+  /** Needed when part of the amount was already paid and must go back to the patient. */
+  refundMode: z.enum(PAYMENT_MODES).optional(),
+  /** Caller's id for this return (e.g. pharmacy return id). Repeating it returns the first result. */
+  reference: z.string().trim().min(1).max(100).optional(),
+});
+export type InvoiceReturnInput = z.input<typeof invoiceReturnSchema>;
+
+export interface InvoiceReturnResult {
+  invoiceId: string;
+  creditNoteId: string;
+  creditNoteNumber: string;
+  refundId: string | null;
+  refundNumber: string | null;
+  refundAmount: number;
+  /** Invoice balance after the return. */
+  balance: number;
+}
+
 export interface CreditNote {
   id: string;
   number: string;
@@ -415,6 +440,7 @@ export interface CreditNote {
   patientId: string;
   amount: number;
   reason: string;
+  reference: string | null;
   createdAt: string;
 }
 
