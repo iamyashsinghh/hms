@@ -76,8 +76,8 @@ export default function QueuePage() {
         }
       />
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
-        <Card>
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <Card className="min-w-0 overflow-x-auto">
           <div className="flex flex-wrap items-end gap-3 border-b p-4">
             <div className="w-56">
               <Label htmlFor="q-doctor">Doctor</Label>
