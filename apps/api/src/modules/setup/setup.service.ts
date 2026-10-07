@@ -38,6 +38,14 @@ export class SetupService {
     return this.staff.readSlots(tx, userId, date, facilityId);
   }
 
+  /**
+   * True when the doctor has any weekly OPD timing (optionally in one facility). Use it to tell
+   * "no schedule set up yet" (free booking) from "not sitting / on leave that day" (getDoctorSchedule returns []).
+   */
+  hasScheduleInTx(tx: Tx, userId: string, facilityId?: string): Promise<boolean> {
+    return this.staff.hasSchedule(tx, userId, facilityId);
+  }
+
   /** Hospital name, GSTIN, address and letterhead for printouts and invoices. */
   getProfileInTx(tx: Tx): Promise<S.HospitalProfile> {
     return this.profile.readProfile(tx);

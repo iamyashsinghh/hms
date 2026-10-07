@@ -77,7 +77,9 @@ export const timeIST = (iso: string, tz = 'Asia/Kolkata') =>
   new Date(iso).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: tz });
 
 /** Shows a generated password once with a copy button. */
-export function TemporaryPassword({ name, password }: { name: string; password: string }) {
+export function TemporaryPassword({ name, password, delivery }: { name: string; password: string; delivery?: setup.CredentialDelivery[] }) {
+  const sent = delivery?.filter((d) => d.status !== 'skipped' && d.status !== 'failed') ?? [];
+  const notSent = delivery?.filter((d) => d.status === 'skipped' || d.status === 'failed') ?? [];
   const [copied, setCopied] = React.useState(false);
   return (
     <SuccessBox>
@@ -91,7 +93,13 @@ export function TemporaryPassword({ name, password }: { name: string; password: 
           {copied ? 'Copied' : 'Copy'}
         </button>
       </p>
-      <p className="mt-1 text-xs">It is shown only once. Share it with the user privately.</p>
+      <p className="mt-1 text-xs">
+        {sent.length
+          ? `Login details sent by ${sent.map((d) => (d.channel === 'sms' ? 'SMS' : d.channel)).join(' and ')}. `
+          : 'Not sent automatically. '}
+        It is shown only once{sent.length ? '' : '; share it with the user privately'}.
+        {notSent.length > 0 && ` (${notSent.map((d) => `${d.channel}: ${(d.reason ?? d.status).replace(/_/g, ' ')}`).join(', ')})`}
+      </p>
     </SuccessBox>
   );
 }

@@ -71,7 +71,8 @@ export type PaymentMode = (typeof PAYMENT_MODES)[number];
 export type SettlementMode = (typeof SETTLEMENT_MODES)[number];
 export type PaymentKind = (typeof PAYMENT_KINDS)[number];
 /** Modes that can appear on a receipt: staff-entered modes plus 'online' (payment gateway via the patient portal). */
-export type ReceiptMode = SettlementMode | 'online';
+export type ReceiptMode = SettlementMode | 'online' | 'insurance';
+export const RECEIPT_MODES = [...SETTLEMENT_MODES, 'online', 'insurance'] as const;
 export type PaymentStatus = 'unpaid' | 'partial' | 'paid';
 
 const taxRate = z.coerce.number().refine((v) => (GST_RATES as readonly number[]).includes(v), 'Use a GST slab: 0, 0.1, 0.25, 3, 5, 12, 18, 28 or 40');
@@ -407,6 +408,22 @@ export const creditNoteSchema = z.object({
   reason: z.string().trim().min(3).max(500),
 });
 export type CreditNoteInput = z.input<typeof creditNoteSchema>;
+
+/** BillingService.creditNoteTx (cross-module). `reference` makes retries safe. */
+export const creditNoteTxSchema = creditNoteSchema.extend({ reference: z.string().trim().min(1).max(100).optional() });
+export type CreditNoteTxInput = z.input<typeof creditNoteTxSchema>;
+
+/**
+ * BillingService.collectPaymentTx (cross-module, e.g. insurance settlements). Any receipt mode, including
+ * 'insurance' (TPA / scheme money, not counted in a cashier's shift). `reference` makes retries safe.
+ */
+export const collectPaymentTxSchema = z.object({
+  mode: z.enum(RECEIPT_MODES),
+  amount: positiveMoney,
+  reference: z.string().trim().min(1).max(100).optional(),
+  notes: optionalText(500),
+});
+export type CollectPaymentTxInput = z.input<typeof collectPaymentTxSchema>;
 
 /**
  * BillingService.returnOnInvoice (cross-module, e.g. pharmacy returns): credits `amount` against a final

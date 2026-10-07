@@ -52,6 +52,7 @@ export const todayIST = () => new Date().toLocaleDateString('en-CA', { timeZone:
 
 export const MODE_LABELS: Record<B.ReceiptMode, string> = {
   online: 'Online',
+  insurance: 'Insurance / TPA',
   cash: 'Cash',
   upi: 'UPI',
   card: 'Card',

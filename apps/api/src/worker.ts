@@ -17,7 +17,6 @@ const POLL_MS = 1000;
  */
 async function main() {
   const app = await NestFactory.createApplicationContext(AppModule);
-  app.enableShutdownHooks();
   const logger = new Logger('Worker');
   const db = app.get(DbService);
   const queues = app.get(QueueService);
@@ -59,7 +58,11 @@ async function main() {
   const running = relay();
   logger.log('worker started');
 
+  // Our own handler closes the app once; Nest shutdown hooks would close the pool a second time.
+  let closing = false;
   const shutdown = async () => {
+    if (closing) return;
+    closing = true;
     stopping = true;
     await running;
     await worker.close();
