@@ -24,6 +24,7 @@ import { AppError, badRequest, conflict, forbidden, notFound } from '../../commo
 import { OutboxService } from '../../common/events/outbox.service';
 import { ctx, slugKey, temporaryPassword } from './setup.util';
 import { NotificationsService } from '../notifications/notifications.service';
+import { PlatformService } from '../platform/platform.service';
 import { StaffService } from './staff.service';
 
 const ADMIN_ROLE = 'hospital_admin';
@@ -62,6 +63,7 @@ export class AccessService {
     private readonly outbox: OutboxService,
     private readonly staff: StaffService,
     private readonly moduleRef: ModuleRef,
+    private readonly platform: PlatformService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
@@ -129,8 +131,9 @@ export class AccessService {
     return userDto(res.rows[0]);
   }
 
-  createUser(input: S.CreateUser): Promise<S.UserWithTemporaryPassword> {
+  async createUser(input: S.CreateUser): Promise<S.UserWithTemporaryPassword> {
     const c = ctx();
+    await this.platform.assertWithinLimit('users');
     const generated = input.password ? undefined : temporaryPassword();
     return this.db.tx(async (tx) => {
       await this.assertContactFree(tx, input.email, input.mobile);
@@ -207,7 +210,9 @@ export class AccessService {
   activate(id: string): Promise<S.StaffUser> {
     const c = ctx();
     return this.db.tx(async (tx) => {
-      await this.readUser(tx, id);
+      const user = await this.readUser(tx, id);
+      // Disabled users do not count towards the plan, so bringing one back must fit the limit.
+      if (user.status === 'disabled') await this.platform.assertWithinLimit('users');
       await tx.update(users).set({ status: 'active', failedLoginCount: 0, lockedUntil: null, updatedBy: c.userId }).where(eq(users.id, id));
       return this.readUser(tx, id);
     });
