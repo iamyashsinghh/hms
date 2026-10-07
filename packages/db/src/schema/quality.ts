@@ -98,6 +98,9 @@ export const qualityCensus = pg.table(
     facilityId: uuid('facility_id').notNull(),
     day: date('day').notNull(),
     ward: text('ward').notNull().default('All'),
+    /** manual, or ipd when written from the ipd.census.daily event. */
+    source: text('source').notNull().default('manual'),
+    wardId: uuid('ward_id'),
     patientDays: integer('patient_days').notNull().default(0),
     catheterDays: integer('catheter_days').notNull().default(0),
     centralLineDays: integer('central_line_days').notNull().default(0),

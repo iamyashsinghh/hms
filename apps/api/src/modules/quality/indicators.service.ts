@@ -175,12 +175,21 @@ export class IndicatorsService {
       ).rows;
       return { rx: n(r?.rx), opd: n(r?.opd) };
     };
+    // Per facility-day: IPD rows (if any) give patient and device days, otherwise the manual rows do.
+    // Surgeries always come from every row (IPD sends none until an OT module exists).
     const census = async () => {
       const c = qualityCensus;
       const [r] = (
-        await tx.execute<Record<string, string>>(sql`select coalesce(sum(patient_days), 0) as pd, coalesce(sum(catheter_days), 0) as cd,
-          coalesce(sum(central_line_days), 0) as cl, coalesce(sum(ventilator_days), 0) as vd, coalesce(sum(surgeries), 0) as su
-          from ${c} where ${fac(c.facilityId, false)} and day >= ${start} and day < ${end}`)
+        await tx.execute<Record<string, string>>(sql`with rows as (
+            select *, bool_or(source = 'ipd') over (partition by facility_id, day) as has_ipd
+              from ${c} where ${fac(c.facilityId, false)} and day >= ${start} and day < ${end})
+          select
+            coalesce(sum(patient_days) filter (where source = 'ipd' or not has_ipd), 0) as pd,
+            coalesce(sum(catheter_days) filter (where source = 'ipd' or not has_ipd), 0) as cd,
+            coalesce(sum(central_line_days) filter (where source = 'ipd' or not has_ipd), 0) as cl,
+            coalesce(sum(ventilator_days) filter (where source = 'ipd' or not has_ipd), 0) as vd,
+            coalesce(sum(surgeries), 0) as su
+          from rows`)
       ).rows;
       return { pd: n(r?.pd), cd: n(r?.cd), cl: n(r?.cl), vd: n(r?.vd), su: n(r?.su) };
     };

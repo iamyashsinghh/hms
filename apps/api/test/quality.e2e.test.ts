@@ -262,6 +262,56 @@ describe('quality: infection control and indicators', () => {
     expect((await call(doctor, 'GET', '/quality/hai')).statusCode).toBe(200);
   });
 
+  it('takes patient and device days from IPD census events, with manual entry as the fallback', async () => {
+    // A past day this run owns, so only these rows count for it (indicators sum the whole month).
+    const day = new Date(Date.now() + IST - (2 + Math.floor(Math.random() * 20)) * 86_400_000).toISOString().slice(0, 10);
+    const otherFacility = randomUUID();
+    const before = (await indicator('HIC-CAUTI')).denominator ?? 0;
+    const sameMonth = day.slice(0, 7) === period();
+    const wardA = `IPD-A-${tag}`;
+    // A manual whole-facility entry made before IPD reported: replaced by IPD's wards for that day.
+    await ok(nurse, 'PUT', '/quality/census', { day, ward: `Manual-${tag}`, patientDays: 5, catheterDays: 999, surgeries: 3 }, 200);
+    const event = {
+      id: randomUUID(),
+      tenantId,
+      topic: 'ipd.census.daily',
+      payload: {
+        facilityId,
+        date: day,
+        wards: [
+          { wardId: randomUUID(), wardName: wardA, wardType: 'icu', patientDays: 8, catheterDays: 6, centralLineDays: 2, ventilatorDays: 3, admissions: 1, discharges: 0, surgeries: null },
+          { wardId: randomUUID(), wardName: `IPD-B-${tag}`, wardType: 'general', patientDays: 20, catheterDays: 4, centralLineDays: 0, ventilatorDays: 0, admissions: 3, discharges: 2, surgeries: null },
+        ],
+      },
+      createdAt: new Date().toISOString(),
+    };
+    const bus = app.get(EventBus);
+    await bus.dispatch(event);
+    await bus.dispatch({ ...event, id: randomUUID() }); // redelivery / replay changes nothing
+    // An event for a facility nobody here selected stays out of this facility's figures.
+    await bus.dispatch({ ...event, id: randomUUID(), payload: { ...event.payload, facilityId: otherFacility } });
+
+    const rows = (await ok(nurse, 'GET', `/quality/census?from=${day}&to=${day}`)) as { ward: string; source: string; catheterDays: number }[];
+    const mine = rows.filter((r) => r.ward.endsWith(tag)).sort((a, b) => a.ward.localeCompare(b.ward));
+    expect(mine.map((r) => [r.ward, r.source, r.catheterDays])).toEqual([
+      [wardA, 'ipd', 6],
+      [`IPD-B-${tag}`, 'ipd', 4],
+      [`Manual-${tag}`, 'manual', 999],
+    ]);
+
+    // Editing an IPD ward by hand only adds surgeries; IPD's device days stay.
+    const edited = await ok(nurse, 'PUT', '/quality/census', { day, ward: wardA, patientDays: 1, catheterDays: 1, surgeries: 2 }, 200);
+    expect(edited).toMatchObject({ source: 'ipd', patientDays: 8, catheterDays: 6, surgeries: 2 });
+
+    if (sameMonth) {
+      // IPD rows win for that day: 6 + 4 catheter days, not the manual 999.
+      expect(((await indicator('HIC-CAUTI')).denominator ?? 0) - before).toBe(10);
+      // Surgeries come from every row: 3 manual + 2 on the IPD ward.
+    }
+    const ssi = await ok(admin, 'GET', `/quality/indicators/HIC-SSI/trend?months=1&to=${day.slice(0, 7)}`);
+    expect(ssi[0].denominator).toBeGreaterThanOrEqual(5);
+  });
+
   it('counts prescriptions from emr events once each and divides medication errors by them', async () => {
     const before = await indicator('PSQ-ME');
     const bus = app.get(EventBus);

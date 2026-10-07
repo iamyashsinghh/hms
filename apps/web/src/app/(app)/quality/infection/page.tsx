@@ -8,6 +8,7 @@ import { api, errorMessage } from '@/lib/api';
 import { Can, usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -247,7 +248,9 @@ function Census() {
     <Card>
       <CardHeader>
         <CardTitle>Daily census and device days</CardTitle>
-        <p className="text-sm text-muted-foreground">One entry per ward per day. Saving the same ward and day again replaces it.</p>
+        <p className="text-sm text-muted-foreground">
+          Wards in IPD fill this automatically every day. Enter by hand only for wards IPD does not cover, or to add surgeries. Saving the same ward and day again replaces it.
+        </p>
       </CardHeader>
       <CardContent className="space-y-4">
         <ErrorBox error={save.error ?? error} />
@@ -280,6 +283,7 @@ function Census() {
             <TableRow className="hover:bg-transparent">
               <TableHead>Day</TableHead>
               <TableHead>Ward</TableHead>
+              <TableHead>Source</TableHead>
               <TableHead className="text-right">Patients</TableHead>
               <TableHead className="text-right">Catheters</TableHead>
               <TableHead className="text-right">Central lines</TableHead>
@@ -290,7 +294,7 @@ function Census() {
           <TableBody>
             {!data?.length ? (
               <TableRow>
-                <TableCell colSpan={7} className="py-6 text-center text-muted-foreground">
+                <TableCell colSpan={8} className="py-6 text-center text-muted-foreground">
                   No census entered in the last 30 days.
                 </TableCell>
               </TableRow>
@@ -299,6 +303,7 @@ function Census() {
                 <TableRow key={c.id}>
                   <TableCell>{c.day}</TableCell>
                   <TableCell>{c.ward}</TableCell>
+                  <TableCell>{c.source === 'ipd' ? <Badge variant="accent">IPD</Badge> : <Badge variant="outline">Manual</Badge>}</TableCell>
                   <TableCell className="text-right tabular-nums">{c.patientDays}</TableCell>
                   <TableCell className="text-right tabular-nums">{c.catheterDays}</TableCell>
                   <TableCell className="text-right tabular-nums">{c.centralLineDays}</TableCell>

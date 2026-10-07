@@ -359,6 +359,8 @@ export interface CensusDay {
   id: string;
   day: string;
   ward: string;
+  /** ipd = filled from IPD's daily census; for that facility-day, manual rows only add surgeries. */
+  source: 'manual' | 'ipd';
   patientDays: number;
   catheterDays: number;
   centralLineDays: number;
