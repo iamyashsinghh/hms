@@ -45,7 +45,7 @@ export const setupApi = (http: Http) => ({
   setUserRoles: (id: string, body: S.SetUserRoles) => http.put<S.StaffUser>(`/setup/users/${id}/roles`, body),
   deactivateUser: (id: string) => http.post<S.StaffUser>(`/setup/users/${id}/deactivate`),
   activateUser: (id: string) => http.post<S.StaffUser>(`/setup/users/${id}/activate`),
-  resetPassword: (id: string, body: S.ResetPassword = {}) => http.post<{ temporaryPassword?: string }>(`/setup/users/${id}/reset-password`, body),
+  resetPassword: (id: string, body: S.ResetPassword = {}) => http.post<S.ResetPasswordResult>(`/setup/users/${id}/reset-password`, body),
   permissions: () => http.get<S.PermissionCatalogEntry[]>('/setup/permissions'),
   listRoles: () => http.get<S.Role[]>('/setup/roles'),
   createRole: (body: S.CreateRole) => http.post<S.Role>('/setup/roles', body),

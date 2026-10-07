@@ -57,7 +57,7 @@ export class AccessController {
   @Post('users/:id/reset-password')
   @HttpCode(200)
   @RequirePermissions('core.user.manage')
-  resetPassword(@Param('id', ParseUUIDPipe) id: string, @Body(new ZodPipe(S.resetPasswordSchema)) body: S.ResetPassword): Promise<{ temporaryPassword?: string }> {
+  resetPassword(@Param('id', ParseUUIDPipe) id: string, @Body(new ZodPipe(S.resetPasswordSchema)) body: S.ResetPassword): Promise<S.ResetPasswordResult> {
     return this.access.resetPassword(id, body);
   }
 

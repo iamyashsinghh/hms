@@ -397,8 +397,22 @@ export interface StaffUser {
 }
 
 /** Returned once when a password was generated; show it to the admin to hand over. */
+/** What happened to the login-details SMS/email, per channel (status sent/queued/skipped/failed). */
+export interface CredentialDelivery {
+  channel: string;
+  status: string;
+  reason: string | null;
+}
+
 export interface UserWithTemporaryPassword extends StaffUser {
   temporaryPassword?: string;
+  /** Present when a temporary password was generated and sent through Notifications. */
+  delivery?: CredentialDelivery[];
+}
+
+export interface ResetPasswordResult {
+  temporaryPassword?: string;
+  delivery?: CredentialDelivery[];
 }
 
 export const createRoleSchema = z.object({

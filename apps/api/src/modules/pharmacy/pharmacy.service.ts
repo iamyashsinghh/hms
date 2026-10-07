@@ -21,6 +21,11 @@ export class PharmacyService {
     return this.catalog.getItem(id);
   }
 
+  /** A pharmacy/inventory store: {id, facilityId, code, name, type, isActive}. 404 if not in this tenant. */
+  getStore(id: string, tx?: Tx): Promise<pharmacy.Store> {
+    return this.catalog.getStore(id, tx);
+  }
+
   /** Adds units of a batch (created if new) to a store and writes the ledger. Returns the new batch balance. */
   async receive(tx: Tx, input: IncomingBatch & { storeId: string; qty: number; txnType: Extract<MovementType, 'grn' | 'transfer_in' | 'adjustment'>; refType?: string; refId?: string; note?: string }) {
     await this.stock.storeForWrite(tx, input.storeId);
