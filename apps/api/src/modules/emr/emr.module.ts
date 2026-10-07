@@ -1,5 +1,4 @@
 import { Module, OnModuleInit } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
 import { EventBus } from '../../common/events/event-bus';
 import { requestContext } from '../../common/context/request-context';
 import { PatientsModule } from '../patients/patients.module';
