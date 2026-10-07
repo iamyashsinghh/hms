@@ -5,4 +5,5 @@ export const patient: VariantConfig = {
   title: 'HMS Patient',
   tagline: 'Appointments, reports and bills from your hospital',
   tabs: ['home', 'profile'],
+  landing: '/my',
 };

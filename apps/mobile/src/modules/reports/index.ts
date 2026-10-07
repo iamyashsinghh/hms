@@ -1,7 +1,13 @@
-// Owned by the "reports" workstream. Its routes go under app/(app)/reports/.
-// Add one entry per screen; Home shows those matching the current app variant and the user's permissions.
-// Example:
-//   { title: 'My screen', route: '/reports/my-screen', permission: 'reports.<resource>.read', variants: ['doctor'] }
+// Reports screens in the mobile apps (owned by the mobile workstream; API owned by "reports").
 import type { MobileModuleScreen } from '../types';
 
-export const screens: MobileModuleScreen[] = [];
+export const screens: MobileModuleScreen[] = [
+  {
+    title: 'Daily summary',
+    route: '/reports/owner',
+    permission: 'reports.dashboard.read',
+    roles: ['owner', 'hospital_admin'],
+    variants: ['owner'],
+    description: 'OPD visits, new patients, collections and top doctors',
+  },
+];
