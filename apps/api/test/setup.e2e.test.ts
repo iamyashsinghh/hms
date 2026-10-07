@@ -4,6 +4,8 @@ import { config } from 'dotenv';
 import { Client } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DEMO_PASSWORD, provisionTenant, upsertUser } from '@hms/db';
+import { DbService } from '../src/common/db/db.service';
+import { SetupService } from '../src/modules/setup/setup.service';
 import { bearer, bootApp, login } from './helpers';
 
 config({ path: resolve(__dirname, '../../../.env'), quiet: true });
@@ -11,6 +13,7 @@ config({ path: resolve(__dirname, '../../../.env'), quiet: true });
 let app: NestFastifyApplication;
 let admin: string;
 let adminId: string;
+let tenantId: string;
 let reception: string;
 let demoReception: string;
 let cityAdmin: string;
@@ -18,7 +21,10 @@ const run = Date.now().toString(36).toUpperCase().slice(-6);
 /** Setup tests change facilities, roles and the profile, so they run in their own throwaway hospital, not the shared demo one. */
 const HOSPITAL = `setup-${run.toLowerCase()}`;
 
-async function provisionTestHospital() {
+/** A small hospital on the starter plan (1 facility, 5 users) for the plan-limit checks. */
+const STARTER = `setup-s-${run.toLowerCase()}`;
+
+async function provisionTestHospitals() {
   const client = new Client({ connectionString: process.env.DATABASE_MIGRATOR_URL });
   await client.connect();
   try {
@@ -26,11 +32,22 @@ async function provisionTestHospital() {
     const t = await provisionTenant(client, {
       code: HOSPITAL,
       name: `Setup Test Hospital ${run}`,
+      plan: 'enterprise',
       facility: { code: 'MAIN', name: 'Main' },
       admin: { name: 'Setup Admin', email: `admin@${HOSPITAL}.test`, password: DEMO_PASSWORD },
     });
     await upsertUser(client, t.tenantId, { name: 'Setup Reception', email: `reception@${HOSPITAL}.test`, password: DEMO_PASSWORD, roleKeys: ['receptionist'] });
     await upsertUser(client, t.tenantId, { name: 'Dr. Seeded', email: `doctor@${HOSPITAL}.test`, password: DEMO_PASSWORD, roleKeys: ['doctor'] });
+    const s = await provisionTenant(client, {
+      code: STARTER,
+      name: `Setup Starter Hospital ${run}`,
+      plan: 'starter',
+      facility: { code: 'MAIN', name: 'Main' },
+      admin: { name: 'Starter Admin', email: `admin@${STARTER}.test`, password: DEMO_PASSWORD },
+    });
+    for (let i = 1; i <= 4; i++) {
+      await upsertUser(client, s.tenantId, { name: `Starter Staff ${i}`, email: `staff${i}@${STARTER}.test`, password: DEMO_PASSWORD, roleKeys: ['receptionist'] });
+    }
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK');
@@ -56,11 +73,12 @@ async function roleId(token: string, key: string): Promise<string> {
 }
 
 beforeAll(async () => {
-  await provisionTestHospital();
+  await provisionTestHospitals();
   app = await bootApp();
   const a = await login(app, `admin@${HOSPITAL}.test`, HOSPITAL);
   admin = a.accessToken;
   adminId = a.user.id;
+  tenantId = (a.user as unknown as { tenantId: string }).tenantId;
   reception = (await login(app, `reception@${HOSPITAL}.test`, HOSPITAL)).accessToken;
   demoReception = (await login(app, 'reception@demo.hms')).accessToken;
   cityAdmin = (await login(app, 'admin@city.hms', 'city')).accessToken;
@@ -151,6 +169,9 @@ describe('users, doctors, schedules', () => {
     expect(res.status).toBe(201);
     const body = res.body as { id: string; temporaryPassword: string; roles: { roleKey: string }[] };
     expect(body.temporaryPassword).toMatch(/^[A-Za-z]{6}\d{4}$/);
+    // Login details go out by email through Notifications (only email was given).
+    const delivery = (res.body as { delivery: { channel: string; status: string }[] }).delivery;
+    expect(delivery.map((d) => d.channel)).toEqual(['email']);
     expect(body.roles.map((r) => r.roleKey)).toEqual(['doctor']);
     doctorId = body.id;
     tempPassword = body.temporaryPassword;
@@ -206,6 +227,16 @@ describe('users, doctors, schedules', () => {
     expect(tuesday).toEqual([]);
 
     expect((await call(reception, 'PUT', `/setup/doctors/${doctorId}/schedule`, { blocks: [] })).status).toBe(403);
+
+    // Front office uses hasScheduleInTx to tell "no timings yet" from "day off".
+    const setupService = app.get(SetupService);
+    const db = app.get(DbService);
+    const seeded = ((await call(admin, 'GET', '/setup/doctors')).body as { userId: string; name: string }[]).find((d) => d.name === 'Dr. Seeded')!;
+    await db.asTenant({ tenantId }, async (tx) => {
+      expect(await setupService.hasScheduleInTx(tx, doctorId)).toBe(true);
+      expect(await setupService.hasScheduleInTx(tx, doctorId, facilityId)).toBe(true);
+      expect(await setupService.hasScheduleInTx(tx, seeded.userId)).toBe(false);
+    });
   });
 
   it('returns no slots on a leave day, and slots again after the leave is removed', async () => {
@@ -221,6 +252,7 @@ describe('users, doctors, schedules', () => {
     const reset = await call(admin, 'POST', `/setup/users/${doctorId}/reset-password`, {});
     expect(reset.status).toBe(200);
     const newPassword = (reset.body as { temporaryPassword: string }).temporaryPassword;
+    expect((reset.body as { delivery: { channel: string }[] }).delivery.map((d) => d.channel)).toEqual(['email']);
     expect((await loginWith(email, tempPassword)).statusCode).toBe(401);
     const signIn = await loginWith(email, newPassword);
     expect(signIn.statusCode).toBe(200);
@@ -305,6 +337,32 @@ describe('number series and print templates', () => {
     const viaFacility = (await call(reception, 'GET', `/setup/print-templates/invoice?facilityId=${facilityId}`)).body as { footerText: string };
     expect(viaFacility.footerText).toBe(`Thank you ${run}`);
     expect((await call(admin, 'PUT', '/setup/print-templates/nonsense', {})).status).toBe(400);
+  });
+});
+
+describe('plan limits', () => {
+  it('stops new users and facilities once a starter hospital is full, and frees a seat on deactivation', async () => {
+    const starter = (await login(app, `admin@${STARTER}.test`, STARTER)).accessToken;
+    const recId = await roleId(starter, 'receptionist');
+    const newUser = (n: string) => ({ name: `Starter Extra ${n}`, email: `extra${n}@${STARTER}.test`, roles: [{ roleId: recId }] });
+
+    const full = await call(starter, 'POST', '/setup/users', newUser('1'));
+    expect(full.status).toBe(403);
+    expect((full.body as { error: { code: string } }).error.code).toBe('plan_limit_reached');
+
+    const fac = await call(starter, 'POST', '/setup/facilities', { code: 'SAT', name: 'Satellite', type: 'clinic' });
+    expect(fac.status).toBe(403);
+    expect((fac.body as { error: { code: string } }).error.code).toBe('plan_limit_reached');
+
+    const users = (await call(starter, 'GET', '/setup/users?q=staff1')).body as { items: { id: string }[] };
+    const staff1 = users.items[0]!.id;
+    expect((await call(starter, 'POST', `/setup/users/${staff1}/deactivate`)).status).toBe(200);
+    const added = await call(starter, 'POST', '/setup/users', newUser('2'));
+    expect(added.status).toBe(201);
+
+    const back = await call(starter, 'POST', `/setup/users/${staff1}/activate`);
+    expect(back.status).toBe(403);
+    expect((back.body as { error: { code: string } }).error.code).toBe('plan_limit_reached');
   });
 });
 

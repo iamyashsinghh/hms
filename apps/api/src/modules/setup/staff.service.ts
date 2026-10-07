@@ -225,6 +225,16 @@ export class StaffService {
     });
   }
 
+  /** True when the doctor has any weekly timing (optionally in one facility). */
+  async hasSchedule(tx: Tx, userId: string, facilityId?: string): Promise<boolean> {
+    const [row] = await tx
+      .select({ id: setupDoctorSchedules.id })
+      .from(setupDoctorSchedules)
+      .where(and(eq(setupDoctorSchedules.userId, userId), facilityId ? eq(setupDoctorSchedules.facilityId, facilityId) : undefined))
+      .limit(1);
+    return !!row;
+  }
+
   // ---------- leaves ----------
 
   listLeaves(userId: string): Promise<S.DoctorLeave[]> {
