@@ -10,6 +10,10 @@ let nurse: string;
 let pharmacist: string;
 let admin: string;
 let otherHospital: string;
+let facilityId: string;
+
+/** Demo-hospital headers; the plan asks every test to send the facility explicitly. */
+const h = (token: string) => ({ ...bearer(token), 'x-facility-id': facilityId });
 
 const run = Date.now();
 
@@ -23,7 +27,7 @@ async function newPatient(token = reception, extra: Record<string, unknown> = {}
   const res = await app.inject({
     method: 'POST',
     url: '/api/v1/patients',
-    headers: bearer(token),
+    headers: h(token),
     payload: { firstName: 'Queue', lastName: `Tester${run}${Math.floor(Math.random() * 1e6)}`, gender: 'male', ageYears: 40, ...extra },
   });
   expect(res.statusCode).toBe(201);
@@ -34,7 +38,7 @@ async function book(patientId: string, slotStart: string, token = reception) {
   return app.inject({
     method: 'POST',
     url: '/api/v1/frontoffice/appointments',
-    headers: bearer(token),
+    headers: token === otherHospital ? bearer(token) : h(token),
     payload: { patientId, doctorId, slotStart, type: 'new', durationMinutes: 5 },
   });
 }
@@ -64,12 +68,14 @@ beforeAll(async () => {
   pharmacist = (await login(app, 'pharmacy@demo.hms')).accessToken;
   admin = (await login(app, 'admin@demo.hms')).accessToken;
   otherHospital = (await login(app, 'admin@city.hms', 'city')).accessToken;
+  const me = await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: bearer(admin) });
+  facilityId = me.json().facilities.find((f: { code: string }) => f.code === 'MAIN').id;
 });
 afterAll(() => app.close());
 
 describe('frontoffice: doctors', () => {
   it('lists active doctors', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/v1/frontoffice/doctors', headers: bearer(reception) });
+    const res = await app.inject({ method: 'GET', url: '/api/v1/frontoffice/doctors', headers: h(reception) });
     expect(res.statusCode).toBe(200);
     expect(res.json().map((d: { userId: string }) => d.userId)).toContain(doctorId);
   });
@@ -95,7 +101,7 @@ describe('frontoffice: appointments', () => {
     let moved = await app.inject({
       method: 'POST',
       url: `/api/v1/frontoffice/appointments/${appt.id}/reschedule`,
-      headers: bearer(reception),
+      headers: h(reception),
       payload: { slotStart: newStart, reason: 'Patient asked' },
     });
     for (let i = 0; moved.statusCode === 409 && i < 30; i++) {
@@ -103,7 +109,7 @@ describe('frontoffice: appointments', () => {
       moved = await app.inject({
         method: 'POST',
         url: `/api/v1/frontoffice/appointments/${appt.id}/reschedule`,
-        headers: bearer(reception),
+        headers: h(reception),
         payload: { slotStart: newStart, reason: 'Patient asked' },
       });
     }
@@ -117,7 +123,7 @@ describe('frontoffice: appointments', () => {
     const cancelled = await app.inject({
       method: 'POST',
       url: `/api/v1/frontoffice/appointments/${appt.id}/cancel`,
-      headers: bearer(reception),
+      headers: h(reception),
       payload: { reason: 'Travelling' },
     });
     expect(cancelled.json().status).toBe('cancelled');
@@ -125,12 +131,12 @@ describe('frontoffice: appointments', () => {
     const again = await app.inject({
       method: 'POST',
       url: `/api/v1/frontoffice/appointments/${appt.id}/no-show`,
-      headers: bearer(reception),
+      headers: h(reception),
     });
     expect(again.statusCode).toBe(409);
     expect(again.json().error.code).toBe('invalid_status');
 
-    const detail = await app.inject({ method: 'GET', url: `/api/v1/frontoffice/appointments/${appt.id}`, headers: bearer(reception) });
+    const detail = await app.inject({ method: 'GET', url: `/api/v1/frontoffice/appointments/${appt.id}`, headers: h(reception) });
     expect(detail.json().history.map((h: { event: string }) => h.event)).toEqual(['booked', 'rescheduled', 'cancelled']);
   });
 
@@ -141,7 +147,7 @@ describe('frontoffice: appointments', () => {
     const notDoc = await app.inject({
       method: 'POST',
       url: '/api/v1/frontoffice/appointments',
-      headers: bearer(reception),
+      headers: h(reception),
       payload: { patientId: p.id, doctorId: (await login(app, 'nurse@demo.hms')).user.id, slotStart: slot(600) },
     });
     expect(notDoc.json().error.code).toBe('not_a_doctor');
@@ -154,7 +160,7 @@ describe('frontoffice: appointments', () => {
     const res = await app.inject({
       method: 'GET',
       url: `/api/v1/frontoffice/appointments?date=${date}&doctorId=${doctorId}`,
-      headers: bearer(doctor),
+      headers: h(doctor),
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().items.map((a: { id: string }) => a.id)).toContain(appt.id);
@@ -165,7 +171,7 @@ describe('frontoffice: appointments', () => {
     const res = await book(p.id, slot(900), doctor);
     expect(res.statusCode).toBe(403);
     expect(res.json().error.details.missing).toEqual(['frontoffice.appointment.create']);
-    const q = await app.inject({ method: 'GET', url: '/api/v1/frontoffice/queue', headers: bearer(pharmacist) });
+    const q = await app.inject({ method: 'GET', url: '/api/v1/frontoffice/queue', headers: h(pharmacist) });
     expect(q.statusCode).toBe(403);
   });
 });
@@ -177,7 +183,7 @@ describe('frontoffice: check-in and queue', () => {
     const checkIn = await app.inject({
       method: 'POST',
       url: `/api/v1/frontoffice/appointments/${appt.id}/check-in`,
-      headers: bearer(reception),
+      headers: h(reception),
       payload: {},
     });
     expect(checkIn.statusCode).toBe(201);
@@ -192,7 +198,7 @@ describe('frontoffice: check-in and queue', () => {
     const walk = await app.inject({
       method: 'POST',
       url: '/api/v1/frontoffice/walk-ins',
-      headers: bearer(reception),
+      headers: h(reception),
       payload: { patientId: b.id, doctorId, priority: 'urgent' },
     });
     expect(walk.statusCode).toBe(201);
@@ -202,20 +208,20 @@ describe('frontoffice: check-in and queue', () => {
     const dup = await app.inject({
       method: 'POST',
       url: '/api/v1/frontoffice/walk-ins',
-      headers: bearer(reception),
+      headers: h(reception),
       payload: { patientId: b.id, doctorId },
     });
     expect(dup.json().error.code).toBe('already_in_queue');
 
     // Urgent walk-in is ordered ahead of normal waiting tokens.
-    const queue = await app.inject({ method: 'GET', url: `/api/v1/frontoffice/queue?doctorId=${doctorId}`, headers: bearer(doctor) });
+    const queue = await app.inject({ method: 'GET', url: `/api/v1/frontoffice/queue?doctorId=${doctorId}`, headers: h(doctor) });
     expect(queue.statusCode).toBe(200);
     const ids = queue.json().items.filter((v: { status: string }) => v.status === 'waiting').map((v: { id: string }) => v.id);
     expect(ids.indexOf(walk.json().id)).toBeLessThan(ids.indexOf(visit.id));
     expect(queue.json().summary.waiting).toBeGreaterThanOrEqual(2);
 
     const move = (id: string, action: string, token = doctor) =>
-      app.inject({ method: 'POST', url: `/api/v1/frontoffice/visits/${id}/transition`, headers: bearer(token), payload: { action, room: 'Cabin 2' } });
+      app.inject({ method: 'POST', url: `/api/v1/frontoffice/visits/${id}/transition`, headers: h(token), payload: { action, room: 'Cabin 2' } });
 
     expect((await move(visit.id, 'call')).json().status).toBe('called');
     expect((await move(visit.id, 'start')).json().status).toBe('in_consultation');
@@ -225,7 +231,7 @@ describe('frontoffice: check-in and queue', () => {
     expect((await move(visit.id, 'call')).json().error.code).toBe('invalid_status');
 
     // The appointment followed the visit.
-    const detail = await app.inject({ method: 'GET', url: `/api/v1/frontoffice/appointments/${appt.id}`, headers: bearer(reception) });
+    const detail = await app.inject({ method: 'GET', url: `/api/v1/frontoffice/appointments/${appt.id}`, headers: h(reception) });
     expect(detail.json().status).toBe('completed');
     expect(detail.json().visitId).toBe(visit.id);
     expect(detail.json().history.map((h: { event: string }) => h.event)).toEqual(['booked', 'checked_in', 'started', 'completed']);
@@ -236,7 +242,7 @@ describe('frontoffice: check-in and queue', () => {
     expect((await move(walk.json().id, 'call', nurse)).json().status).toBe('called');
 
     // TV board shows masked names.
-    const board = await app.inject({ method: 'GET', url: '/api/v1/frontoffice/display', headers: bearer(nurse) });
+    const board = await app.inject({ method: 'GET', url: '/api/v1/frontoffice/display', headers: h(nurse) });
     expect(board.statusCode).toBe(200);
     const mine = board.json().doctors.find((d: { doctorId: string }) => d.doctorId === doctorId);
     expect(mine.nowServing.tokenNo).toBe(walk.json().tokenNo);
@@ -247,7 +253,7 @@ describe('frontoffice: check-in and queue', () => {
   it('refuses check-in for an appointment on another day', async () => {
     const p = await newPatient();
     const appt = await bookFree(p.id, 60 * 24 * 8);
-    const res = await app.inject({ method: 'POST', url: `/api/v1/frontoffice/appointments/${appt.id}/check-in`, headers: bearer(reception), payload: {} });
+    const res = await app.inject({ method: 'POST', url: `/api/v1/frontoffice/appointments/${appt.id}/check-in`, headers: h(reception), payload: {} });
     expect(res.json().error.code).toBe('not_today');
   });
 });
@@ -261,7 +267,7 @@ describe('frontoffice: duplicates, merge and ABHA', () => {
     const search = await app.inject({
       method: 'GET',
       url: `/api/v1/frontoffice/patients/duplicates?firstName=Mohini&lastName=Dup${run}&mobile=${mobile}&dateOfBirth=1990-02-03`,
-      headers: bearer(reception),
+      headers: h(reception),
     });
     expect(search.statusCode).toBe(200);
     const top = search.json()[0];
@@ -275,7 +281,7 @@ describe('frontoffice: duplicates, merge and ABHA', () => {
     const denied = await app.inject({
       method: 'POST',
       url: '/api/v1/frontoffice/patients/merge',
-      headers: bearer(reception),
+      headers: h(reception),
       payload: { sourcePatientId: dupe.id, targetPatientId: keep.id, reason: 'Same person' },
     });
     expect(denied.statusCode).toBe(403);
@@ -283,13 +289,13 @@ describe('frontoffice: duplicates, merge and ABHA', () => {
     const merged = await app.inject({
       method: 'POST',
       url: '/api/v1/frontoffice/patients/merge',
-      headers: bearer(admin),
+      headers: h(admin),
       payload: { sourcePatientId: dupe.id, targetPatientId: keep.id, reason: 'Same person, registered twice' },
     });
     expect(merged.statusCode).toBe(201);
     expect(merged.json().movedAppointments).toBe(1);
 
-    const moved = await app.inject({ method: 'GET', url: `/api/v1/frontoffice/appointments/${appt.id}`, headers: bearer(reception) });
+    const moved = await app.inject({ method: 'GET', url: `/api/v1/frontoffice/appointments/${appt.id}`, headers: h(reception) });
     expect(moved.json().patientId).toBe(keep.id);
 
     // The duplicate cannot be booked or merged again.
@@ -298,7 +304,7 @@ describe('frontoffice: duplicates, merge and ABHA', () => {
     const twice = await app.inject({
       method: 'POST',
       url: '/api/v1/frontoffice/patients/merge',
-      headers: bearer(admin),
+      headers: h(admin),
       payload: { sourcePatientId: dupe.id, targetPatientId: keep.id, reason: 'again' },
     });
     expect(twice.json().error.code).toBe('already_merged');
@@ -311,16 +317,16 @@ describe('frontoffice: duplicates, merge and ABHA', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/frontoffice/patients/${a.id}/abha`,
-      headers: bearer(reception),
+      headers: h(reception),
       payload: { abhaNumber: `${abha.slice(0, 2)}-${abha.slice(2, 6)}-${abha.slice(6, 10)}-${abha.slice(10)}`, abhaAddress: 'queue@abdm' },
     });
     expect(res.statusCode).toBe(201);
     expect(res.json().abhaNumber).toBe(abha);
-    const clash = await app.inject({ method: 'POST', url: `/api/v1/frontoffice/patients/${b.id}/abha`, headers: bearer(reception), payload: { abhaNumber: abha } });
+    const clash = await app.inject({ method: 'POST', url: `/api/v1/frontoffice/patients/${b.id}/abha`, headers: h(reception), payload: { abhaNumber: abha } });
     expect(clash.statusCode).toBe(409);
     expect(clash.json().error.code).toBe('abha_in_use');
 
-    const found = await app.inject({ method: 'GET', url: `/api/v1/frontoffice/patients/duplicates?abhaNumber=${abha}`, headers: bearer(reception) });
+    const found = await app.inject({ method: 'GET', url: `/api/v1/frontoffice/patients/duplicates?abhaNumber=${abha}`, headers: h(reception) });
     expect(found.json()[0].patient.id).toBe(a.id);
     expect(found.json()[0].score).toBe(100);
   });

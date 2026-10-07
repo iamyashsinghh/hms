@@ -394,15 +394,14 @@ export class FrontofficeService implements OnModuleInit {
   merge(input: MergeInput): Promise<fo.PatientMerge> {
     const ctx = currentContext()!;
     return this.db.tx(async (tx) => {
-      const rows = await this.repo.lockPatients(tx, [input.sourcePatientId, input.targetPatientId]);
-      const source = rows.find((r) => r.id === input.sourcePatientId);
-      const target = rows.find((r) => r.id === input.targetPatientId);
-      if (!source || !target) throw notFound('Patient');
-      if (!source.isActive || source.mergedIntoId) throw conflict('already_merged', `${source.uhid} has already been merged`);
-      if (!target.isActive) throw badRequest('target_inactive', `${target.uhid} is not an active record`);
-
+      // Lock both rows in id order so two concurrent merges cannot deadlock or double-merge.
+      const locked = await this.repo.lockPatients(tx, [input.sourcePatientId, input.targetPatientId]);
+      const source = locked.find((r) => r.id === input.sourcePatientId);
+      if (!source) throw notFound('Patient');
+      // Validates both records, retires the source and publishes core.patient.merged.
+      await this.patients.markMerged(tx, input.sourcePatientId, input.targetPatientId);
+      const target = { id: input.targetPatientId };
       const moved = await this.repo.movePatientRows(tx, source.id, target.id);
-      await this.repo.markPatientMerged(tx, source.id, target.id, ctx.userId);
       const row = await this.repo.insertMerge(tx, {
         tenantId: ctx.tenantId!,
         sourcePatientId: source.id,

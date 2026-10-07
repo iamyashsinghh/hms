@@ -62,7 +62,6 @@ const patientBrief = {
  *
  * Reads of clinical.patients, iam.users/roles and setup.facilities are joins for display names and
  * existence checks (PatientsService has no batch/brief API and SetupService has not landed yet).
- * The only write outside our own tables is markPatientMerged(); see the note there.
  */
 @Injectable()
 export class FrontofficeRepository {
@@ -288,18 +287,6 @@ export class FrontofficeRepository {
       .returning({ id: frontofficeVisits.id });
     await tx.update(frontofficePatientAbha).set({ patientId: targetId }).where(eq(frontofficePatientAbha.patientId, sourceId));
     return { movedAppointments: appts.length, movedVisits: visits.length };
-  }
-
-  /**
-   * Deactivates the duplicate and points it at the kept record, in the same transaction as the merge.
-   * TODO(foundation): move into a PatientsService.markMerged(tx, sourceId, targetId) so the front office
-   * stops writing clinical.patients directly. Columns is_active / merged_into_id already exist for this.
-   */
-  async markPatientMerged(tx: Tx, sourceId: string, targetId: string, actorId: string | undefined) {
-    await tx
-      .update(patients)
-      .set({ isActive: false, mergedIntoId: targetId, updatedBy: actorId ?? null })
-      .where(eq(patients.id, sourceId));
   }
 
   async insertMerge(tx: Tx, values: typeof frontofficePatientMerges.$inferInsert): Promise<MergeRow> {
