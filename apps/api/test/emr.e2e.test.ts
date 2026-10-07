@@ -153,6 +153,8 @@ describe('emr consultation flow', () => {
     expect(rxEvent.lines[0]).toMatchObject({ drugName: 'Paracetamol 650', qty: 15 });
     expect(rxEvent).toMatchObject({ doctorId, doctorName: 'Dr. Asha Rao' });
     expect(new Date(rxEvent.createdAt).toISOString()).toBe(rxEvent.createdAt);
+    const signedEvent = topics.find((t) => t.topic === 'emr.encounter.signed')!.payload;
+    expect(signedEvent).toMatchObject({ followUpDate: '2026-12-01', followUpNotes: null });
   });
 
   it('blocks direct database changes to a signed consultation (trigger)', async () => {
