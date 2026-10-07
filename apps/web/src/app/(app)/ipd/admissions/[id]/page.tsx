@@ -15,7 +15,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 import { BillTab } from '@/modules/ipd/billing';
-import { IntakeOutputTab, MedicationsTab, NotesTab, RoundsTab, VitalsTab } from '@/modules/ipd/chart';
+import { DevicesTab, IntakeOutputTab, MedicationsTab, NotesTab, RoundsTab, VitalsTab } from '@/modules/ipd/chart';
 import { DischargeTab } from '@/modules/ipd/discharge';
 import { ADMISSION_TYPE_LABELS, AdmissionStatusBadge, ErrorBox, Field, daysLabel, formatDateTime, formatINR } from '@/modules/ipd/ui';
 
@@ -26,6 +26,7 @@ const TABS = [
   { key: 'meds', label: 'Medications' },
   { key: 'notes', label: 'Nursing notes' },
   { key: 'io', label: 'Intake / output' },
+  { key: 'devices', label: 'Lines & devices' },
   { key: 'bill', label: 'Bill', permission: 'ipd.charge.read' },
   { key: 'discharge', label: 'Discharge' },
 ] as const;
@@ -95,6 +96,7 @@ export default function AdmissionPage({ params }: { params: Promise<{ id: string
       {tab === 'meds' && <MedicationsTab admissionId={id} active={active} />}
       {tab === 'notes' && <NotesTab admissionId={id} active={active} />}
       {tab === 'io' && <IntakeOutputTab admissionId={id} active={active} />}
+      {tab === 'devices' && <DevicesTab admissionId={id} active={active} />}
       {tab === 'bill' && <BillTab admission={a} />}
       {tab === 'discharge' && <DischargeTab admission={a} />}
     </>

@@ -18,12 +18,14 @@ import {
   type AdvanceRow,
   type BedRow,
   type ChargeRow,
+  type DeviceRow,
   type MedAdminRow,
   type MedOrderRow,
   type StayRow,
   type SummaryRow,
   type WardRow,
 } from './ipd.repository';
+import { IpdCensusService } from './ipd.census';
 import { IpdPlanLimits } from './ipd.limits';
 
 const num = (v: string | number | null | undefined): number => (v == null ? 0 : Number(v));
@@ -48,6 +50,7 @@ export class IpdService {
     private readonly patients: PatientsService,
     private readonly setup: SetupService,
     private readonly limits: IpdPlanLimits,
+    private readonly censusSvc: IpdCensusService,
   ) {}
 
   // =====================================================================
@@ -376,6 +379,7 @@ export class IpdService {
       const { userId } = await this.repo.scope(tx);
       const at = nowIso();
       await this.repo.closeOpenStay(tx, id, at);
+      await this.repo.removeOpenDevices(tx, id, at, userId, 'Admission cancelled');
       await this.repo.updateBed(tx, row.currentBedId!, { status: 'available', currentAdmissionId: null, updatedBy: userId });
       const updated = await this.repo.updateAdmission(tx, id, { status: 'cancelled', currentBedId: null, cancelReason: d.reason, updatedBy: userId });
       await this.outbox.publish(tx, 'ipd.admission.cancelled', { admissionId: id, patientId: row.patientId, facilityId: row.facilityId, reason: d.reason });
@@ -401,6 +405,7 @@ export class IpdService {
       const { userId } = await this.repo.scope(tx);
       const at = nowIso();
       await this.repo.closeOpenStay(tx, id, at);
+      await this.repo.removeOpenDevices(tx, id, at, userId, 'Discharged');
       await this.repo.updateBed(tx, row.currentBedId!, { status: 'cleaning', currentAdmissionId: null, updatedBy: userId });
       const updated = await this.repo.updateAdmission(tx, id, {
         status: 'discharged',
@@ -616,6 +621,63 @@ export class IpdService {
         givenByName: await this.repo.userName(tx, userId),
       });
       return medOrderDto(order, (await this.repo.administrations(tx, admissionId)).filter((g) => g.orderId === orderId));
+    });
+  }
+
+  // =====================================================================
+  // Lines and devices (HAI device-days)
+  // =====================================================================
+
+  listDevices(admissionId: string): Promise<I.Device[]> {
+    return this.db.tx(async (tx) => {
+      await this.admission(tx, admissionId);
+      return (await this.repo.devices(tx, admissionId)).map(deviceDto);
+    });
+  }
+
+  addDevice(admissionId: string, input: I.DeviceInput): Promise<I.Device> {
+    const d = contracts.deviceInputSchema.parse(input);
+    return this.db.tx(async (tx) => {
+      const row = await this.activeAdmission(tx, admissionId);
+      const insertedAt = this.pastOrNow(d.insertedAt);
+      if (Date.parse(insertedAt) < Date.parse(row.admittedAt)) throw badRequest('before_admission', 'Insertion time is before the admission');
+      const { tenantId, userId } = await this.repo.scope(tx);
+      return deviceDto(
+        await this.repo.insertDevice(tx, {
+          tenantId,
+          admissionId,
+          deviceType: d.deviceType,
+          site: d.site ?? null,
+          notes: d.notes ?? null,
+          insertedAt,
+          insertedBy: userId,
+        }),
+      );
+    });
+  }
+
+  removeDevice(admissionId: string, deviceId: string, input: I.RemoveDevice): Promise<I.Device> {
+    const d = contracts.removeDeviceSchema.parse(input);
+    return this.db.tx(async (tx) => {
+      await this.admission(tx, admissionId);
+      const dev = await this.repo.deviceById(tx, deviceId);
+      if (!dev || dev.admissionId !== admissionId) throw notFound('Device');
+      if (dev.removedAt) throw conflict('already_removed', 'This device was already removed');
+      const removedAt = this.pastOrNow(d.removedAt);
+      if (Date.parse(removedAt) < Date.parse(dev.insertedAt)) throw badRequest('before_insertion', 'Removal time is before insertion');
+      const { userId } = await this.repo.scope(tx);
+      return deviceDto(await this.repo.updateDevice(tx, deviceId, { removedAt, removedBy: userId, removalReason: d.reason ?? null }));
+    });
+  }
+
+  // =====================================================================
+  // Daily census
+  // =====================================================================
+
+  census(date: string): Promise<I.WardCensus[]> {
+    return this.db.tx(async (tx) => {
+      const facilityId = await this.facility(tx);
+      return this.censusSvc.wards(tx, facilityId, date);
     });
   }
 
@@ -1091,6 +1153,19 @@ function medOrderDto(o: MedOrderRow, given: MedAdminRow[]): I.MedicationOrder {
     orderedByName: o.orderedByName,
     lastGivenAt: administrations.find((a) => a.status === 'given')?.givenAt ?? null,
     administrations,
+  };
+}
+
+function deviceDto(d: DeviceRow): I.Device {
+  return {
+    id: d.id,
+    deviceType: d.deviceType as I.DeviceType,
+    site: d.site,
+    notes: d.notes,
+    insertedAt: iso(d.insertedAt),
+    removedAt: d.removedAt ? iso(d.removedAt) : null,
+    removalReason: d.removalReason,
+    days: lengthOfStay(d.insertedAt, d.removedAt ?? nowIso()),
   };
 }
 

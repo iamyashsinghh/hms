@@ -453,6 +453,37 @@ export interface MedicationOrder {
   administrations: MedicationAdministration[];
 }
 
+// ---------- lines and devices (for HAI device-days) ----------
+
+export const DEVICE_TYPES = ['urinary_catheter', 'central_line', 'ventilator', 'peripheral_iv', 'other'] as const;
+export type DeviceType = (typeof DEVICE_TYPES)[number];
+
+export const deviceInputSchema = z.object({
+  deviceType: z.enum(DEVICE_TYPES),
+  site: optionalText(100),
+  notes: optionalText(300),
+  insertedAt: z.iso.datetime({ offset: true }).optional(),
+});
+export type DeviceInput = z.input<typeof deviceInputSchema>;
+
+export const removeDeviceSchema = z.object({
+  reason: optionalText(300),
+  removedAt: z.iso.datetime({ offset: true }).optional(),
+});
+export type RemoveDevice = z.input<typeof removeDeviceSchema>;
+
+export interface Device {
+  id: string;
+  deviceType: DeviceType;
+  site: string | null;
+  notes: string | null;
+  insertedAt: string;
+  removedAt: string | null;
+  removalReason: string | null;
+  /** Calendar days in place so far (IST), at least 1. */
+  days: number;
+}
+
 // ---------- rounds ----------
 
 export const roundInputSchema = z.object({
@@ -619,7 +650,39 @@ export interface DischargeSummary {
   updatedAt: string;
 }
 
+// ---------- daily census ----------
+
+export const censusQuerySchema = z.object({ date: z.iso.date() });
+
+/** Midnight census for one ward and one India calendar date. */
+export interface WardCensus {
+  facilityId: string;
+  date: string;
+  wardId: string;
+  wardName: string;
+  wardType: WardType;
+  /** Inpatients in the ward at the end of the day (23:59 IST). */
+  patientDays: number;
+  catheterDays: number;
+  centralLineDays: number;
+  ventilatorDays: number;
+  admissions: number;
+  discharges: number;
+  /** Not tracked until the OT module exists. */
+  surgeries: number | null;
+}
+
 // ---------- events ----------
+
+/**
+ * `ipd.census.daily`: published once per facility per India date (shortly after midnight) with one row
+ * per active ward. Consumed by quality (HAI and fall rates per 1000 patient/device days) and reports.
+ */
+export interface CensusDailyEvent {
+  facilityId: string;
+  date: string;
+  wards: WardCensus[];
+}
 
 export interface PatientAdmittedEvent {
   admissionId: string;

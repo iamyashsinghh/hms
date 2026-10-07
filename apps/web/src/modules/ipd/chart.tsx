@@ -534,3 +534,93 @@ export function RoundsTab({ admissionId, active }: Props) {
     </div>
   );
 }
+
+// ---------- lines and devices ----------
+
+export const DEVICE_LABELS: Record<I.DeviceType, string> = {
+  urinary_catheter: 'Urinary catheter',
+  central_line: 'Central line',
+  ventilator: 'Ventilator',
+  peripheral_iv: 'Peripheral IV',
+  other: 'Other',
+};
+
+export function DevicesTab({ admissionId, active }: Props) {
+  const key = ['ipd', 'devices', admissionId];
+  const canWrite = usePermission('ipd.nursing.write');
+  const { data, error } = useQuery({ queryKey: key, queryFn: () => api.ipd.devices.list(admissionId) });
+  const [deviceType, setDeviceType] = React.useState<I.DeviceType>('peripheral_iv');
+  const [site, setSite] = React.useState('');
+  const add = useSave(key, (body: I.DeviceInput) => api.ipd.devices.add(admissionId, body), () => setSite(''));
+  const remove = useSave(key, (deviceId: string) => api.ipd.devices.remove(admissionId, deviceId, {}));
+  const err = add.error ?? remove.error ?? error;
+
+  return (
+    <div className="space-y-6">
+      {active && canWrite && (
+        <Card>
+          <CardContent className="grid gap-3 pt-6 sm:grid-cols-4">
+            <Field id="d-type" label="Line / device">
+              <Select id="d-type" value={deviceType} onChange={(e) => setDeviceType(e.target.value as I.DeviceType)}>
+                {I.DEVICE_TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {DEVICE_LABELS[t]}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field id="d-site" label="Site / size" className="sm:col-span-2">
+              <Input id="d-site" value={site} onChange={(e) => setSite(e.target.value)} maxLength={100} placeholder="Left forearm 20G, Foley 14F…" />
+            </Field>
+            <div className="flex items-end">
+              <Button className="w-full" disabled={add.isPending} onClick={() => add.mutate({ deviceType, site: site || undefined })}>
+                Record insertion
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+      <ErrorBox error={err ? errorMessage(err) : null} />
+      <Card>
+        <Table>
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              <TableHead>Device</TableHead>
+              <TableHead>Site</TableHead>
+              <TableHead>Inserted</TableHead>
+              <TableHead>Removed</TableHead>
+              <TableHead className="text-right">Days</TableHead>
+              <TableHead />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {!data?.length ? (
+              <TableRow>
+                <TableCell colSpan={6} className="py-6 text-center text-muted-foreground">
+                  No lines or devices recorded.
+                </TableCell>
+              </TableRow>
+            ) : (
+              data.map((d) => (
+                <TableRow key={d.id}>
+                  <TableCell className="font-medium">{DEVICE_LABELS[d.deviceType]}</TableCell>
+                  <TableCell>{d.site ?? '—'}</TableCell>
+                  <TableCell>{formatDateTime(d.insertedAt)}</TableCell>
+                  <TableCell>{d.removedAt ? `${formatDateTime(d.removedAt)}${d.removalReason ? ` (${d.removalReason})` : ''}` : <Badge>In place</Badge>}</TableCell>
+                  <TableCell className="text-right tabular-nums">{d.days}</TableCell>
+                  <TableCell className="text-right">
+                    {active && canWrite && !d.removedAt && (
+                      <Button size="sm" variant="ghost" disabled={remove.isPending} onClick={() => remove.mutate(d.id)}>
+                        Removed
+                      </Button>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </Card>
+    </div>
+  );
+}

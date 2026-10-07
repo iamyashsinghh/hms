@@ -10,7 +10,9 @@ import {
   ipdAdvances,
   ipdBedStays,
   ipdBeds,
+  ipdCensusRuns,
   ipdCharges,
+  ipdDevices,
   ipdDischargeSummaries,
   ipdIntakeOutput,
   ipdMedicationAdministrations,
@@ -40,6 +42,7 @@ export type RoundRow = typeof ipdRounds.$inferSelect;
 export type ChargeRow = typeof ipdCharges.$inferSelect;
 export type AdvanceRow = typeof ipdAdvances.$inferSelect;
 export type SummaryRow = typeof ipdDischargeSummaries.$inferSelect;
+export type DeviceRow = typeof ipdDevices.$inferSelect;
 
 /** Drizzle queries for the inpatient schema. Always called inside DbService.tx(). */
 @Injectable()
@@ -244,6 +247,90 @@ export class IpdRepository {
   async insertRound(tx: Tx, values: typeof ipdRounds.$inferInsert): Promise<RoundRow> {
     const [row] = await tx.insert(ipdRounds).values(values).returning();
     return row!;
+  }
+
+  // ---------- devices ----------
+
+  devices(tx: Tx, admissionId: string): Promise<DeviceRow[]> {
+    return tx.select().from(ipdDevices).where(eq(ipdDevices.admissionId, admissionId)).orderBy(desc(ipdDevices.insertedAt));
+  }
+
+  async deviceById(tx: Tx, id: string): Promise<DeviceRow | undefined> {
+    const [row] = await tx.select().from(ipdDevices).where(eq(ipdDevices.id, id)).limit(1).for('update');
+    return row;
+  }
+
+  async insertDevice(tx: Tx, values: typeof ipdDevices.$inferInsert): Promise<DeviceRow> {
+    const [row] = await tx.insert(ipdDevices).values(values).returning();
+    return row!;
+  }
+
+  async updateDevice(tx: Tx, id: string, values: Partial<typeof ipdDevices.$inferInsert>): Promise<DeviceRow> {
+    const [row] = await tx.update(ipdDevices).set(values).where(eq(ipdDevices.id, id)).returning();
+    return row!;
+  }
+
+  /** Close every device still in place (discharge / cancel). */
+  async removeOpenDevices(tx: Tx, admissionId: string, at: string, userId: string | null, reason: string): Promise<void> {
+    await tx
+      .update(ipdDevices)
+      .set({ removedAt: at, removedBy: userId, removalReason: reason })
+      .where(and(eq(ipdDevices.admissionId, admissionId), isNull(ipdDevices.removedAt)));
+  }
+
+  // ---------- daily census ----------
+
+  /**
+   * Midnight census per active ward of a facility for an India date: who was in each ward at
+   * `cut` (end of that day, or now for today), with their devices in place at that moment.
+   */
+  async census(tx: Tx, facilityId: string, date: string, cut: string) {
+    const res = await tx.execute<{
+      ward_id: string;
+      ward_name: string;
+      ward_type: string;
+      patient_days: number;
+      catheter_days: number;
+      central_line_days: number;
+      ventilator_days: number;
+      admissions: number;
+      discharges: number;
+    }>(sql`
+      with b as (select ${cut}::timestamptz as cut, (${date}::date)::timestamp at time zone 'Asia/Kolkata' as day_start)
+      select w.id as ward_id, w.name as ward_name, w.ward_type,
+             count(distinct s.admission_id)::int as patient_days,
+             count(distinct s.admission_id) filter (where d.device_type = 'urinary_catheter')::int as catheter_days,
+             count(distinct s.admission_id) filter (where d.device_type = 'central_line')::int as central_line_days,
+             count(distinct s.admission_id) filter (where d.device_type = 'ventilator')::int as ventilator_days,
+             (select count(*)::int from inpatient.admissions a
+               where a.facility_id = w.facility_id and a.status <> 'cancelled'
+                 and a.admitted_at >= b.day_start and a.admitted_at <= b.cut
+                 and (select f.ward_id from inpatient.bed_stays f where f.admission_id = a.id order by f.from_at limit 1) = w.id) as admissions,
+             (select count(*)::int from inpatient.admissions a
+               where a.facility_id = w.facility_id and a.status = 'discharged'
+                 and a.discharged_at >= b.day_start and a.discharged_at <= b.cut
+                 and (select l.ward_id from inpatient.bed_stays l where l.admission_id = a.id order by l.from_at desc limit 1) = w.id) as discharges
+        from inpatient.wards w
+        cross join b
+        left join inpatient.bed_stays s
+          on s.ward_id = w.id and s.from_at <= b.cut and (s.to_at is null or s.to_at > b.cut)
+        left join inpatient.devices d
+          on d.admission_id = s.admission_id and d.inserted_at <= b.cut and (d.removed_at is null or d.removed_at > b.cut)
+       where w.facility_id = ${facilityId}::uuid and w.is_active
+       group by w.id, w.name, w.ward_type, w.facility_id, b.day_start, b.cut
+       order by w.name`);
+    return res.rows;
+  }
+
+  async facilitiesWithWards(tx: Tx): Promise<string[]> {
+    const res = await tx.execute<{ facility_id: string }>(sql`select distinct facility_id from inpatient.wards where is_active`);
+    return res.rows.map((r) => r.facility_id);
+  }
+
+  /** Claims the census for a facility and date; false when it was already published. */
+  async claimCensus(tx: Tx, values: typeof ipdCensusRuns.$inferInsert): Promise<boolean> {
+    const rows = await tx.insert(ipdCensusRuns).values(values).onConflictDoNothing().returning({ id: ipdCensusRuns.id });
+    return rows.length > 0;
   }
 
   // ---------- running bill ----------

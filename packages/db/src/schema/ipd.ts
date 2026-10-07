@@ -332,3 +332,43 @@ export const ipdDischargeSummaries = pg.table(
     uniqueIndex('ipd_discharge_summaries_admission_uq').on(t.tenantId, t.admissionId),
   ],
 );
+
+export const ipdDevices = pg.table(
+  'devices',
+  {
+    tenantId: tenantIdColumn(),
+    id: idColumn(),
+    admissionId: uuid('admission_id').notNull(),
+    deviceType: text('device_type').notNull(),
+    site: text('site'),
+    notes: text('notes'),
+    insertedAt: ts('inserted_at').notNull().defaultNow(),
+    insertedBy: uuid('inserted_by'),
+    removedAt: ts('removed_at'),
+    removedBy: uuid('removed_by'),
+    removalReason: text('removal_reason'),
+    ...timestamps(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tenantId, t.id] }),
+    foreignKey({ columns: [t.tenantId, t.admissionId], foreignColumns: [ipdAdmissions.tenantId, ipdAdmissions.id] }),
+    index('ipd_devices_admission_idx').on(t.tenantId, t.admissionId, t.insertedAt),
+  ],
+);
+
+export const ipdCensusRuns = pg.table(
+  'census_runs',
+  {
+    tenantId: tenantIdColumn(),
+    id: idColumn(),
+    facilityId: uuid('facility_id').notNull(),
+    censusDate: date('census_date', { mode: 'string' }).notNull(),
+    wardCount: integer('ward_count').notNull(),
+    patientDays: integer('patient_days').notNull(),
+    publishedAt: ts('published_at').notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tenantId, t.id] }),
+    uniqueIndex('ipd_census_runs_uq').on(t.tenantId, t.facilityId, t.censusDate),
+  ],
+);

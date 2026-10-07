@@ -195,7 +195,7 @@ function BedTile({
         )}
         {bed.status === 'available' && canHousekeep && (
           <Button size="sm" variant="ghost" className="h-7" disabled={busy} onClick={() => onStatus('cleaning')}>
-            Cleaning
+            Send to cleaning
           </Button>
         )}
       </div>

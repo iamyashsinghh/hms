@@ -1,5 +1,8 @@
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { sql } from '@hms/db';
+import { DbService } from '../src/common/db/db.service';
+import { IpdCensusService } from '../src/modules/ipd/ipd.census';
 import { bearer, bootApp, login } from './helpers';
 
 let app: NestFastifyApplication;
@@ -163,6 +166,42 @@ describe('admission to discharge', () => {
     expect(bill.advances[0]).toMatchObject({ amount: 5000, mode: 'cash' });
   });
 
+  it('tracks devices and reports the daily census per ward', async () => {
+    const cath = await call(nurse, 'POST', `/ipd/admissions/${admissionId}/devices`, { deviceType: 'urinary_catheter', site: 'Foley 14F' });
+    expect(cath.statusCode, cath.body).toBe(201);
+    expect(cath.json()).toMatchObject({ deviceType: 'urinary_catheter', removedAt: null, days: 1 });
+    const iv = (await call(nurse, 'POST', `/ipd/admissions/${admissionId}/devices`, { deviceType: 'peripheral_iv' })).json();
+    expect((await call(nurse, 'POST', `/ipd/admissions/${admissionId}/devices/${iv.id}/remove`, { reason: 'Tissued' })).json().removedAt).not.toBeNull();
+    expect((await call(nurse, 'POST', `/ipd/admissions/${admissionId}/devices/${iv.id}/remove`, {})).statusCode).toBe(409);
+    expect((await call(reception, 'POST', `/ipd/admissions/${admissionId}/devices`, { deviceType: 'ventilator' })).statusCode).toBe(403);
+
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    const census = (await call(nurse, 'GET', `/ipd/census?date=${today}`)).json();
+    expect(census.find((w: { wardId: string }) => w.wardId === wardId)).toMatchObject({
+      patientDays: 1,
+      catheterDays: 1,
+      centralLineDays: 0,
+      ventilatorDays: 0,
+      admissions: 1,
+      discharges: 0,
+      surgeries: null,
+    });
+
+    // The hourly job publishes ipd.census.daily once per facility and date.
+    const svc = app.get(IpdCensusService);
+    const db = app.get(DbService);
+    const me = (await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: bearer(admin) })).json();
+    expect(await svc.publishForTenant(me.tenantId, today)).toBeGreaterThan(0);
+    expect(await svc.publishForTenant(me.tenantId, today)).toBe(0);
+    const events = await db.asTenant({ tenantId: me.tenantId }, (tx) =>
+      tx.execute<{ payload: { date: string; wards: { wardId: string; patientDays: number }[] } }>(
+        sql`select payload from audit.outbox where topic = 'ipd.census.daily' and payload->>'facilityId' = ${facilityId} and payload->>'date' = ${today}`,
+      ),
+    );
+    expect(events.rows).toHaveLength(1);
+    expect(events.rows[0]!.payload.wards.find((w) => w.wardId === wardId)?.patientDays).toBe(1);
+  });
+
   it('will not discharge before the bill and summary are final', async () => {
     const res = await call(nurse, 'POST', `/ipd/admissions/${admissionId}/discharge`, {});
     expect(res.statusCode).toBe(409);
@@ -214,6 +253,8 @@ describe('admission to discharge', () => {
     const bed = (await call(nurse, 'GET', `/ipd/beds?wardId=${wardId}`)).json().find((b: { id: string }) => b.id === beds[1]!.id);
     expect(bed.status).toBe('cleaning');
     expect((await call(nurse, 'POST', `/ipd/admissions/${admissionId}/vitals`, { pulse: 70 })).statusCode).toBe(409);
+    const devices = (await call(nurse, 'GET', `/ipd/admissions/${admissionId}/devices`)).json();
+    expect(devices.every((d: { removedAt: string | null }) => d.removedAt)).toBe(true);
     const list = (await call(reception, 'GET', `/ipd/admissions?status=discharged&q=${tag.toLowerCase()}`)).json();
     expect(list.items.map((a: { id: string }) => a.id)).toContain(admissionId);
   });

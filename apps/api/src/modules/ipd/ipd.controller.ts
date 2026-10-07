@@ -187,6 +187,39 @@ export class IpdController {
     return this.ipd.administer(id, orderId, body);
   }
 
+  // ---------- lines and devices ----------
+
+  @Get('admissions/:id/devices')
+  @RequirePermissions('ipd.admission.read')
+  devices(@Param('id', uuid) id: string): Promise<contracts.Device[]> {
+    return this.ipd.listDevices(id);
+  }
+
+  @Post('admissions/:id/devices')
+  @RequirePermissions('ipd.nursing.write')
+  addDevice(@Param('id', uuid) id: string, @Body(new ZodPipe(contracts.deviceInputSchema)) body: contracts.DeviceInput): Promise<contracts.Device> {
+    return this.ipd.addDevice(id, body);
+  }
+
+  @Post('admissions/:id/devices/:deviceId/remove')
+  @RequirePermissions('ipd.nursing.write')
+  removeDevice(
+    @Param('id', uuid) id: string,
+    @Param('deviceId', uuid) deviceId: string,
+    @Body(new ZodPipe(contracts.removeDeviceSchema)) body: contracts.RemoveDevice,
+  ): Promise<contracts.Device> {
+    return this.ipd.removeDevice(id, deviceId, body);
+  }
+
+  // ---------- census ----------
+
+  /** Midnight census per ward for a date (today counts up to now). */
+  @Get('census')
+  @RequirePermissions('ipd.ward.read')
+  census(@Query(new ZodPipe(contracts.censusQuerySchema)) q: { date: string }): Promise<contracts.WardCensus[]> {
+    return this.ipd.census(q.date);
+  }
+
   // ---------- rounds ----------
 
   @Get('admissions/:id/rounds')

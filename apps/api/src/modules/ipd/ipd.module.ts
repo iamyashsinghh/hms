@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { BillingModule } from '../billing/billing.module';
 import { PatientsModule } from '../patients/patients.module';
 import { SetupModule } from '../setup/setup.module';
+import { IpdCensusService } from './ipd.census';
 import { IpdController } from './ipd.controller';
 import { IpdPlanLimits } from './ipd.limits';
 import { IpdRepository } from './ipd.repository';
@@ -15,7 +16,7 @@ import { IpdService } from './ipd.service';
 @Module({
   imports: [BillingModule, PatientsModule, SetupModule],
   controllers: [IpdController],
-  providers: [IpdService, IpdRepository, IpdPlanLimits],
+  providers: [IpdService, IpdRepository, IpdPlanLimits, IpdCensusService],
   exports: [IpdService],
 })
 export class IpdModule {}

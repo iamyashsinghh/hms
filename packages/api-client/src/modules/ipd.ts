@@ -46,6 +46,12 @@ export const ipdApi = (http: Http) => {
       administer: (id: string, orderId: string, body: I.AdministerInput) =>
         http.post<I.MedicationOrder>(`${adm(id)}/medications/${orderId}/administrations`, body),
     },
+    devices: {
+      list: (id: string) => http.get<I.Device[]>(`${adm(id)}/devices`),
+      add: (id: string, body: I.DeviceInput) => http.post<I.Device>(`${adm(id)}/devices`, body),
+      remove: (id: string, deviceId: string, body: I.RemoveDevice = {}) => http.post<I.Device>(`${adm(id)}/devices/${deviceId}/remove`, body),
+    },
+    census: (date: string) => http.get<I.WardCensus[]>('/ipd/census', { date }),
     rounds: {
       list: (id: string) => http.get<I.Round[]>(`${adm(id)}/rounds`),
       add: (id: string, body: I.RoundInput) => http.post<I.Round>(`${adm(id)}/rounds`, body),
