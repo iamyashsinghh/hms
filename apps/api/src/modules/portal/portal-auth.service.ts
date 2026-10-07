@@ -6,6 +6,7 @@ import type { portal } from '@hms/shared';
 import { APP_CONFIG, type AppConfig } from '../../config';
 import { DbService } from '../../common/db/db.service';
 import { AppError, badRequest } from '../../common/errors/errors';
+import { PlatformService } from '../platform';
 import { OTP_SENDER, type OtpSender } from './otp.sender';
 import { PortalRepository } from './portal.repository';
 import { PortalPatientsService } from './portal-patients.service';
@@ -32,6 +33,7 @@ export class PortalAuthService {
     private readonly repo: PortalRepository,
     private readonly jwt: JwtService,
     private readonly patients: PortalPatientsService,
+    private readonly platform: PlatformService,
     @Inject(OTP_SENDER) private readonly sender: OtpSender,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
@@ -47,6 +49,7 @@ export class PortalAuthService {
   async requestOtp(input: { tenantCode: string; mobile: string }, ip?: string): Promise<portal.OtpRequestResponse> {
     const tenant = await this.activeTenant(input.tenantCode);
     if (!tenant) throw new AppError(HttpStatus.NOT_FOUND, 'hospital_not_found', 'No hospital with this code');
+    await this.requirePortal(tenant.id);
     const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
 
     const challenge = await this.db.asTenant({ tenantId: tenant.id }, async (tx) => {
@@ -186,6 +189,13 @@ export class PortalAuthService {
   /** Code hash is keyed with the server secret so a database leak doesn't reveal codes. */
   private hashCode(tenantId: string, mobile: string, code: string): string {
     return createHmac('sha256', this.config.JWT_ACCESS_SECRET).update(`portal-otp:${tenantId}:${mobile}:${code}`).digest('hex');
+  }
+
+  /** Hospitals whose plan has no patient portal get no OTP (and so no patient sessions). */
+  private async requirePortal(tenantId: string): Promise<void> {
+    if (!(await this.platform.hasModule(tenantId, 'portal'))) {
+      throw new AppError(HttpStatus.FORBIDDEN, 'portal_not_available', 'This hospital does not offer the patient portal');
+    }
   }
 
   private async activeTenant(code: string) {

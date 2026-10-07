@@ -139,11 +139,13 @@ export interface PortalDoctor {
 export const doctorQuerySchema = z.object({ facilityId: z.uuid().optional(), departmentId: z.uuid().optional() });
 export type DoctorQuery = { facilityId?: string; departmentId?: string };
 
-export const slotQuerySchema = z.object({ date: z.iso.date() });
+export const slotQuerySchema = z.object({ date: z.iso.date(), facilityId: z.uuid().optional() });
 
 export interface PortalSlot {
   start: string;
   end: string;
+  /** Branch where the doctor sits for this slot. */
+  facilityId?: string;
   available: boolean;
 }
 
@@ -317,6 +319,28 @@ export interface AppointmentRequestedEvent {
   facilityId: string | null;
   slotStart: string;
 }
+
+/**
+ * Shared payload of `portal.appointment.confirmed` (an online booking landed in the doctor's diary, or staff
+ * confirmed a request), `portal.appointment.rejected` (staff turned a request down) and
+ * `portal.appointment.cancelled` (the patient cancelled from the portal). Notifications uses it for push/SMS.
+ */
+export interface PortalAppointmentEvent {
+  /** Portal booking id (portal.appointments.id). */
+  requestId: string;
+  /** Front office appointment id; null when the request never reached the diary. */
+  appointmentId: string | null;
+  patientId: string;
+  doctorId: string;
+  doctorName: string;
+  facilityId: string | null;
+  slotStart: string;
+  /** Staff note on a rejection, or the cancel reason. */
+  note: string | null;
+}
+export type AppointmentConfirmedEvent = PortalAppointmentEvent;
+export type AppointmentRejectedEvent = PortalAppointmentEvent;
+export type AppointmentCancelledEvent = PortalAppointmentEvent;
 
 /** `portal.payment.captured`: billing records the payment against the invoice. */
 export interface PaymentCapturedEvent {

@@ -234,6 +234,28 @@ describe('portal: family, booking and staff inbox', () => {
     expect(cancel.json().status).toBe('cancelled');
     const reopened = await app.inject({ method: 'GET', url: slotsUrl, headers: bearer(b.accessToken) });
     expect(reopened.json().find((s: { start: string }) => s.start === slot.start).available).toBe(true);
+
+    // Notifications listens for these: confirmed on booking, cancelled on the patient's cancel.
+    const db = new Client({ connectionString: process.env.DATABASE_MIGRATOR_URL });
+    await db.connect();
+    try {
+      const { rows } = await db.query<{ topic: string; payload: Record<string, unknown> }>(
+        "SELECT topic, payload FROM audit.outbox WHERE topic LIKE 'portal.appointment.%' AND payload->>'requestId' = $1 ORDER BY created_at",
+        [booked.json().id],
+      );
+      expect(rows.map((r) => r.topic)).toEqual(['portal.appointment.confirmed', 'portal.appointment.cancelled']);
+      expect(rows[0]!.payload).toMatchObject({
+        appointmentId: booked.json().appointmentId,
+        patientId: pa.id,
+        doctorId: HOSPITAL.doctorId,
+        doctorName: 'Dr. Portal Test',
+        slotStart: slot.start,
+        note: null,
+      });
+      expect(rows[1]!.payload).toMatchObject({ note: 'Cancelled by patient (portal)' });
+    } finally {
+      await db.end();
+    }
   });
 
   it('collects feedback for the staff dashboard', async () => {

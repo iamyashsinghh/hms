@@ -2,6 +2,7 @@ import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Que
 import { portal } from '@hms/shared';
 import type { z } from 'zod';
 import { Public } from '../../common/auth/decorators';
+import { RequireEntitlement } from '../platform';
 import { ZodPipe } from '../../common/validation/zod.pipe';
 import { Patient, PatientAuthGuard, type PatientPrincipal } from './portal-auth.guard';
 import { PortalPatientsService } from './portal-patients.service';
@@ -12,6 +13,8 @@ import { PortalService } from './portal.service';
  * and every query is limited to the patients linked to the signed-in account.
  */
 @Public()
+@RequireEntitlement('portal')
+// Listed after (so it runs before) the entitlement guard: it puts the hospital in the request context.
 @UseGuards(PatientAuthGuard)
 @Controller('portal')
 export class PortalController {
@@ -49,10 +52,11 @@ export class PortalController {
 
   @Get('doctors/:id/slots')
   slots(
+    @Patient() p: PatientPrincipal,
     @Param('id', ParseUUIDPipe) id: string,
     @Query(new ZodPipe(portal.slotQuerySchema)) q: z.output<typeof portal.slotQuerySchema>,
   ): Promise<portal.PortalSlot[]> {
-    return this.portal.slots(id, q.date);
+    return this.portal.slots(p.tenantId, id, q.date, q.facilityId);
   }
 
   @Get('appointments')
