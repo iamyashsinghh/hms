@@ -1,11 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { formatSeries, iso, nextCounter } from '@hms/db';
+import { formatSeries, iso, nextCounter, type Tx } from '@hms/db';
 import type { CreatePatient, Paginated, Patient, UpdatePatient } from '@hms/shared';
 import { DbService } from '../../common/db/db.service';
 import { AuditService } from '../../common/db/audit.service';
 import { OutboxService } from '../../common/events/outbox.service';
 import { currentContext } from '../../common/context/request-context';
-import { notFound } from '../../common/errors/errors';
+import { conflict, notFound } from '../../common/errors/errors';
 import { PatientsRepository, type NewPatientRow, type PatientRow } from './patients.repository';
 
 @Injectable()
@@ -59,6 +59,26 @@ export class PatientsService {
       if (!row) throw notFound('Patient');
       return toDto(row);
     });
+  }
+
+  /**
+   * Retire a duplicate record into the surviving one. Runs inside the caller's transaction
+   * (the front-office merge flow); moving visits, bills etc. is each owning module's job.
+   * Publishes `core.patient.merged {sourceId, targetId}`.
+   */
+  async markMerged(tx: Tx, sourceId: string, targetId: string): Promise<Patient> {
+    if (sourceId === targetId) throw conflict('merge_same_patient', 'Cannot merge a patient into itself');
+    const [source, target] = await Promise.all([this.repo.findById(tx, sourceId), this.repo.findById(tx, targetId)]);
+    if (!source || !target) throw notFound('Patient');
+    if (!source.isActive || source.mergedIntoId) throw conflict('already_merged', `${source.uhid} has already been merged`);
+    if (!target.isActive) throw conflict('merge_target_inactive', `${target.uhid} is not an active record`);
+    const row = await this.repo.update(tx, sourceId, {
+      isActive: false,
+      mergedIntoId: targetId,
+      updatedBy: currentContext()?.userId ?? null,
+    });
+    await this.outbox.publish(tx, 'core.patient.merged', { sourceId, targetId });
+    return toDto(row!);
   }
 }
 
