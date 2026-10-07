@@ -2,6 +2,7 @@ import { Module, OnModuleInit } from '@nestjs/common';
 import { EventBus } from '../../common/events/event-bus';
 import { requestContext } from '../../common/context/request-context';
 import { PatientsModule } from '../patients/patients.module';
+import { SetupModule } from '../setup/setup.module';
 import { EmrController } from './emr.controller';
 import { EmrRepository } from './emr.repository';
 import { EmrService, type OrderStatusChanged, type VisitCheckedIn } from './emr.service';
@@ -11,7 +12,7 @@ import { EmrService, type OrderStatusChanged, type VisitCheckedIn } from './emr.
  * with favourites and allergy check, sign & lock, addenda, certificates, patient timeline.
  * Other modules import EmrModule and use EmrService.
  */
-@Module({ imports: [PatientsModule], controllers: [EmrController], providers: [EmrService, EmrRepository], exports: [EmrService] })
+@Module({ imports: [PatientsModule, SetupModule], controllers: [EmrController], providers: [EmrService, EmrRepository], exports: [EmrService] })
 export class EmrModule implements OnModuleInit {
   constructor(
     private readonly bus: EventBus,

@@ -5,27 +5,28 @@ import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, Printer } from 'lucide-react';
 import { api, errorMessage } from '@/lib/api';
-import { useAuth, usePermission } from '@/lib/auth';
+import { usePermission } from '@/lib/auth';
 import { genderLabel } from '@/lib/format';
 import { NoAccess } from '@/components/no-access';
 import { Button, buttonVariants } from '@/components/ui/button';
-import { PrintStyles, TIMING_LABEL, ageFromDob, vitalsLine } from '@/modules/emr/ui';
+import { TIMING_LABEL, ageFromDob, vitalsLine } from '@/modules/emr/ui';
+import { Letterhead, PrintFooter, PrintStyles, Signature, paperWidth } from '@/modules/emr/print';
 
 export default function PrintRxPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const canRead = usePermission('emr.encounter.read');
-  const { user, facility } = useAuth();
-  const { data: enc, isPending, error } = useQuery({ queryKey: ['emr', 'encounter', id], queryFn: () => api.emr.get(id), enabled: canRead });
+  const { data, isPending, error } = useQuery({ queryKey: ['emr', 'encounter', id, 'print'], queryFn: () => api.emr.printEncounter(id), enabled: canRead });
 
   if (!canRead) return <NoAccess />;
   if (isPending) return <p className="text-sm text-muted-foreground">Loading…</p>;
   if (error) return <p className="text-sm text-destructive">{errorMessage(error)}</p>;
 
+  const enc = data.encounter;
   const v = enc.vitals.at(-1);
   const rx = enc.prescription;
   return (
     <div className="space-y-4">
-      <PrintStyles />
+      <PrintStyles template={data.template} />
       <div className="flex items-center justify-between print:hidden">
         <Link href={`/emr/encounters/${id}`} className={buttonVariants({ variant: 'ghost', size: 'sm', className: '-ml-3' })}>
           <ArrowLeft /> Back
@@ -36,17 +37,8 @@ export default function PrintRxPage({ params }: { params: Promise<{ id: string }
       </div>
       {enc.status !== 'completed' && <p className="text-sm text-amber-700 print:hidden">Draft: this consultation is not signed yet.</p>}
 
-      <article id="print-area" className="mx-auto max-w-[210mm] rounded-lg border bg-white p-8 text-[13px] leading-relaxed text-black shadow-sm">
-        <header className="flex items-start justify-between border-b-2 border-black pb-3">
-          <div>
-            <h1 className="text-xl font-bold">{user?.tenantName}</h1>
-            <p>{facility?.name}</p>
-          </div>
-          <div className="text-right">
-            <p className="text-base font-semibold">{enc.doctorName}</p>
-            <p className="text-xs">OPD consultation</p>
-          </div>
-        </header>
+      <article id="print-area" style={{ maxWidth: paperWidth(data) }} className="mx-auto rounded-lg border bg-white p-8 text-[13px] leading-relaxed text-black shadow-sm">
+        <Letterhead header={data} fallbackName={enc.doctorName} />
 
         <section className="mt-3 grid grid-cols-2 gap-x-6 gap-y-0.5 border-b pb-3">
           <p>
@@ -142,12 +134,9 @@ export default function PrintRxPage({ params }: { params: Promise<{ id: string }
         )}
 
         <footer className="mt-12 flex justify-end">
-          <div className="text-center">
-            <div className="h-10" />
-            <p className="border-t border-black px-6 pt-1 font-semibold">{enc.doctorName}</p>
-            {enc.signedAt && <p className="text-[10px]">Digitally signed {new Date(enc.signedAt).toLocaleString('en-IN')}</p>}
-          </div>
+          <Signature header={data} fallbackName={enc.doctorName} signedAt={enc.signedAt} />
         </footer>
+        <PrintFooter header={data} />
       </article>
     </div>
   );

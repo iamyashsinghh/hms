@@ -396,6 +396,51 @@ export interface Certificate {
   issuedAt: string;
 }
 
+// ---------- printing (letterhead and doctor credentials come from Setup) ----------
+
+export interface PrintHeader {
+  hospital: {
+    displayName: string;
+    legalName: string;
+    address: { line1?: string; line2?: string; city?: string; district?: string; state?: string; pincode?: string } | null;
+    phone: string | null;
+    email: string | null;
+    website: string | null;
+    gstin: string | null;
+    registrationNo: string | null;
+    logoUrl: string | null;
+    letterhead: { tagline?: string; headerNote?: string; footerNote?: string; accentColor?: string } | null;
+  };
+  template: {
+    paperSize: 'A4' | 'A5' | 'thermal_80mm';
+    showLogo: boolean;
+    showLetterhead: boolean;
+    headerText: string | null;
+    footerText: string | null;
+    marginTopMm: number;
+    marginBottomMm: number;
+  };
+  /** Null when the user is no longer set up as a doctor. */
+  doctor: {
+    userId: string;
+    name: string;
+    qualification: string | null;
+    specialization: string | null;
+    departmentName: string | null;
+    registrationNo: string | null;
+    registrationCouncil: string | null;
+    signatureUrl: string | null;
+  } | null;
+}
+
+export interface PrintEncounter extends PrintHeader {
+  encounter: Encounter;
+}
+
+export interface PrintCertificate extends PrintHeader {
+  certificate: Certificate;
+}
+
 // ---------- events (published by emr) ----------
 
 export interface EncounterSignedEvent {

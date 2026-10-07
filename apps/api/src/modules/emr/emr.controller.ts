@@ -65,6 +65,12 @@ export class EmrController {
     return this.emr.get(id);
   }
 
+  @Get('encounters/:id/print')
+  @RequirePermissions('emr.encounter.read')
+  printEncounter(@Param('id', ParseUUIDPipe) id: string): Promise<emr.PrintEncounter> {
+    return this.emr.printEncounter(id);
+  }
+
   @Patch('encounters/:id')
   @RequirePermissions('emr.encounter.write')
   update(@Param('id', ParseUUIDPipe) id: string, @Body(new ZodPipe(emr.updateEncounterSchema)) body: Out<typeof emr.updateEncounterSchema>): Promise<Encounter> {
@@ -163,6 +169,12 @@ export class EmrController {
   @RequirePermissions('emr.certificate.write')
   createCertificate(@Body(new ZodPipe(emr.createCertificateSchema)) body: Out<typeof emr.createCertificateSchema>): Promise<Certificate> {
     return this.emr.createCertificate(body);
+  }
+
+  @Get('certificates/:id/print')
+  @RequirePermissions('emr.certificate.read')
+  printCertificate(@Param('id', ParseUUIDPipe) id: string): Promise<emr.PrintCertificate> {
+    return this.emr.printCertificate(id);
   }
 
   @Get('certificates/:id')
