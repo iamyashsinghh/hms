@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { resolve } from 'node:path';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
-import { sql } from '@hms/db';
+import { config } from 'dotenv';
+import { Client } from 'pg';
+import { DEMO_PASSWORD, provisionTenant, sql } from '@hms/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DbService } from '../src/common/db/db.service';
 import { EventBus } from '../src/common/events/event-bus';
@@ -15,6 +18,32 @@ let reception: string;
 let doctor: string;
 let owner: string;
 let otherHospital: string;
+let starterHospital: string;
+
+config({ path: resolve(__dirname, '../../../.env'), quiet: true });
+/** City is on the Starter plan (no quality module), so isolation is proven against a throwaway Growth hospital. */
+const OTHER = `quality-${Date.now().toString(36)}`;
+
+async function provisionGrowthHospital() {
+  const client = new Client({ connectionString: process.env.DATABASE_MIGRATOR_URL });
+  await client.connect();
+  try {
+    await client.query('BEGIN');
+    await provisionTenant(client, {
+      code: OTHER,
+      name: `Quality Isolation ${OTHER}`,
+      plan: 'growth',
+      facility: { code: 'MAIN', name: 'Main' },
+      admin: { name: 'Isolation Admin', email: `admin@${OTHER}.test`, password: DEMO_PASSWORD },
+    });
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    await client.end();
+  }
+}
 let tenantId: string;
 let facilityId: string;
 let patientId: string;
@@ -62,7 +91,9 @@ beforeAll(async () => {
   reception = (await login(app, 'reception@demo.hms')).accessToken;
   doctor = (await login(app, 'doctor@demo.hms')).accessToken;
   owner = (await login(app, 'owner@demo.hms')).accessToken;
-  otherHospital = (await login(app, 'admin@city.hms', 'city')).accessToken;
+  starterHospital = (await login(app, 'admin@city.hms', 'city')).accessToken;
+  await provisionGrowthHospital();
+  otherHospital = (await login(app, `admin@${OTHER}.test`, OTHER)).accessToken;
   patientId = (await ok(admin, 'POST', '/patients', { firstName: 'Quality', lastName: `Case${tag}`, gender: 'female', ageYears: 52 })).id;
 });
 afterAll(() => app.close());
@@ -148,6 +179,15 @@ describe('quality: incidents', () => {
     expect(trail.rows).toEqual([{ actor_id: null, created_by: null }]);
     const mine = await ok(doctor, 'GET', '/quality/incidents/mine?pageSize=200');
     expect(mine.items.map((i: { id: string }) => i.id)).not.toContain(inc.id);
+  });
+
+  it('gives the quality manager the review queue', async () => {
+    const qm = (await login(app, 'quality@demo.hms')).accessToken;
+    const inc = await ok(reception, 'POST', '/quality/incidents', incident({ category: 'patient_fall', description: `QM ${tag}` }));
+    const list = await ok(qm, 'GET', `/quality/incidents?q=${encodeURIComponent(`QM ${tag}`)}`);
+    expect(list.items.map((i: { id: string }) => i.id)).toEqual([inc.id]);
+    expect((await ok(qm, 'PATCH', `/quality/incidents/${inc.id}`, { status: 'under_review' })).status).toBe('under_review');
+    expect((await call(qm, 'GET', '/quality/dashboard')).statusCode).toBe(200);
   });
 
   it('validates reports', async () => {
@@ -335,13 +375,22 @@ describe('quality: NABH documents', () => {
   });
 });
 
+describe('quality: plan entitlement', () => {
+  it('refuses quality screens to hospitals whose plan does not include them', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/v1/quality/incidents/mine', headers: bearer(starterHospital) });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('plan_upgrade_required');
+  });
+});
+
 describe('quality: hospital isolation', () => {
   it("never shows or changes one hospital's quality records from another", async () => {
     const inc = await ok(nurse, 'POST', '/quality/incidents', incident({ description: `Isolation ${tag}` }));
     const cmp = await ok(reception, 'POST', '/quality/complaints', { source: 'phone', category: 'billing', complainantName: `Iso ${tag}`, description: 'Overcharged' });
     const capa = await ok(admin, 'POST', '/quality/capas', { sourceType: 'complaint', sourceId: cmp.id, title: 'Bill review', problem: 'Overcharge', dueDate: today() });
 
-    // The city admin holds every quality permission, so these reach the database and RLS hides demo's rows.
+    // The other hospital's admin holds every quality permission and its plan includes quality,
+    // so these reach the database and RLS hides demo's rows.
     const city = (method: string, url: string, payload?: unknown) =>
       app.inject({ method, url: `/api/v1${url}`, headers: bearer(otherHospital), payload } as Inject);
     expect((await city('GET', `/quality/incidents/${inc.id}`)).statusCode).toBe(404);
@@ -349,7 +398,7 @@ describe('quality: hospital isolation', () => {
     expect((await city('GET', `/quality/complaints/${cmp.id}`)).statusCode).toBe(404);
     expect((await city('PATCH', `/quality/capas/${capa.id}`, { status: 'cancelled', note: 'x' })).statusCode).toBe(404);
     expect((await city('GET', `/quality/incidents?q=${encodeURIComponent(`Isolation ${tag}`)}`)).json().items).toEqual([]);
-    // A CAPA in city cannot point at demo's complaint, and city cannot attach demo's patient.
+    // Another hospital's CAPA cannot point at demo's complaint, and city cannot attach demo's patient.
     expect((await city('POST', '/quality/capas', { sourceType: 'complaint', sourceId: cmp.id, title: 'x', problem: 'y', dueDate: today() })).statusCode).toBe(404);
     expect((await city('POST', '/quality/hai', { patientId, infectionType: 'vap', onsetDate: today() })).statusCode).toBe(404);
 

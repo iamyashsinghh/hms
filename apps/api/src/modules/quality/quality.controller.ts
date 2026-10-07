@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { DbService } from '../../common/db/db.service';
 import { ZodPipe } from '../../common/validation/zod.pipe';
+import { RequireEntitlement } from '../platform';
 import { AuditsService } from './audits.service';
 import { CapaService } from './capa.service';
 import { ComplaintsService } from './complaints.service';
@@ -21,7 +22,9 @@ const checklistQuery = z.object({ all: z.enum(['true', 'false']).optional() });
 
 type Out<S extends z.ZodType> = z.output<S>;
 
+/** Quality & NABH is a Growth-plan module. */
 @Controller('quality')
+@RequireEntitlement('quality')
 export class QualityController {
   constructor(
     private readonly db: DbService,
