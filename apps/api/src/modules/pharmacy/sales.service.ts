@@ -294,11 +294,32 @@ export class PharmacySalesService {
 
       const all = [...lines.values()];
       const status = all.every((l) => l.returnedQty === l.qty) ? 'returned' : 'partially_returned';
+
+      // Invoiced sale: credit the return on the invoice (billing refunds the part already paid). On the last
+      // return, credit whatever is left so billing's rupee round-off is returned too.
+      let billingRefs: Partial<typeof pharmacySaleReturns.$inferInsert> = {};
+      if (sale.invoiceId && refund > 0) {
+        const amount = status === 'returned' ? toPaise(await this.billing.creditable(sale.invoiceId)) : refund;
+        if (amount > 0) {
+          const res = await this.billing.returnOnInvoice(tx, sale.invoiceId, {
+            amount: Number(toRupees(amount)),
+            reason: input.reason && input.reason.length >= 3 ? input.reason : `Pharmacy return ${number} against ${sale.number}`,
+            refundMode: input.refundMode,
+            reference: ret!.id,
+          });
+          refund = amount;
+          billingRefs = { creditNoteId: res.creditNoteId, creditNoteNumber: res.creditNoteNumber, billingRefundNumber: res.refundNumber };
+        }
+      }
       await tx
         .update(pharmacySales)
         .set({ returnedAmount: toRupees(toPaise(sale.returnedAmount) + refund), status, updatedBy: ctx.userId })
         .where(eq(pharmacySales.id, sale.id));
-      const [done] = await tx.update(pharmacySaleReturns).set({ refundAmount: toRupees(refund) }).where(eq(pharmacySaleReturns.id, ret!.id)).returning();
+      const [done] = await tx
+        .update(pharmacySaleReturns)
+        .set({ refundAmount: toRupees(refund), ...billingRefs })
+        .where(eq(pharmacySaleReturns.id, ret!.id))
+        .returning();
       return returnDto(done!);
     });
   }
@@ -397,6 +418,8 @@ function returnDto(r: typeof pharmacySaleReturns.$inferSelect): pharmacy.SaleRet
     refundAmount: num(r.refundAmount),
     refundMode: r.refundMode,
     reason: r.reason,
+    creditNoteNumber: r.creditNoteNumber,
+    billingRefundNumber: r.billingRefundNumber,
     createdAt: iso(r.createdAt),
   };
 }

@@ -12,6 +12,11 @@ export interface MobileModuleScreen {
   route: string;
   /** Permission key required to see the screen (e.g. "emr.encounter.read"). Omit for none. */
   permission?: string;
+  /**
+   * Roles that may see the screen even without `permission`, for modules whose permission keys are
+   * not seeded yet. The API still enforces its own permissions on every call.
+   */
+  roles?: string[];
   /** Apps that include the screen. */
   variants: Variant[];
   /** Optional one-line description shown on the Home card. */
