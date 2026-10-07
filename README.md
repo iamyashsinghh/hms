@@ -31,7 +31,7 @@ cd apps/mobile && pnpm start  # APP_VARIANT=doctor|staff|owner|patient
 ```
 
 Demo login: hospital code `demo`, `admin@demo.hms` / `Demo@12345`
-(also `doctor@`, `reception@`, `pharmacy@`, `owner@`, `nurse@`, `billing@`, `lab@` — same password).
+(also `doctor@`, `reception@`, `pharmacy@`, `owner@`, `nurse@`, `billing@`, `lab@`, `radiology@`, `store@`, `accounts@`, `hr@`, `quality@` — same password).
 A second hospital `city` (`admin@city.hms`) exists to prove isolation.
 
 ## Checks
