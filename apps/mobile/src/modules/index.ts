@@ -51,10 +51,17 @@ export interface AvailableScreen extends MobileModuleScreen {
 }
 
 /** Screens the current app variant includes and the signed-in user is allowed to open. */
-export function availableScreens(variant: Variant, permissions: readonly string[]): AvailableScreen[] {
+export function availableScreens(
+  variant: Variant,
+  permissions: readonly string[],
+  roles: readonly string[] = [],
+): AvailableScreen[] {
   return (Object.entries(MODULE_SCREENS) as [ModuleKey, readonly MobileModuleScreen[]][]).flatMap(([module, list]) =>
-    list
-      .filter((s) => s.variants.includes(variant) && (!s.permission || hasPermission(permissions, s.permission)))
-      .map((s) => ({ ...s, module })),
+    list.filter((s) => s.variants.includes(variant) && canOpen(s, permissions, roles)).map((s) => ({ ...s, module })),
   );
+}
+
+export function canOpen(screen: MobileModuleScreen, permissions: readonly string[], roles: readonly string[]): boolean {
+  if (!screen.permission) return true;
+  return hasPermission(permissions, screen.permission) || !!screen.roles?.some((r) => roles.includes(r));
 }
