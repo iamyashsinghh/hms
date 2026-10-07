@@ -532,7 +532,7 @@ export class FrontofficeService implements OnModuleInit {
       if (booked >= (slot.maxPatients ?? 1)) throw conflict('slot_taken', 'This slot is already full');
       return { start, end: new Date(slot.end).toISOString() };
     }
-    if (await this.hasSchedule(tx, doctorId, date)) {
+    if (await this.setup.hasScheduleInTx(tx, doctorId)) {
       throw badRequest('doctor_unavailable', 'The doctor is not available at this facility on that day');
     }
     const end = addMinutes(start, minutes);
@@ -540,19 +540,6 @@ export class FrontofficeService implements OnModuleInit {
       throw conflict('slot_taken', 'The doctor already has an appointment at this time');
     }
     return { start, end };
-  }
-
-  /**
-   * Whether the doctor has any weekly schedule, probed as "any slot in the 7 days from `date`, any facility".
-   * TODO(setup): replace with a SetupService.hasScheduleInTx() so a leave longer than a week is not read as "no schedule".
-   */
-  private async hasSchedule(tx: Tx, doctorId: string, date: string): Promise<boolean> {
-    for (let i = 0; i < 7; i++) {
-      const d = new Date(`${date}T12:00:00Z`);
-      d.setUTCDate(d.getUTCDate() + i);
-      if ((await this.setup.getDoctorScheduleInTx(tx, doctorId, d.toISOString().slice(0, 10))).length) return true;
-    }
-    return false;
   }
 
   private async moveAppointment(
