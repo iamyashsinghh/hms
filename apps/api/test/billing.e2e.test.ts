@@ -2,6 +2,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sql } from '@hms/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DbService } from '../src/common/db/db.service';
+import { EventBus } from '../src/common/events/event-bus';
 import { BillingService } from '../src/modules/billing/billing.service';
 import { bearer, bootApp, login } from './helpers';
 
@@ -243,10 +244,32 @@ describe('cross-module contract', () => {
       total: 22,
       source: { module: 'pharmacy', refId: 'RX-1' },
       lines: [{ description: 'Paracetamol 500mg', qty: 10, amount: 22.4 }],
+      paid: 22,
     });
-    expect(events.rows[1]!.payload).toMatchObject({ amount: 22, mode: 'cash', kind: 'payment', facilityId });
+    expect(events.rows[1]!.payload).toMatchObject({ amount: 22, mode: 'cash', kind: 'payment', facilityId, ref: null });
     const price = await db.asTenant({ tenantId }, (tx) => billing.getServicePrice(CONS, null, tx));
     expect(price.price).toBe(450);
+  });
+
+  it('records portal online payments once, keeping any excess as advance', async () => {
+    const inv = (await call(clerk, 'POST', '/billing/invoices', { patientId, finalize: true, lines: [{ serviceCode: CONS }] })).json();
+    const before = (await call(clerk, 'GET', `/billing/patients/${patientId}/account`)).json().depositBalance;
+    const bus = app.get(EventBus);
+    const event = {
+      id: `evt-${tag}`,
+      tenantId,
+      topic: 'portal.payment.captured',
+      createdAt: new Date().toISOString(),
+      payload: { intentId: `pi_${tag}`, invoiceId: inv.id, patientId, amount: '500.00', mode: 'online', providerPaymentId: 'pay_123' },
+    };
+    await bus.dispatch(event);
+    await bus.dispatch(event); // delivered twice: still one receipt
+    const after = (await call(clerk, 'GET', `/billing/invoices/${inv.id}`)).json();
+    expect(after).toMatchObject({ paymentStatus: 'paid', paidAmount: 450 });
+    expect(after.payments).toHaveLength(1);
+    expect(after.payments[0]).toMatchObject({ mode: 'online', reference: `pi_${tag}` });
+    const acct = (await call(clerk, 'GET', `/billing/patients/${patientId}/account`)).json();
+    expect(acct.depositBalance).toBe(before + 50);
   });
 });
 

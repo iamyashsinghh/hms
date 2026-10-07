@@ -27,6 +27,7 @@ type PaymentReceivedEvent = B.PaymentReceivedEvent;
 type PriceList = B.PriceList;
 type PriceListInput = B.PriceListInput;
 type RefundInput = B.RefundInput;
+type PortalPaymentCaptured = B.PortalPaymentCaptured;
 type RefundIssuedEvent = B.RefundIssuedEvent;
 type Service = B.Service;
 type ServicePrice = B.ServicePrice;
@@ -106,10 +107,15 @@ export class BillingService {
     await this.repo.replaceLines(tx, row.id, built.map((b) => b.row));
 
     let inv = row;
-    if (data.finalize !== false || data.payNow) inv = await this.finalizeTx(tx, row.id);
-    if (data.payNow) {
-      await this.collectTx(tx, inv, { mode: data.payNow.mode, amount: data.payNow.amount, reference: data.payNow.ref });
-      inv = (await this.repo.invoiceById(tx, row.id))!;
+    if (data.finalize !== false || data.payNow) {
+      inv = await this.finalizeTx(tx, row.id, false);
+      // Finalized goes out before payment.received, already carrying the amount paid now
+      // (if the payment is refused the whole transaction, events included, rolls back).
+      await this.publishFinalized(tx, inv, data.payNow ? paise(data.payNow.amount) : 0);
+      if (data.payNow) {
+        await this.collectTx(tx, inv, { mode: data.payNow.mode, amount: data.payNow.amount, reference: data.payNow.ref });
+        inv = (await this.repo.invoiceById(tx, row.id))!;
+      }
     }
     return { invoiceId: inv.id, number: inv.number, total: toNumber(inv.total), status: inv.status as InvoiceStatus };
   }
@@ -370,7 +376,7 @@ export class BillingService {
     });
   }
 
-  private async finalizeTx(tx: Tx, id: string): Promise<InvoiceRow> {
+  private async finalizeTx(tx: Tx, id: string, publish = true): Promise<InvoiceRow> {
     const inv = await this.repo.invoiceById(tx, id, true);
     if (!inv) throw notFound('Invoice');
     if (inv.status !== 'draft') throw conflict('invoice_not_draft', `Invoice is already ${inv.status}`);
@@ -387,9 +393,15 @@ export class BillingService {
       finalizedBy: userId,
       updatedBy: userId,
     });
+    if (publish) await this.publishFinalized(tx, row);
+    return row;
+  }
+
+  private async publishFinalized(tx: Tx, row: InvoiceRow, paidNowPaise = 0) {
+    const id = row.id;
     const event: InvoiceFinalizedEvent = {
       invoiceId: id,
-      number,
+      number: row.number!,
       patientId: row.patientId,
       facilityId: row.facilityId,
       total: toNumber(row.total),
@@ -403,9 +415,10 @@ export class BillingService {
         qty: toNumber(l.qty),
         amount: toNumber(l.total),
       })),
+      paid: (paise(row.paidAmount) + paidNowPaise) / 100,
+      finalizedAt: iso(row.finalizedAt!),
     };
     await this.publish(tx, 'billing.invoice.finalized', { ...event });
-    return row;
   }
 
   private async buildLines(tx: Tx, lines: InvoiceLineInput[], payerId: string | null | undefined, date: string) {
@@ -539,6 +552,7 @@ export class BillingService {
       mode: d.mode as PaymentReceivedEvent['mode'],
       kind: 'payment',
       facilityId: inv.facilityId,
+      ref: payment.reference,
     };
     await this.publish(tx, 'billing.payment.received', { ...event });
     return payment;
@@ -563,7 +577,7 @@ export class BillingService {
         shiftId: shift?.id ?? null,
         receivedBy: userId,
       });
-      const event: PaymentReceivedEvent = { paymentId: row.id, invoiceId: null, patientId: d.patientId, amount: toNumber(row.amount), mode: d.mode, kind: 'deposit', facilityId };
+      const event: PaymentReceivedEvent = { paymentId: row.id, invoiceId: null, patientId: d.patientId, amount: toNumber(row.amount), mode: d.mode, kind: 'deposit', facilityId, ref: row.reference };
       await this.publish(tx, 'billing.payment.received', { ...event });
       return paymentDto(row);
     });
@@ -643,6 +657,51 @@ export class BillingService {
         invoices: invoices.items.map(summaryDto),
         deposits: deposits.map(paymentDto),
       };
+    });
+  }
+
+  /**
+   * Handler for `portal.payment.captured` (runs in the worker, at least once). Records the online
+   * payment against the invoice; anything above the balance (or on a cancelled bill) is kept as advance.
+   * Idempotent on the payment intent id, which is stored as the receipt reference.
+   */
+  recordOnlinePayment(tenantId: string, p: PortalPaymentCaptured): Promise<Payment[]> {
+    return this.db.asTenant({ tenantId }, async (tx) => {
+      const inv = await this.repo.invoiceById(tx, p.invoiceId, true);
+      if (!inv) throw notFound('Invoice');
+      if (await this.repo.paymentByReference(tx, inv.patientId, p.intentId)) return [];
+      const amount = paise(p.amount);
+      const due = inv.status === 'final' ? paise(inv.total) - paise(inv.paidAmount) - paise(inv.creditedAmount) : 0;
+      const out: PaymentRow[] = [];
+      const onBill = Math.min(amount, Math.max(due, 0));
+      if (onBill > 0) {
+        out.push(await this.collectTx(tx, inv, { mode: 'online', amount: onBill / 100, reference: p.intentId, notes: `Gateway payment ${p.providerPaymentId}` }));
+      }
+      if (amount > onBill) {
+        const row = await this.repo.insertPayment(tx, {
+          number: formatSeries('RCP', await nextCounter(tx, 'billing.receipt')),
+          kind: 'deposit',
+          facilityId: inv.facilityId,
+          patientId: inv.patientId,
+          mode: 'online',
+          amount: rupees(amount - onBill),
+          reference: p.intentId,
+          notes: `Online payment ${p.providerPaymentId} above the bill balance, kept as advance`,
+        });
+        const event: PaymentReceivedEvent = {
+          paymentId: row.id,
+          invoiceId: null,
+          patientId: inv.patientId,
+          amount: toNumber(row.amount),
+          mode: 'online',
+          kind: 'deposit',
+          facilityId: inv.facilityId,
+          ref: p.intentId,
+        };
+        await this.publish(tx, 'billing.payment.received', { ...event });
+        out.push(row);
+      }
+      return out.map(paymentDto);
     });
   }
 

@@ -292,6 +292,15 @@ export class BillingRepository {
     return tx.select().from(billingPayments).where(eq(billingPayments.invoiceId, invoiceId)).orderBy(asc(billingPayments.receivedAt));
   }
 
+  async paymentByReference(tx: Tx, patientId: string, reference: string): Promise<PaymentRow | undefined> {
+    const [row] = await tx
+      .select()
+      .from(billingPayments)
+      .where(and(eq(billingPayments.patientId, patientId), eq(billingPayments.reference, reference), eq(billingPayments.mode, 'online')))
+      .limit(1);
+    return row;
+  }
+
   async paymentById(tx: Tx, id: string): Promise<PaymentRow | undefined> {
     const [row] = await tx.select().from(billingPayments).where(eq(billingPayments.id, id)).limit(1);
     return row;

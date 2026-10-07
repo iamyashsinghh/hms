@@ -70,6 +70,8 @@ export type InvoiceStatus = (typeof INVOICE_STATUSES)[number];
 export type PaymentMode = (typeof PAYMENT_MODES)[number];
 export type SettlementMode = (typeof SETTLEMENT_MODES)[number];
 export type PaymentKind = (typeof PAYMENT_KINDS)[number];
+/** Modes that can appear on a receipt: staff-entered modes plus 'online' (payment gateway via the patient portal). */
+export type ReceiptMode = SettlementMode | 'online';
 export type PaymentStatus = 'unpaid' | 'partial' | 'paid';
 
 const taxRate = z.coerce.number().refine((v) => (GST_RATES as readonly number[]).includes(v), 'Use a GST slab: 0, 0.1, 0.25, 3, 5, 12, 18, 28 or 40');
@@ -371,7 +373,7 @@ export interface Payment {
   facilityId: string;
   patientId: string;
   invoiceId: string | null;
-  mode: SettlementMode;
+  mode: ReceiptMode;
   amount: number;
   reference: string | null;
   notes: string | null;
@@ -453,15 +455,31 @@ export interface InvoiceFinalizedEvent {
   doctorId: string | null;
   invoiceDate: string;
   lines: { serviceCode: string | null; itemId: string | null; description: string; qty: number; amount: number }[];
+  /** Amount already paid at finalization (payNow / earlier receipts). */
+  paid: number;
+  finalizedAt: string;
 }
 export interface PaymentReceivedEvent {
   paymentId: string;
   invoiceId: string | null;
   patientId: string;
   amount: number;
-  mode: SettlementMode;
+  mode: ReceiptMode;
   kind: 'payment' | 'deposit';
   facilityId: string;
+  /** Receipt reference; for portal payments this is the payment intent id. */
+  ref: string | null;
+}
+
+/** `portal.payment.captured` as published by the portal module (billing records it). */
+export interface PortalPaymentCaptured {
+  intentId: string;
+  invoiceId: string;
+  patientId: string;
+  amount: string | number;
+  mode: 'online';
+  provider?: string;
+  providerPaymentId: string;
 }
 export interface RefundIssuedEvent {
   paymentId: string;
