@@ -3,11 +3,13 @@ import { frontoffice as fo, type Paginated, type Patient } from '@hms/shared';
 import type { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
+import { RequireEntitlement } from '../platform';
 import { FrontofficeService } from './frontoffice.service';
 
 type Out<S extends z.ZodType> = z.output<S>;
 
 @Controller('frontoffice')
+@RequireEntitlement('frontoffice')
 export class FrontofficeController {
   constructor(private readonly fo: FrontofficeService) {}
 
