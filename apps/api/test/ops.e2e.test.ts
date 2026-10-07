@@ -1,6 +1,12 @@
+import { resolve } from 'node:path';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
+import { config } from 'dotenv';
+import { Client } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { DEMO_PASSWORD, provisionTenant } from '@hms/db';
 import { bearer, bootApp, login } from './helpers';
+
+config({ path: resolve(__dirname, '../../../.env'), quiet: true });
 
 let app: NestFastifyApplication;
 let admin: string;
@@ -10,6 +16,8 @@ let reception: string;
 let clerk: string;
 let pharmacist: string;
 let city: string;
+let other: string;
+let otherFacilityId: string;
 let facilityId: string;
 let cityFacilityId: string;
 let patientId: string;
@@ -30,7 +38,31 @@ const call = (token: string, method: string, url: string, payload?: unknown, fac
     headers: { ...bearer(token), ...(facility ? { 'x-facility-id': facility } : {}) },
     payload,
   } as Inject);
-const cityCall = (method: string, url: string, payload?: unknown) => call(city, method, url, payload, cityFacilityId);
+/** A second hospital on the Growth plan (city is on Starter, which has no Facility Services). */
+const otherCall = (method: string, url: string, payload?: unknown) => call(other, method, url, payload, otherFacilityId);
+const OTHER = `ops-${tag.toLowerCase().slice(-6)}`;
+
+async function provisionOtherHospital() {
+  const client = new Client({ connectionString: process.env.DATABASE_MIGRATOR_URL });
+  await client.connect();
+  try {
+    await client.query('BEGIN');
+    const t = await provisionTenant(client, {
+      code: OTHER,
+      name: `Ops Isolation ${tag}`,
+      plan: 'growth',
+      facility: { code: 'MAIN', name: 'Main' },
+      admin: { name: 'Ops Admin', email: `admin@${OTHER}.test`, password: DEMO_PASSWORD },
+    });
+    await client.query('COMMIT');
+    return t.facilityId;
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    await client.end();
+  }
+}
 
 beforeAll(async () => {
   app = await bootApp();
@@ -45,6 +77,8 @@ beforeAll(async () => {
   city = (await login(app, 'admin@city.hms', 'city')).accessToken;
   const cityMe = (await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: bearer(city) })).json();
   cityFacilityId = cityMe.facilities[0].id;
+  otherFacilityId = await provisionOtherHospital();
+  other = (await login(app, `admin@${OTHER}.test`, OTHER)).accessToken;
 
   const p = await call(admin, 'POST', '/patients', { firstName: 'Ops', lastName: `Patient${tag}`, gender: 'female', ageYears: 52, allergies: ['Peanuts'] });
   expect(p.statusCode, p.body).toBe(201);
@@ -323,25 +357,33 @@ describe('overview', () => {
   });
 });
 
+describe('plan entitlement', () => {
+  it('blocks hospitals whose plan has no Facility Services', async () => {
+    const res = await call(city, 'GET', '/ops/assets', undefined, cityFacilityId);
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('plan_upgrade_required');
+  });
+});
+
 describe('cross-hospital isolation', () => {
   it('another hospital sees none of these records and cannot act on them', async () => {
     const demoAsset = (await call(admin, 'GET', `/ops/assets?q=${tag}`)).json().items[0];
-    expect((await cityCall('GET', `/ops/assets/${demoAsset.id}`)).statusCode).toBe(404);
-    expect((await cityCall('GET', `/ops/assets?q=${tag}`)).json().total).toBe(0);
-    expect((await cityCall('POST', '/ops/work-orders', { assetId: demoAsset.id, type: 'breakdown', problem: 'x' })).statusCode).toBe(404);
+    expect((await otherCall('GET', `/ops/assets/${demoAsset.id}`)).statusCode).toBe(404);
+    expect((await otherCall('GET', `/ops/assets?q=${tag}`)).json().total).toBe(0);
+    expect((await otherCall('POST', '/ops/work-orders', { assetId: demoAsset.id, type: 'breakdown', problem: 'x' })).statusCode).toBe(404);
 
     const demoSet = (await call(admin, 'GET', `/ops/cssd/sets?q=${tag}`)).json()[0];
-    expect((await cityCall('POST', '/ops/cssd/cycles', { sterilizer: 'A', setIds: [demoSet.id] })).statusCode).toBe(404);
-    expect((await cityCall('GET', `/ops/cssd/sets?q=${tag}`)).json()).toHaveLength(0);
+    expect((await otherCall('POST', '/ops/cssd/cycles', { sterilizer: 'A', setIds: [demoSet.id] })).statusCode).toBe(404);
+    expect((await otherCall('GET', `/ops/cssd/sets?q=${tag}`)).json()).toHaveLength(0);
 
     const demoTrip = (await call(admin, 'GET', '/ops/ambulance/trips')).json().items[0];
-    expect((await cityCall('GET', `/ops/ambulance/trips/${demoTrip.id}`)).statusCode).toBe(404);
-    expect((await cityCall('POST', '/ops/ambulance/trips', { patientId, contactName: 'X', contactMobile: '9876500003', pickupAddress: 'Y' })).statusCode).toBe(404);
-    expect((await cityCall('POST', '/ops/diet/orders', { patientId, location: 'W', dietType: 'normal' })).statusCode).toBe(404);
+    expect((await otherCall('GET', `/ops/ambulance/trips/${demoTrip.id}`)).statusCode).toBe(404);
+    expect((await otherCall('POST', '/ops/ambulance/trips', { patientId, contactName: 'X', contactMobile: '9876500003', pickupAddress: 'Y' })).statusCode).toBe(404);
+    expect((await otherCall('POST', '/ops/diet/orders', { patientId, location: 'W', dietType: 'normal' })).statusCode).toBe(404);
 
-    const cityStock = (await cityCall('GET', '/ops/linen/stock')).json();
-    expect(cityStock.find((s: { name: string }) => s.name === `Bedsheet ${tag}`)).toBeUndefined();
-    const cityHk = (await cityCall('GET', '/ops/housekeeping/tasks')).json();
-    expect(cityHk.items.find((t: { location: string }) => t.location === `Room ${tag}`)).toBeUndefined();
+    const otherStock = (await otherCall('GET', '/ops/linen/stock')).json();
+    expect(otherStock.find((s: { name: string }) => s.name === `Bedsheet ${tag}`)).toBeUndefined();
+    const otherHk = (await otherCall('GET', '/ops/housekeeping/tasks')).json();
+    expect(otherHk.items.find((t: { location: string }) => t.location === `Room ${tag}`)).toBeUndefined();
   });
 });

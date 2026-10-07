@@ -12,6 +12,7 @@ import { DietService } from './diet.service';
 import { HousekeepingService } from './housekeeping.service';
 import { LinenService } from './linen.service';
 import { OpsService } from './ops.service';
+import { RequireEntitlement } from '../platform';
 
 type Out<S extends z.ZodType> = z.output<S>;
 const READ_PERMS = ['ops.asset.read', 'ops.cssd.read', 'ops.linen.read', 'ops.ambulance.read', 'ops.diet.read', 'ops.housekeeping.read'];
@@ -20,7 +21,9 @@ const cssdSetQuery = z.object({ status: z.enum(O.CSSD_SET_STATUSES).optional(), 
 const pageQuery = z.object({ page: z.coerce.number().int().min(1).default(1), pageSize: z.coerce.number().int().min(1).max(200).default(50) });
 const issueQuery = z.object({ setId: z.uuid().optional(), cycleId: z.uuid().optional(), open: z.enum(['true', 'false']).optional() });
 
+/** Every route needs the hospital's plan to include Facility Services (Growth and Enterprise). */
 @Controller('ops')
+@RequireEntitlement('ops')
 export class OpsController {
   constructor(
     private readonly ops: OpsService,
