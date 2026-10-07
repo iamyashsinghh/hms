@@ -482,6 +482,7 @@ export interface EmrPrescriptionCreatedEvent {
   prescriptionId: string;
   patientId: string;
   doctorId?: string;
+  doctorName?: string;
   facilityId?: string;
   lines: { drugName: string; itemCode?: string; dose?: string; frequency?: string; days?: number; qty?: number }[];
 }

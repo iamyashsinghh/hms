@@ -1,6 +1,7 @@
 import { Module, OnModuleInit } from '@nestjs/common';
 import type { pharmacy } from '@hms/shared';
 import { EventBus } from '../../common/events/event-bus';
+import { BillingModule } from '../billing/billing.module';
 import { PharmacyBillingGateway } from './billing.gateway';
 import { PharmacyCatalogController } from './catalog.controller';
 import { PharmacyCatalogService } from './catalog.service';
@@ -16,6 +17,7 @@ import { PharmacyStockService } from './stock.service';
  * Other modules import PharmacyModule and use PharmacyService. Owned by the "pharmacy" workstream.
  */
 @Module({
+  imports: [BillingModule],
   controllers: [PharmacyCatalogController, PharmacyStockController, PharmacySalesController],
   providers: [
     PharmacyCatalogService,
