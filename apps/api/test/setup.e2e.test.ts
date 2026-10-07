@@ -1,13 +1,44 @@
+import { resolve } from 'node:path';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
+import { config } from 'dotenv';
+import { Client } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { bearer, bootApp, DEMO, login } from './helpers';
+import { DEMO_PASSWORD, provisionTenant, upsertUser } from '@hms/db';
+import { bearer, bootApp, login } from './helpers';
+
+config({ path: resolve(__dirname, '../../../.env'), quiet: true });
 
 let app: NestFastifyApplication;
 let admin: string;
 let adminId: string;
 let reception: string;
+let demoReception: string;
 let cityAdmin: string;
 const run = Date.now().toString(36).toUpperCase().slice(-6);
+/** Setup tests change facilities, roles and the profile, so they run in their own throwaway hospital, not the shared demo one. */
+const HOSPITAL = `setup-${run.toLowerCase()}`;
+
+async function provisionTestHospital() {
+  const client = new Client({ connectionString: process.env.DATABASE_MIGRATOR_URL });
+  await client.connect();
+  try {
+    await client.query('BEGIN');
+    const t = await provisionTenant(client, {
+      code: HOSPITAL,
+      name: `Setup Test Hospital ${run}`,
+      facility: { code: 'MAIN', name: 'Main' },
+      admin: { name: 'Setup Admin', email: `admin@${HOSPITAL}.test`, password: DEMO_PASSWORD },
+    });
+    await upsertUser(client, t.tenantId, { name: 'Setup Reception', email: `reception@${HOSPITAL}.test`, password: DEMO_PASSWORD, roleKeys: ['receptionist'] });
+    await upsertUser(client, t.tenantId, { name: 'Dr. Seeded', email: `doctor@${HOSPITAL}.test`, password: DEMO_PASSWORD, roleKeys: ['doctor'] });
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    await client.end();
+  }
+}
 
 type Json = Record<string, unknown> | unknown[];
 async function call(token: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', url: string, payload?: Json) {
@@ -15,7 +46,7 @@ async function call(token: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'D
   return { status: res.statusCode, body: res.body ? res.json() : undefined };
 }
 
-async function loginWith(identifier: string, password: string, tenantCode = DEMO.tenantCode) {
+async function loginWith(identifier: string, password: string, tenantCode = HOSPITAL) {
   return app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { tenantCode, identifier, password, client: 'mobile' } });
 }
 
@@ -25,23 +56,25 @@ async function roleId(token: string, key: string): Promise<string> {
 }
 
 beforeAll(async () => {
+  await provisionTestHospital();
   app = await bootApp();
-  const a = await login(app, 'admin@demo.hms');
+  const a = await login(app, `admin@${HOSPITAL}.test`, HOSPITAL);
   admin = a.accessToken;
   adminId = a.user.id;
-  reception = (await login(app, 'reception@demo.hms')).accessToken;
+  reception = (await login(app, `reception@${HOSPITAL}.test`, HOSPITAL)).accessToken;
+  demoReception = (await login(app, 'reception@demo.hms')).accessToken;
   cityAdmin = (await login(app, 'admin@city.hms', 'city')).accessToken;
 });
 afterAll(() => app.close());
 
 describe('hospital profile and wizard', () => {
   it('saves the profile with GSTIN and reports wizard progress', async () => {
-    const bad = await call(admin, 'PUT', '/setup/profile', { legalName: 'Demo Hospital Pvt Ltd', displayName: 'Demo Hospital', gstin: 'NOT-A-GSTIN' });
+    const bad = await call(admin, 'PUT', '/setup/profile', { legalName: 'Setup Test Pvt Ltd', displayName: 'Setup Test', gstin: 'NOT-A-GSTIN' });
     expect(bad.status).toBe(400);
 
     const res = await call(admin, 'PUT', '/setup/profile', {
-      legalName: 'Demo Multispeciality Hospital Pvt Ltd',
-      displayName: 'Demo Multispeciality Hospital',
+      legalName: 'Setup Test Hospital Pvt Ltd',
+      displayName: 'Setup Test Hospital',
       gstin: '27AAPFU0939F1ZV',
       address: { city: 'Pune', state: 'Maharashtra', pincode: '411001' },
       letterhead: { tagline: 'Care you can trust' },
@@ -71,7 +104,6 @@ describe('facilities, departments, specializations', () => {
     expect(dup.status).toBe(409);
     const list = await call(reception, 'GET', '/setup/facilities');
     expect((list.body as { code: string }[]).map((f) => f.code)).toContain(`BR${run}`);
-    // Other modules' tests assume the demo hospital has one active facility.
     const off = await call(admin, 'PATCH', `/setup/facilities/${(created.body as { id: string }).id}`, { isActive: false });
     expect(off.status).toBe(200);
     const after = await call(reception, 'GET', '/setup/facilities');
@@ -79,9 +111,9 @@ describe('facilities, departments, specializations', () => {
   });
 
   it('will not deactivate the last active facility', async () => {
-    const list = (await call(cityAdmin, 'GET', '/setup/facilities')).body as { id: string }[];
+    const list = (await call(admin, 'GET', '/setup/facilities')).body as { id: string }[];
     expect(list).toHaveLength(1);
-    const res = await call(cityAdmin, 'PATCH', `/setup/facilities/${list[0]!.id}`, { isActive: false });
+    const res = await call(admin, 'PATCH', `/setup/facilities/${list[0]!.id}`, { isActive: false });
     expect(res.status).toBe(409);
     expect((res.body as { error: { code: string } }).error.code).toBe('last_facility');
   });
@@ -102,7 +134,7 @@ describe('users, doctors, schedules', () => {
   let departmentId: string;
   let facilityId: string;
   let tempPassword: string;
-  const email = `dr.${run.toLowerCase()}@demo.hms`;
+  const email = `dr.${run.toLowerCase()}@${HOSPITAL}.test`;
 
   beforeAll(async () => {
     departmentId = ((await call(admin, 'POST', '/setup/departments', { code: `ORTH${run}`, name: 'Orthopaedics' })).body as { id: string }).id;
@@ -136,8 +168,10 @@ describe('users, doctors, schedules', () => {
     const all = (await call(reception, 'GET', '/setup/doctors')).body as { userId: string; name: string; consultationFee?: number; departmentId: string | null }[];
     const mine = all.find((d) => d.userId === doctorId);
     expect(mine).toMatchObject({ departmentId, consultationFee: 500, specialization: null, registrationNo: `MMC-${run}`, signatureUrl: null });
-    // The seeded doctor has the doctor role but no profile yet; still listed.
-    expect(all.some((d) => d.name === 'Dr. Asha Rao')).toBe(true);
+    // A doctor with the doctor role but no profile yet is still listed.
+    expect(all.some((d) => d.name === 'Dr. Seeded')).toBe(true);
+    const demo = (await call(demoReception, 'GET', '/setup/doctors')).body as { name: string }[];
+    expect(demo.some((d) => d.name === 'Dr. Asha Rao')).toBe(true);
 
     const byDept = (await call(reception, 'GET', `/setup/doctors?departmentId=${departmentId}`)).body as { userId: string }[];
     expect(byDept.map((d) => d.userId)).toEqual([doctorId]);
@@ -205,8 +239,7 @@ describe('users, doctors, schedules', () => {
 
   it('protects the last hospital admin and your own account', async () => {
     expect((await call(admin, 'POST', `/setup/users/${adminId}/deactivate`)).status).toBe(400);
-    const cityMe = (await call(cityAdmin, 'GET', '/auth/me')).body as { id: string };
-    const res = await call(cityAdmin, 'PUT', `/setup/users/${cityMe.id}/roles`, { roles: [{ roleId: await roleId(cityAdmin, 'doctor') }] });
+    const res = await call(admin, 'PUT', `/setup/users/${adminId}/roles`, { roles: [{ roleId: await roleId(admin, 'doctor') }] });
     expect(res.status).toBe(409);
     expect((res.body as { error: { code: string } }).error.code).toBe('last_admin');
   });
@@ -279,7 +312,7 @@ describe('cross-hospital isolation', () => {
   it("never shows or changes another hospital's setup data", async () => {
     const demoDept = ((await call(admin, 'GET', '/setup/departments')).body as { id: string }[])[0]!;
     const demoUsers = ((await call(admin, 'GET', '/setup/users')).body as { items: { id: string; email: string | null }[] }).items;
-    const demoDoctor = demoUsers.find((u) => u.email === 'doctor@demo.hms')!;
+    const demoDoctor = demoUsers.find((u) => u.email === `doctor@${HOSPITAL}.test`)!;
     const demoRole = await roleId(admin, 'nurse');
 
     expect((await call(cityAdmin, 'PATCH', `/setup/departments/${demoDept.id}`, { name: 'Hacked' })).status).toBe(404);
