@@ -1,6 +1,7 @@
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { sql } from '@hms/db';
+import { Client } from 'pg';
+import { DEMO_PASSWORD, provisionTenant, sql } from '@hms/db';
 import { DbService } from '../src/common/db/db.service';
 import { IpdCensusService } from '../src/modules/ipd/ipd.census';
 import { bearer, bootApp, login } from './helpers';
@@ -14,6 +15,7 @@ let nurse: string;
 let clerk: string;
 let owner: string;
 let otherHospital: string;
+let starterHospital: string;
 let facilityId: string;
 const tag = Date.now().toString(36).toUpperCase();
 const WARD = `W${tag}`.slice(0, 20);
@@ -26,6 +28,25 @@ let wardId: string;
 let beds: { id: string; code: string; status: string }[];
 let patientId: string;
 let admissionId: string;
+
+/** A throwaway hospital on the growth plan (IPD included), per the test-data rules. */
+async function provisionGrowthHospital(): Promise<string> {
+  const code = 'ipd-' + tag.toLowerCase();
+  const email = `admin@${code}.test`;
+  const client = new Client({ connectionString: process.env.DATABASE_MIGRATOR_URL });
+  await client.connect();
+  try {
+    await client.query('BEGIN');
+    await provisionTenant(client, { code, name: 'IPD Test Hospital', plan: 'growth', facility: { code: 'MAIN', name: 'Main' }, admin: { name: 'IPD Admin', email, password: DEMO_PASSWORD } });
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    await client.end();
+  }
+  return email;
+}
 
 async function newPatient(first: string) {
   const res = await call(admin, 'POST', '/patients', { firstName: first, lastName: `Ipd${tag}`, gender: 'female', ageYears: 52, mobile: '9876511111' });
@@ -45,7 +66,8 @@ beforeAll(async () => {
   nurse = (await login(app, 'nurse@demo.hms')).accessToken;
   clerk = (await login(app, 'billing@demo.hms')).accessToken;
   owner = (await login(app, 'owner@demo.hms')).accessToken;
-  otherHospital = (await login(app, 'admin@city.hms', 'city')).accessToken;
+  starterHospital = (await login(app, 'admin@city.hms', 'city')).accessToken;
+  otherHospital = (await login(app, await provisionGrowthHospital(), 'ipd-' + tag.toLowerCase())).accessToken;
 
   const ward = await call(admin, 'POST', '/ipd/wards', { code: WARD, name: `General ${tag}`, wardType: 'general', defaultDailyRate: 1500 });
   expect(ward.statusCode, ward.body).toBe(201);
@@ -275,6 +297,12 @@ describe('permissions and isolation', () => {
   it('owner can look but not admit', async () => {
     expect((await call(owner, 'GET', '/ipd/bed-board')).statusCode).toBe(200);
     expect((await call(owner, 'POST', '/ipd/admissions', { patientId, bedId: beds[0]!.id, doctorId, reason: 'x y' })).statusCode).toBe(403);
+  });
+
+  it('needs a plan that includes IPD', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/v1/ipd/bed-board', headers: bearer(starterHospital) } as Inject);
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('plan_upgrade_required');
   });
 
   it("never shows one hospital's wards or patients to another", async () => {

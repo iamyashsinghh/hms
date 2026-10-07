@@ -2,11 +2,13 @@ import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Put, Query } 
 import { ipd as contracts, type Paginated } from '@hms/shared';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
+import { RequireEntitlement } from '../platform';
 import { IpdService } from './ipd.service';
 
 const uuid = new ParseUUIDPipe();
 
 @Controller('ipd')
+@RequireEntitlement('ipd')
 export class IpdController {
   constructor(private readonly ipd: IpdService) {}
 

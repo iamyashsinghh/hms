@@ -1,11 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import type { Tx } from '@hms/db';
+import { PlatformService } from '../platform';
 
-/**
- * Plan limits for IPD (bed count). Delegates to PlatformService.assertWithinLimit('beds') once the
- * platform module is on main; until then there is no limit to enforce.
- */
+/** Plan limits for IPD: the hospital's plan caps active beds (403 plan_limit_reached). */
 @Injectable()
 export class IpdPlanLimits {
-  async assertBeds(_tx: Tx, _adding: number, _current: number): Promise<void> {}
+  constructor(private readonly platform: PlatformService) {}
+
+  assertBeds(_tx: Tx, adding: number, current: number): Promise<void> {
+    return this.platform.assertWithinLimit('beds', { adding, current });
+  }
 }
