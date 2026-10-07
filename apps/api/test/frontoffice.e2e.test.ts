@@ -176,6 +176,69 @@ describe('frontoffice: appointments', () => {
   });
 });
 
+describe('frontoffice: doctor schedules from setup', () => {
+  let schedDoctor: string;
+  let day: string;
+
+  beforeAll(async () => {
+    const roles = await app.inject({ method: 'GET', url: '/api/v1/setup/roles', headers: h(admin) });
+    const roleId = roles.json().find((r: { key: string }) => r.key === 'doctor').id;
+    const user = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/users',
+      headers: h(admin),
+      payload: { name: `Dr. Slot ${run}`, email: `slot${run}@demo.hms`, roles: [{ roleId }] },
+    });
+    expect(user.statusCode).toBe(201);
+    schedDoctor = user.json().id;
+    day = istDate(slot(60 * 24 * 3));
+    const weekday = new Date(`${day}T12:00:00Z`).getUTCDay();
+    const sched = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/setup/doctors/${schedDoctor}/schedule`,
+      headers: h(admin),
+      payload: { blocks: [{ facilityId, weekday, startTime: '10:00', endTime: '11:00', slotMinutes: 15, maxPatients: 2 }] },
+    });
+    expect(sched.statusCode).toBe(200);
+  });
+
+  const bookAt = (patientId: string, slotStart: string) =>
+    app.inject({
+      method: 'POST',
+      url: '/api/v1/frontoffice/appointments',
+      headers: h(reception),
+      payload: { patientId, doctorId: schedDoctor, slotStart },
+    });
+
+  it('books only into schedule slots, up to the slot capacity, and reports occupancy', async () => {
+    const slots = await app.inject({ method: 'GET', url: `/api/v1/frontoffice/doctors/${schedDoctor}/slots?date=${day}`, headers: h(reception) });
+    expect(slots.statusCode).toBe(200);
+    expect(slots.json()).toHaveLength(4);
+    expect(slots.json()[0]).toMatchObject({ capacity: 2, booked: 0, available: true });
+
+    const tenAm = new Date(`${day}T10:00:00+05:30`).toISOString();
+    const offSlot = await bookAt((await newPatient()).id, new Date(`${day}T10:07:00+05:30`).toISOString());
+    expect(offSlot.json().error.code).toBe('not_a_slot');
+
+    const first = await bookAt((await newPatient()).id, tenAm);
+    expect(first.statusCode).toBe(201);
+    expect(first.json().slotEnd).toBe(new Date(`${day}T10:15:00+05:30`).toISOString());
+    expect((await bookAt((await newPatient()).id, tenAm)).statusCode).toBe(201);
+    const full = await bookAt((await newPatient()).id, tenAm);
+    expect(full.json().error.code).toBe('slot_taken');
+
+    const after = await app.inject({ method: 'GET', url: `/api/v1/frontoffice/doctors/${schedDoctor}/slots?date=${day}`, headers: h(reception) });
+    expect(after.json()[0]).toMatchObject({ booked: 2, available: false });
+    expect(after.json()[1]).toMatchObject({ booked: 0, available: true });
+  });
+
+  it('refuses days the doctor does not work', async () => {
+    const nextDay = istDate(new Date(new Date(`${day}T12:00:00Z`).getTime() + 86_400_000).toISOString());
+    const res = await bookAt((await newPatient()).id, new Date(`${nextDay}T10:00:00+05:30`).toISOString());
+    expect(res.json().error.code).toBe('doctor_unavailable');
+  });
+});
+
 describe('frontoffice: check-in and queue', () => {
   it('checks in an appointment, issues tokens, and moves through the queue', async () => {
     const a = await newPatient();

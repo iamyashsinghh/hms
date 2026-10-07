@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { formatSeries, iso, nextCounter, type Tx } from '@hms/db';
+import { iso, nextCounter, sql, type Tx } from '@hms/db';
 import { frontoffice as fo, type Paginated } from '@hms/shared';
 import type { z } from 'zod';
 import { DbService } from '../../common/db/db.service';
@@ -9,6 +9,7 @@ import { EventBus } from '../../common/events/event-bus';
 import { currentContext } from '../../common/context/request-context';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../common/errors/errors';
 import { PatientsService } from '../patients/patients.service';
+import { SetupService } from '../setup/setup.service';
 import {
   FrontofficeRepository,
   type AppointmentRow,
@@ -50,6 +51,7 @@ export class FrontofficeService implements OnModuleInit {
     private readonly audit: AuditService,
     private readonly bus: EventBus,
     private readonly patients: PatientsService,
+    private readonly setup: SetupService,
   ) {}
 
   onModuleInit() {
@@ -65,10 +67,32 @@ export class FrontofficeService implements OnModuleInit {
 
   // ---------- doctors ----------
 
+  /** Doctors working in the caller's facility (from the setup module). */
   listDoctors(): Promise<fo.Doctor[]> {
+    return this.setup.listDoctors({ facilityId: currentContext()?.facilityId ?? undefined });
+  }
+
+  /** The doctor's schedule slots on a date with how many are already booked. Empty when not working that day. */
+  availableSlots(doctorId: string, q: { date: string; facilityId?: string }): Promise<fo.AvailableSlot[]> {
     return this.db.tx(async (tx) => {
-      const rows = await this.repo.doctors(tx);
-      return rows.map((d) => ({ userId: d.userId, name: d.name, departmentId: null, specialization: null, consultationFee: null }));
+      await this.requireDoctor(tx, doctorId);
+      const facilityId = await this.resolveFacility(tx, q.facilityId);
+      const slots = await this.setup.getDoctorScheduleInTx(tx, doctorId, q.date, facilityId);
+      const range = istDayRange(q.date);
+      const counts = await this.repo.liveCountsByStart(tx, doctorId, range.from, range.to);
+      const now = Date.now();
+      return slots.map((sl) => {
+        const capacity = sl.maxPatients ?? 1;
+        const booked = counts.get(new Date(sl.start).toISOString()) ?? 0;
+        return {
+          start: sl.start,
+          end: sl.end,
+          facilityId: sl.facilityId,
+          capacity,
+          booked,
+          available: booked < capacity && new Date(sl.start).getTime() > now - 5 * 60_000,
+        };
+      });
     });
   }
 
@@ -86,16 +110,10 @@ export class FrontofficeService implements OnModuleInit {
     const patient = await this.requireActivePatient(tx, input.patientId);
     await this.requireDoctor(tx, input.doctorId);
 
-    const start = new Date(input.slotStart).toISOString();
-    if (new Date(start).getTime() < Date.now() - 5 * 60_000) throw badRequest('slot_in_past', 'That time has already passed');
-    const end = addMinutes(start, input.durationMinutes ?? fo.DEFAULT_SLOT_MINUTES);
-    if (await this.repo.overlapping(tx, input.doctorId, start, end)) {
-      throw conflict('slot_taken', 'The doctor already has an appointment at this time');
-    }
+    const { start, end } = await this.resolveSlot(tx, input.doctorId, facilityId, input.slotStart, input.durationMinutes);
 
-    const appointmentNo = formatSeries('AP', await nextCounter(tx, 'frontoffice.appointment'));
-    const row = await this.uniqueSlot(() =>
-      this.repo.insertAppointment(tx, {
+    const appointmentNo = await this.setup.nextNumber(tx, 'frontoffice.appointment', { prefix: 'AP', width: 6 });
+    const row = await this.repo.insertAppointment(tx, {
         tenantId: this.tenantId(),
         appointmentNo,
         facilityId,
@@ -108,8 +126,7 @@ export class FrontofficeService implements OnModuleInit {
         reason: input.reason ?? null,
         createdBy: ctx?.userId ?? null,
         updatedBy: ctx?.userId ?? null,
-      }),
-    );
+      });
     await this.history(tx, row, null, 'booked', 'booked', null, { slotStart: start });
     await this.outbox.publish(tx, EV.appointmentBooked, await this.apptEvent(tx, row));
     return this.toAppointment(tx, row, patient);
@@ -145,22 +162,15 @@ export class FrontofficeService implements OnModuleInit {
       if (row.status !== 'booked') throw this.badState(`Only booked appointments can be rescheduled (this one is ${row.status})`);
       const doctorId = input.doctorId ?? row.doctorId;
       if (doctorId !== row.doctorId) await this.requireDoctor(tx, doctorId);
-      const start = new Date(input.slotStart).toISOString();
-      if (new Date(start).getTime() < Date.now() - 5 * 60_000) throw badRequest('slot_in_past', 'That time has already passed');
       const minutes = input.durationMinutes ?? (new Date(row.slotEnd).getTime() - new Date(row.slotStart).getTime()) / 60_000;
-      const end = addMinutes(start, minutes);
-      if (await this.repo.overlapping(tx, doctorId, start, end, row.id)) {
-        throw conflict('slot_taken', 'The doctor already has an appointment at this time');
-      }
-      const updated = await this.uniqueSlot(() =>
-        this.repo.updateAppointment(tx, id, {
-          doctorId,
-          slotStart: start,
-          slotEnd: end,
-          rescheduleCount: row.rescheduleCount + 1,
-          updatedBy: currentContext()?.userId ?? null,
-        }),
-      );
+      const { start, end } = await this.resolveSlot(tx, doctorId, row.facilityId, input.slotStart, minutes, row.id);
+      const updated = await this.repo.updateAppointment(tx, id, {
+        doctorId,
+        slotStart: start,
+        slotEnd: end,
+        rescheduleCount: row.rescheduleCount + 1,
+        updatedBy: currentContext()?.userId ?? null,
+      });
       await this.history(tx, updated, 'booked', 'booked', 'rescheduled', input.reason ?? null, {
         fromStart: iso(row.slotStart),
         toStart: start,
@@ -476,8 +486,12 @@ export class FrontofficeService implements OnModuleInit {
   }
 
   private async requireDoctor(tx: Tx, id: string): Promise<void> {
-    const [doc] = await this.repo.doctors(tx, [id]);
-    if (!doc) throw badRequest('not_a_doctor', 'Pick an active doctor');
+    try {
+      await this.setup.getDoctorInTx(tx, id);
+    } catch (e) {
+      if (e instanceof AppError && e.getStatus() === HttpStatus.NOT_FOUND) throw badRequest('not_a_doctor', 'Pick an active doctor');
+      throw e;
+    }
   }
 
   private async lockAppointment(tx: Tx, id: string): Promise<AppointmentRow> {
@@ -490,18 +504,55 @@ export class FrontofficeService implements OnModuleInit {
     return new AppError(HttpStatus.CONFLICT, 'invalid_status', message);
   }
 
-  /** Turns a race on the one-live-booking-per-slot index into a clean 409. */
-  private async uniqueSlot<T>(fn: () => Promise<T>): Promise<T> {
-    try {
-      return await fn();
-    } catch (e) {
-      const err = e as { code?: string; constraint?: string; cause?: { code?: string; constraint?: string } };
-      const pg = err.cause ?? err;
-      if (pg.code === '23505' && pg.constraint === 'appointments_slot_uq') {
-        throw conflict('slot_taken', 'The doctor already has an appointment at this time');
-      }
-      throw e;
+  /**
+   * Checks a requested start time against the doctor's setup schedule and returns the slot to store.
+   * - Doctor has slots that day: the start must be one of them, and the slot must have room (max patients, default 1).
+   * - Doctor has a schedule but no slots that day (day off, leave, other branch): refused.
+   * - Doctor has no schedule at all yet: free-form booking of `minutes`, no overlaps.
+   * Bookings for one doctor are serialised with a transaction-scoped advisory lock.
+   */
+  private async resolveSlot(
+    tx: Tx,
+    doctorId: string,
+    facilityId: string,
+    requestedStart: string,
+    minutes = fo.DEFAULT_SLOT_MINUTES,
+    excludeId?: string,
+  ): Promise<{ start: string; end: string }> {
+    const start = new Date(requestedStart).toISOString();
+    if (new Date(start).getTime() < Date.now() - 5 * 60_000) throw badRequest('slot_in_past', 'That time has already passed');
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${'frontoffice.doctor.' + doctorId}))`);
+
+    const date = istDate(start);
+    const slots = await this.setup.getDoctorScheduleInTx(tx, doctorId, date, facilityId);
+    if (slots.length) {
+      const slot = slots.find((sl) => new Date(sl.start).toISOString() === start);
+      if (!slot) throw badRequest('not_a_slot', "Pick one of the doctor's slots for that day");
+      const booked = await this.repo.liveCountAt(tx, doctorId, start, excludeId);
+      if (booked >= (slot.maxPatients ?? 1)) throw conflict('slot_taken', 'This slot is already full');
+      return { start, end: new Date(slot.end).toISOString() };
     }
+    if (await this.hasSchedule(tx, doctorId, date)) {
+      throw badRequest('doctor_unavailable', 'The doctor is not available at this facility on that day');
+    }
+    const end = addMinutes(start, minutes);
+    if (await this.repo.overlapping(tx, doctorId, start, end, excludeId)) {
+      throw conflict('slot_taken', 'The doctor already has an appointment at this time');
+    }
+    return { start, end };
+  }
+
+  /**
+   * Whether the doctor has any weekly schedule, probed as "any slot in the 7 days from `date`, any facility".
+   * TODO(setup): replace with a SetupService.hasScheduleInTx() so a leave longer than a week is not read as "no schedule".
+   */
+  private async hasSchedule(tx: Tx, doctorId: string, date: string): Promise<boolean> {
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(`${date}T12:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + i);
+      if ((await this.setup.getDoctorScheduleInTx(tx, doctorId, d.toISOString().slice(0, 10))).length) return true;
+    }
+    return false;
   }
 
   private async moveAppointment(
@@ -562,7 +613,7 @@ export class FrontofficeService implements OnModuleInit {
     const existing = await this.repo.activeVisitFor(tx, v.patientId, v.doctorId, date);
     if (existing) throw conflict('already_in_queue', `This patient is already in the queue with token ${existing.tokenNo}`);
     const tokenNo = await nextCounter(tx, `frontoffice.token.${v.facilityId}.${v.doctorId}.${date}`);
-    const visitNo = formatSeries('OP', await nextCounter(tx, 'frontoffice.visit'));
+    const visitNo = await this.setup.nextNumber(tx, 'frontoffice.visit', { prefix: 'OP', width: 6 });
     const row = await this.repo.insertVisit(tx, {
       tenantId: this.tenantId(),
       visitNo,
