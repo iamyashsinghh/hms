@@ -2,6 +2,7 @@ import { Redirect, Stack } from 'expo-router';
 import { ActivityIndicator } from 'react-native';
 import { useAuth } from '@/lib/auth';
 import { Centered, colors } from '@/ui';
+import { variant } from '@/variants';
 
 /**
  * Everything under app/(app)/ requires a signed-in user.
@@ -10,6 +11,8 @@ import { Centered, colors } from '@/ui';
 export default function AppLayout() {
   const { status } = useAuth();
 
+  // The patient app has its own OTP session and screens under app/my.
+  if (variant.key === 'patient') return <Redirect href="/my" />;
   if (status === 'loading') {
     return (
       <Centered>

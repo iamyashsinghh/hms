@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import type { Doctor as SetupDoctor } from './setup';
 
 /**
  * Front Office: permissions and API contracts (Zod schemas + types).
@@ -93,19 +94,26 @@ export type VisitPriority = (typeof VISIT_PRIORITIES)[number];
 export const VISIT_KINDS = ['appointment', 'walk_in'] as const;
 export type VisitKind = (typeof VISIT_KINDS)[number];
 
-/** Default slot length when a doctor has no schedule configured yet (setup module owns schedules). */
+/** Slot length for doctors with no schedule set up in the setup module (free-form booking). */
 export const DEFAULT_SLOT_MINUTES = 15;
 
 // ---------- doctors ----------
 
-export const doctorSchema = z.object({
-  userId: z.uuid(),
-  name: z.string(),
-  departmentId: z.uuid().nullable(),
-  specialization: z.string().nullable(),
-  consultationFee: z.number().nullable().optional(),
-});
-export type Doctor = z.infer<typeof doctorSchema>;
+/** Doctors come from the setup module (SetupService.listDoctors). */
+export type Doctor = SetupDoctor;
+
+/** A setup schedule slot with front office occupancy. */
+export interface AvailableSlot {
+  start: string;
+  end: string;
+  facilityId: string;
+  capacity: number;
+  booked: number;
+  available: boolean;
+}
+
+export const availableSlotsQuerySchema = z.object({ date: isoDate, facilityId: z.uuid().optional() });
+export type AvailableSlotsQuery = { date: string; facilityId?: string };
 
 // ---------- appointments ----------
 
@@ -115,7 +123,7 @@ export const bookAppointmentSchema = z.object({
   /** Defaults to the X-Facility-Id facility (or the hospital's only facility). */
   facilityId: z.uuid().optional(),
   slotStart: dateTime,
-  /** Minutes; defaults to DEFAULT_SLOT_MINUTES. */
+  /** Minutes; only used for doctors without a schedule (otherwise the slot decides). Defaults to DEFAULT_SLOT_MINUTES. */
   durationMinutes: z.number().int().min(5).max(240).optional(),
   type: z.enum(APPOINTMENT_TYPES).default('new'),
   source: z.enum(APPOINTMENT_SOURCES).default('desk'),

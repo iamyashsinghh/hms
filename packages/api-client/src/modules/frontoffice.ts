@@ -4,6 +4,7 @@ import type { Http } from '../http';
 /** Front Office endpoints. Owned by the "frontoffice" workstream. Types come from @hms/shared (frontoffice.*). */
 export const frontofficeApi = (http: Http) => ({
   doctors: () => http.get<fo.Doctor[]>('/frontoffice/doctors'),
+  slots: (doctorId: string, q: fo.AvailableSlotsQuery) => http.get<fo.AvailableSlot[]>(`/frontoffice/doctors/${doctorId}/slots`, q),
 
   appointments: {
     list: (q: fo.AppointmentListQuery = {}) => http.get<Paginated<fo.Appointment>>('/frontoffice/appointments', q),
