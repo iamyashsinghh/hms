@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Patch, P
 import { emr, type Paginated } from '@hms/shared';
 import type { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
+import { RequireEntitlement } from '../platform';
 import { ZodPipe } from '../../common/validation/zod.pipe';
 import { EmrService } from './emr.service';
 import { searchIcd10 } from './icd10.data';
@@ -17,6 +18,7 @@ type QuickPrescriptionResult = emr.QuickPrescriptionResult;
 type TimelineEntry = emr.TimelineEntry;
 
 @Controller('emr')
+@RequireEntitlement('emr')
 export class EmrController {
   constructor(private readonly emr: EmrService) {}
 
