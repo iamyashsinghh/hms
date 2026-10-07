@@ -31,6 +31,8 @@ import { fromPaise, toInvoice, toPaise, toPlan, toSubscription } from './mappers
 import { PlatformDb } from './platform-db';
 
 export const GRACE_DAYS = 7;
+/** Days to pay an invoice issued mid-period (plan change) or at renewal before the hospital goes into grace. */
+const PAYMENT_TERMS_DAYS = 3;
 const TAX_RATE = 18;
 const LIFECYCLE_EVERY_MS = 60 * 60_000;
 
@@ -268,7 +270,7 @@ export class SubscriptionsService implements OnApplicationBootstrap, OnApplicati
         taxRate: TAX_RATE.toFixed(2),
         taxAmount: fromPaise(tax),
         total: fromPaise(amount + tax),
-        dueAt: sql`greatest(now(), ${opts.periodStart}::timestamptz)` as unknown as string,
+        dueAt: sql`greatest(now() + make_interval(days => ${PAYMENT_TERMS_DAYS}), ${opts.periodStart}::timestamptz)` as unknown as string,
       })
       .returning();
     await this.outbox.publish(tx, 'platform.invoice.issued', { invoiceId: row!.id, number, total: row!.total, dueAt: row!.dueAt }, tenantId);
