@@ -95,15 +95,18 @@ export class PortalService {
       };
       // The front office event may already have created the row (worker raced us): adopt it.
       const existing = await this.repo.findAppointmentBySource(tx, appointmentId);
-      if (existing) return (await this.repo.updateAppointment(tx, existing.id, values))!;
-      return this.repo.insertAppointment(tx, {
-        ...values,
-        tenantId: p.tenantId,
-        patientId: input.patientId,
-        doctorId: input.doctorId,
-        slotStart: slot.start,
-        appointmentId,
-      });
+      const saved = existing
+        ? (await this.repo.updateAppointment(tx, existing.id, values))!
+        : await this.repo.insertAppointment(tx, {
+            ...values,
+            tenantId: p.tenantId,
+            patientId: input.patientId,
+            doctorId: input.doctorId,
+            slotStart: slot.start,
+            appointmentId,
+          });
+      await this.publishAppointment(tx, 'confirmed', saved);
+      return saved;
     });
     return toAppointment(row, scope);
   }
@@ -124,7 +127,7 @@ export class PortalService {
     if (row.appointmentId) await this.gateway.cancel(row.appointmentId, 'Cancelled by patient (portal)');
     const updated = await this.db.tx(async (tx) => {
       const u = await this.repo.updateAppointment(tx, id, { status: 'cancelled' });
-      await this.outbox.publish(tx, 'portal.appointment.cancelled', { requestId: id, patientId: row.patientId, appointmentId: row.appointmentId });
+      await this.publishAppointment(tx, 'cancelled', u!, 'Cancelled by patient (portal)');
       return u!;
     });
     return toAppointment(updated, scope);
@@ -255,15 +258,30 @@ export class PortalService {
         decidedBy: ctx.userId,
         decidedAt: sql`now()` as unknown as string,
       }))!;
-      await this.outbox.publish(tx, `portal.appointment.${input.decision === 'confirm' ? 'confirmed' : 'rejected'}`, {
-        requestId: id,
-        patientId: row.patientId,
-        doctorId: row.doctorId,
-        slotStart: iso(row.slotStart),
-      });
+      await this.publishAppointment(tx, input.decision === 'confirm' ? 'confirmed' : 'rejected', updated, input.note || null);
       const names = await this.patientNames(tx, [row.patientId]);
       return toAppointment(updated, names);
     });
+  }
+
+  /** portal.appointment.confirmed / rejected / cancelled, in the same transaction as the status change. */
+  private async publishAppointment(
+    tx: Tx,
+    kind: 'confirmed' | 'rejected' | 'cancelled',
+    row: AppointmentRow,
+    note: string | null = null,
+  ): Promise<void> {
+    const event: portal.PortalAppointmentEvent = {
+      requestId: row.id,
+      appointmentId: row.appointmentId ?? null,
+      patientId: row.patientId,
+      doctorId: row.doctorId,
+      doctorName: row.doctorName ?? '',
+      facilityId: row.facilityId ?? null,
+      slotStart: iso(row.slotStart),
+      note,
+    };
+    await this.outbox.publish(tx, `portal.appointment.${kind}`, { ...event });
   }
 
   async staffFeedback(q: { page: number; pageSize: number }): Promise<Paginated<portal.PortalFeedback> & portal.FeedbackSummary> {
