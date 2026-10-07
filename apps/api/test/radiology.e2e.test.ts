@@ -1,7 +1,7 @@
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createPool, sql, upsertUser } from '@hms/db';
+import { createPool, DEMO_PASSWORD, provisionTenant, sql } from '@hms/db';
 import { DbService } from '../src/common/db/db.service';
 import { EventBus } from '../src/common/events/event-bus';
 import { bearer, bootApp, login } from './helpers';
@@ -63,16 +63,7 @@ beforeAll(async () => {
   billingClerk = (await login(app, 'billing@demo.hms')).accessToken;
   otherHospital = (await login(app, 'admin@city.hms', 'city')).accessToken;
 
-  // The seed has no radiologist yet; add one (a new user, so other suites' data is untouched).
-  const pool = createPool(process.env.DATABASE_MIGRATOR_URL!);
-  const client = await pool.connect();
-  try {
-    await upsertUser(client, tenantId, { name: 'Dr. Radiology E2E', email: 'radiologist.e2e@demo.hms', mobile: '9000000091', password: 'Demo@12345', roleKeys: ['radiologist'] });
-  } finally {
-    client.release();
-    await pool.end();
-  }
-  radiologist = (await login(app, 'radiologist.e2e@demo.hms')).accessToken;
+  radiologist = (await login(app, 'radiology@demo.hms')).accessToken;
   patientId = await newPatient();
 });
 afterAll(() => app.close());
@@ -187,7 +178,7 @@ describe('radiology order to report', () => {
     let res = await inject('PUT', `/radiology/orders/${order.id}/report`, radiologist, { findings: 'Both kidneys normal.', impression: 'Normal study.' });
     expect(res.statusCode).toBe(200);
     expect(res.json().order.status).toBe('reported');
-    expect(res.json().reports[0]).toMatchObject({ version: 1, status: 'draft', authorName: 'Dr. Radiology E2E' });
+    expect(res.json().reports[0]).toMatchObject({ version: 1, status: 'draft', authorName: 'Dr. Vikram Iyer' });
 
     res = await inject('PUT', `/radiology/orders/${order.id}/report`, radiologist, { findings: 'Both kidneys normal. No calculus.', impression: 'Normal study.', isCritical: false });
     expect(res.json().reports).toHaveLength(1);
@@ -197,7 +188,7 @@ describe('radiology order to report', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().order.status).toBe('finalized');
     const report = res.json().reports[0];
-    expect(report).toMatchObject({ status: 'final', finalizedByName: 'Dr. Radiology E2E' });
+    expect(report).toMatchObject({ status: 'final', finalizedByName: 'Dr. Vikram Iyer' });
     expect(res.json().order.finalReportId).toBe(report.id);
 
     const db = app.get(DbService);
@@ -281,25 +272,49 @@ describe('radiology orders from EMR', () => {
   });
 });
 
-describe('radiology hospital isolation', () => {
+describe('radiology plan check and hospital isolation', () => {
+  it('blocks hospitals whose plan has no radiology', async () => {
+    // City is on the Starter plan, which does not include radiology.
+    const res = await app.inject({ method: 'GET', url: '/api/v1/radiology/orders', headers: bearer(otherHospital) });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('plan_upgrade_required');
+  });
+
   it("never shows or changes one hospital's radiology data from another", async () => {
     const order = await newOrder();
-    // The city admin holds radiology.order.read, so these reach the database and RLS hides demo's rows.
-    const cityGet = await app.inject({ method: 'GET', url: `/api/v1/radiology/orders/${order.id}`, headers: bearer(otherHospital) });
-    expect(cityGet.statusCode).toBe(404);
-    const cityList = await app.inject({ method: 'GET', url: `/api/v1/radiology/orders?patientId=${patientId}`, headers: bearer(otherHospital) });
-    expect(cityList.json().items).toEqual([]);
-    const cityTests = await app.inject({ method: 'GET', url: `/api/v1/radiology/tests?q=${encodeURIComponent(testName)}`, headers: bearer(otherHospital) });
-    expect(cityTests.json()).toEqual([]);
-    const citySchedule = await app.inject({ method: 'POST', url: `/api/v1/radiology/orders/${order.id}/schedule`, headers: bearer(otherHospital), payload: { scheduledAt: slot(900) } });
-    expect(citySchedule.statusCode).toBe(404);
+    // A throwaway Growth hospital: its admin holds radiology.order.read and passes the plan check,
+    // so these reach the database and RLS hides demo's rows.
+    const code = `rad${suffix}`.toLowerCase().slice(0, 20);
+    const pool = createPool(process.env.DATABASE_MIGRATOR_URL!);
+    const client = await pool.connect();
+    let other: { tenantId: string };
+    try {
+      other = await provisionTenant(client, {
+        code,
+        name: 'Radiology Isolation Test',
+        plan: 'growth',
+        facility: { code: 'MAIN', name: 'Main' },
+        admin: { name: 'Iso Admin', email: `admin@${code}.hms`, password: DEMO_PASSWORD },
+      });
+    } finally {
+      client.release();
+      await pool.end();
+    }
+    const token = (await login(app, `admin@${code}.hms`, code)).accessToken;
+    const get = (url: string) => app.inject({ method: 'GET', url: `/api/v1${url}`, headers: bearer(token) });
 
-    const cityTenant = (await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: bearer(otherHospital) })).json().tenantId;
+    expect((await get(`/radiology/orders/${order.id}`)).statusCode).toBe(404);
+    expect((await get(`/radiology/orders?patientId=${patientId}`)).json().items).toEqual([]);
+    expect((await get(`/radiology/tests?q=${encodeURIComponent(testName)}`)).json()).toEqual([]);
+    expect((await get(`/radiology/reports/${order.id}`)).statusCode).toBe(404);
+    const schedule = await app.inject({ method: 'POST', url: `/api/v1/radiology/orders/${order.id}/schedule`, headers: bearer(token), payload: { scheduledAt: slot(900) } });
+    expect(schedule.statusCode).toBe(404);
+
     const db = app.get(DbService);
-    const changed = await db.asTenant({ tenantId: cityTenant }, async (tx) => (await tx.execute(sql`update radiology.orders set clinical_notes = 'x' where id = ${order.id}`)).rowCount);
+    const changed = await db.asTenant({ tenantId: other.tenantId }, async (tx) => (await tx.execute(sql`update radiology.orders set clinical_notes = 'x' where id = ${order.id}`)).rowCount);
     expect(changed).toBe(0);
     await expect(
-      db.asTenant({ tenantId: cityTenant }, (tx) =>
+      db.asTenant({ tenantId: other.tenantId }, (tx) =>
         tx.execute(sql`insert into radiology.modalities (tenant_id, code, name, kind) values (${tenantId}, 'HACK', 'x', 'XR')`),
       ),
     ).rejects.toThrow();

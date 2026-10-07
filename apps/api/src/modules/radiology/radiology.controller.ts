@@ -3,13 +3,16 @@ import { radiology, type Paginated } from '@hms/shared';
 import type { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
+import { RequireEntitlement } from '../platform';
 import { RadiologyService } from './radiology.service';
 
 type Out<T extends z.ZodType> = z.output<T>;
 type OrderWithReports = radiology.OrderWithReports;
 type RadiologyOrder = radiology.RadiologyOrder;
 
+/** Every radiology route needs a plan that includes radiology (Growth and up). */
 @Controller('radiology')
+@RequireEntitlement('radiology')
 export class RadiologyController {
   constructor(private readonly svc: RadiologyService) {}
 
