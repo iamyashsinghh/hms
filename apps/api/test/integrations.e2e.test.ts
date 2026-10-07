@@ -1,6 +1,8 @@
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { randomUUID } from 'node:crypto';
+import { Client } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { DEMO_PASSWORD, provisionTenant } from '@hms/db';
 import { EventBus } from '../src/common/events/event-bus';
 import { hmacSha256 } from '../src/modules/integrations/crypto';
 import { loadIntegrationsConfig } from '../src/modules/integrations/integrations.config';
@@ -13,11 +15,37 @@ let doctor: string;
 let nurse: string;
 let billingClerk: string;
 let cityAdmin: string;
+/** A throwaway hospital on the growth plan (has integrations) used as the 'other hospital'. */
+let otherAdmin: string;
+let otherTenantId: string;
 let tenantId: string;
 let facilityId: string;
 
 const run = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
 const config = loadIntegrationsConfig();
+const OTHER = `intg-${run}`;
+
+async function provisionOtherHospital() {
+  const client = new Client({ connectionString: process.env.DATABASE_MIGRATOR_URL });
+  await client.connect();
+  try {
+    await client.query('BEGIN');
+    const t = await provisionTenant(client, {
+      code: OTHER,
+      name: `Integrations Test Hospital ${run}`,
+      plan: 'growth',
+      facility: { code: 'MAIN', name: 'Main' },
+      admin: { name: 'Other Admin', email: `admin@${OTHER}.test`, password: DEMO_PASSWORD },
+    });
+    await client.query('COMMIT');
+    return t.tenantId;
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    await client.end();
+  }
+}
 
 type Res = Awaited<ReturnType<NestFastifyApplication['inject']>>;
 async function call(token: string | null, method: 'GET' | 'POST' | 'PUT' | 'PATCH', url: string, payload?: unknown, headers: Record<string, string> = {}): Promise<Res> {
@@ -59,6 +87,8 @@ beforeAll(async () => {
   nurse = (await login(app, 'nurse@demo.hms')).accessToken;
   billingClerk = (await login(app, 'billing@demo.hms')).accessToken;
   cityAdmin = (await login(app, 'admin@city.hms', 'city')).accessToken;
+  otherTenantId = await provisionOtherHospital();
+  otherAdmin = (await login(app, `admin@${OTHER}.test`, OTHER)).accessToken;
 
   const s = await call(admin, 'PUT', '/integrations/settings', { abdmMode: 'mock', hfrId: 'IN0000DEMO', hipName: 'Demo Hospital', paymentProvider: 'mock' });
   expect(s.statusCode).toBe(200);
@@ -78,9 +108,15 @@ describe('integrations: settings', () => {
   });
 
   it('ABDM calls fail cleanly in a hospital that has not switched ABDM on', async () => {
-    const res = await call(cityAdmin, 'POST', '/integrations/abha/otp', { purpose: 'create', method: 'aadhaar', identifier: aadhaar() }, { 'x-facility-id': '' });
+    const res = await call(otherAdmin, 'POST', '/integrations/abha/otp', { purpose: 'create', method: 'aadhaar', identifier: aadhaar() }, { 'x-facility-id': '' });
     expect(res.statusCode).toBe(409);
     expect(res.json().error.code).toBe('abdm_disabled');
+  });
+
+  it('is only available on plans that include integrations', async () => {
+    const res = await call(cityAdmin, 'GET', '/integrations/settings', undefined, { 'x-facility-id': '' });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('plan_upgrade_required');
   });
 });
 
@@ -320,24 +356,23 @@ describe('integrations: hospital isolation', () => {
     const city = (t: string, url: string) => call(t, 'GET', url, undefined, { 'x-facility-id': '' });
     const demoLinks = (await call(reception, 'GET', '/integrations/abha/links?status=all')).json();
     expect(demoLinks.total).toBeGreaterThan(0);
-    const cityLinks = (await city(cityAdmin, '/integrations/abha/links?status=all')).json();
+    const cityLinks = (await city(otherAdmin, '/integrations/abha/links?status=all')).json();
     expect(cityLinks.items.map((l: { id: string }) => l.id)).not.toContain(demoLinks.items[0].id);
 
     const demoPayments = (await call(billingClerk, 'GET', '/integrations/payments')).json();
-    expect((await city(cityAdmin, `/integrations/payments/${demoPayments.items[0].id}`)).statusCode).toBe(404);
+    expect((await city(otherAdmin, `/integrations/payments/${demoPayments.items[0].id}`)).statusCode).toBe(404);
     const demoMsgs = (await call(admin, 'GET', '/integrations/devices/messages')).json();
-    expect((await city(cityAdmin, `/integrations/devices/messages/${demoMsgs.items[0].id}`)).statusCode).toBe(404);
-    expect((await city(cityAdmin, '/integrations/settings')).json().abdmMode).toBe('disabled');
+    expect((await city(otherAdmin, `/integrations/devices/messages/${demoMsgs.items[0].id}`)).statusCode).toBe(404);
+    expect((await city(otherAdmin, '/integrations/settings')).json().abdmMode).toBe('disabled');
   });
 
   it('a key cannot be replayed against another hospital by editing its tenant id', async () => {
     const k = (await call(admin, 'POST', '/integrations/api-keys', { name: `iso ${run}`, scopes: ['patients.read'] })).json().key as string;
-    const cityTenant = (await login(app, 'admin@city.hms', 'city')).user as unknown as { tenantId: string };
-    const forged = k.replace(tenantId, cityTenant.tenantId);
+    const forged = k.replace(tenantId, otherTenantId);
     expect((await call(null, 'GET', '/integrations/public/v1/ping', undefined, { 'x-api-key': forged })).statusCode).toBe(401);
     // Callbacks for a hospital that has ABDM off look like an unknown hospital.
     const body = { requestId: `x-${run}`, profile: { abhaNumber: '91000000000001', name: 'X' } };
     const sig = hmacSha256(config.abdmCallbackSecret, JSON.stringify(body));
-    expect((await call(null, 'POST', `/integrations/callbacks/abdm/${cityTenant.tenantId}/profile-share`, body, { 'x-abdm-signature': sig })).statusCode).toBe(404);
+    expect((await call(null, 'POST', `/integrations/callbacks/abdm/${otherTenantId}/profile-share`, body, { 'x-abdm-signature': sig })).statusCode).toBe(404);
   });
 });

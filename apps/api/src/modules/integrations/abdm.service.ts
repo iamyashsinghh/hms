@@ -206,8 +206,7 @@ export class AbdmService implements OnModuleInit {
   // =====================================================================
 
   /** Public callback from the ABDM gateway (or simulator). The tenant was bound by the controller. */
-  async profileShareCallback(body: unknown, signature: string | undefined): Promise<{ tokenNo: number; status: string }> {
-    const raw = JSON.stringify(body ?? {});
+  async profileShareCallback(body: unknown, raw: string, signature: string | undefined): Promise<{ tokenNo: number; status: string }> {
     if (!this.config.abdmCallbackSecret || !signature || !safeEqual(signature, hmacSha256(this.config.abdmCallbackSecret, raw))) {
       throw new AppError(HttpStatus.UNAUTHORIZED, 'invalid_signature', 'Callback signature is not valid');
     }

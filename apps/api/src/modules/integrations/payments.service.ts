@@ -103,18 +103,18 @@ export class PaymentsService {
     if (row.provider !== 'mock') throw conflict('mock_only', 'Only mock payment links can be simulated');
     if (row.status !== 'created') throw conflict('payment_link_closed', `This payment link is already ${row.status}`);
     const hook = this.settings.mockPayments.buildWebhook(row.providerOrderId, Number(row.amount), d.outcome);
-    await this.handleWebhook('mock', JSON.parse(hook.body), { [MockPaymentGateway.SIGNATURE_HEADER]: hook.signature });
+    await this.handleWebhook('mock', JSON.parse(hook.body), hook.body, { [MockPaymentGateway.SIGNATURE_HEADER]: hook.signature });
     return this.get(id);
   }
 
   /**
    * Gateway webhook. The controller has already bound the hospital from the URL. The signature is
-   * checked over the JSON body; at-least-once delivery is fine because each order settles once.
+   * checked over the raw request body; at-least-once delivery is fine because each order settles once.
    */
-  async handleWebhook(provider: string, body: unknown, headers: Headers): Promise<{ ok: true; matched: boolean }> {
+  async handleWebhook(provider: string, body: unknown, raw: string, headers: Headers): Promise<{ ok: true; matched: boolean }> {
     if (!PROVIDERS.includes(provider as Provider)) throw notFound('Payment provider');
     const gateway = this.settings.paymentGateway(provider as Provider);
-    if (!gateway.verifySignature(JSON.stringify(body ?? {}), headers)) {
+    if (!gateway.verifySignature(raw, headers)) {
       throw new AppError(HttpStatus.UNAUTHORIZED, 'invalid_signature', 'Webhook signature is not valid');
     }
     const event = gateway.parseEvent(body);

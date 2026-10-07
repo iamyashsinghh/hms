@@ -2,6 +2,7 @@ import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Put
 import { integrations, type Paginated } from '@hms/shared';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
+import { RequireEntitlement } from '../platform';
 import { AbdmService } from './abdm.service';
 import { DeveloperService } from './developer.service';
 import { DevicesService } from './devices.service';
@@ -11,6 +12,7 @@ import { IntegrationSettingsService } from './settings.service';
 const I = integrations;
 
 /** Staff routes. Third-party routes are in public.controller.ts. */
+@RequireEntitlement('integrations')
 @Controller('integrations')
 export class IntegrationsController {
   constructor(
