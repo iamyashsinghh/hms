@@ -5,7 +5,9 @@ next 10 (Release 2/3 modules) follow. Read this whole file before writing code.
 
 ## 0. Getting started (every thread)
 
-1. Get the code (GitHub repo once connected; until then `git clone /mnt/project-files/hms/hms.git hms`).
+1. Get the code: the GitHub repo once it is connected. Until then the shared repo is in project files:
+   `git config --global --add safe.directory '*' && git clone /mnt/project-files/hms/hms.git hms`
+   and push your branch back with `git push origin feat/<key>`. Never push to `main` there; the coordinator merges.
 2. Branch: `feat/<module-key>` (e.g. `feat/billing`). One PR per meaningful slice; keep PRs small and merge often.
 3. `./scripts/local-infra.sh` (no Docker) or `docker compose up -d` + `pnpm db:migrate && pnpm db:seed`.
 4. `pnpm dev`. Log in as hospital `demo`, `admin@demo.hms` / `Demo@12345`.
