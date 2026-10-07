@@ -15,7 +15,10 @@ import {
   notificationsTemplates as templates,
   or,
   sql,
+  roles,
   tenants,
+  userRoles,
+  users,
   type Tx,
 } from '@hms/db';
 
@@ -27,6 +30,12 @@ export type OptOutRow = typeof optOuts.$inferSelect;
 export type LedgerRow = typeof ledger.$inferSelect;
 export type SettingsRow = typeof settings.$inferSelect;
 export type DeviceRow = typeof devices.$inferSelect;
+export interface StaffContact {
+  userId: string;
+  name: string;
+  mobile: string | null;
+  email: string | null;
+}
 
 /** Drizzle queries for the comms schema. Always called inside a tenant transaction. */
 @Injectable()
@@ -52,6 +61,28 @@ export class NotificationsRepository {
   async tenantName(tx: Tx, tenantId: string): Promise<string | undefined> {
     const [row] = await tx.select({ name: tenants.name }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
     return row?.name;
+  }
+
+  // ---------- staff directory (read-only view of core iam tables) ----------
+
+  async staffContact(tx: Tx, userId: string): Promise<StaffContact | undefined> {
+    const [row] = await tx
+      .select({ userId: users.id, name: users.name, mobile: users.mobile, email: users.email })
+      .from(users)
+      .where(and(eq(users.id, userId), eq(users.status, 'active')))
+      .limit(1);
+    return row;
+  }
+
+  /** Active users holding any of these roles (facility-limited roles included). */
+  staffWithRoles(tx: Tx, roleKeys: readonly string[]): Promise<StaffContact[]> {
+    if (!roleKeys.length) return Promise.resolve([]);
+    return tx
+      .selectDistinct({ userId: users.id, name: users.name, mobile: users.mobile, email: users.email })
+      .from(users)
+      .innerJoin(userRoles, and(eq(userRoles.tenantId, users.tenantId), eq(userRoles.userId, users.id)))
+      .innerJoin(roles, and(eq(roles.tenantId, userRoles.tenantId), eq(roles.id, userRoles.roleId)))
+      .where(and(eq(users.status, 'active'), inArray(roles.key, [...roleKeys])));
   }
 
   // ---------- templates ----------

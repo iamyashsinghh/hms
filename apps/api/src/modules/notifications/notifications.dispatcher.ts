@@ -1,13 +1,14 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import type { Tx } from '@hms/db';
 import { notifications as n } from '@hms/shared';
 import { DbService } from '../../common/db/db.service';
 import { EventBus, type EventEnvelope } from '../../common/events/event-bus';
 import { emptyContext, requestContext } from '../../common/context/request-context';
 import { ProviderError, type OutboundMessage } from './providers/provider';
 import { ProvidersService } from './providers/providers.service';
-import { NotificationsRepository } from './notifications.repository';
+import { NotificationsRepository, type StaffContact } from './notifications.repository';
 import { NotificationsService } from './notifications.service';
-import { formatAmount, formatDateIST, formatTimeIST } from './render';
+import { formatAmount, formatDateIST, formatTimeIST, normalizeMobile } from './render';
 
 /** Provider attempts per message before it is marked failed and refunded. */
 export const MAX_ATTEMPTS = 3;
@@ -107,26 +108,68 @@ export class NotificationsDispatcher implements OnModuleInit {
   /** Applies the hospital's rules to another module's event. */
   async onDomainEvent(e: EventEnvelope): Promise<void> {
     const payload = e.payload as Record<string, unknown>;
-    const patientId = typeof payload.patientId === 'string' ? payload.patientId : undefined;
-    if (!patientId) return;
     const ctx = { ...emptyContext(`event:${e.id}`), tenantId: e.tenantId, facilityIds: 'all' as const };
     await requestContext.run(ctx, () =>
       this.db.tx(async (tx) => {
         const rules = (await this.service.effectiveRules(tx, e.topic)).filter((r) => r.isActive && r.channels.length);
         for (const rule of rules) {
-          await this.service.send(tx, {
-            to: { patientId },
+          const def = n.NOTIFICATION_EVENTS.find((d) => d.topic === rule.eventTopic && d.templateKey === rule.templateKey);
+          if (!def || !matches(def, payload)) continue;
+          const data = eventData(e.topic, payload);
+          const patientId = str(payload.patientId);
+          const base = {
             template: rule.templateKey,
-            data: eventData(e.topic, payload),
             channels: rule.channels,
-            idempotencyKey: `event:${e.id}:${rule.templateKey}`,
             source: { module: e.topic.split('.')[0]!, refId: refIdOf(payload) },
-          });
+          };
+
+          if (def.recipient === 'patient') {
+            const mobile = def.mobileField ? normalizeMobile(str(payload[def.mobileField])) : null;
+            if (!patientId && !mobile) continue;
+            const to = patientId ? { patientId, mobile: mobile ?? undefined } : { mobile: mobile! };
+            await this.service.send(tx, { ...base, to, data, idempotencyKey: `event:${e.id}:${rule.templateKey}` });
+            continue;
+          }
+
+          // Staff alerts: say which patient, but never message the patient.
+          if (patientId) {
+            const p = await this.service.lookupPatient(e.tenantId, patientId);
+            if (p) Object.assign(data, { patientName: [p.firstName, p.lastName].filter(Boolean).join(' '), uhid: p.uhid });
+          }
+          const staff =
+            def.recipient === 'doctor'
+              ? await this.doctor(tx, str(payload[def.userField ?? 'doctorId']))
+              : await this.repo.staffWithRoles(tx, def.roles ?? []);
+          for (const s of staff) {
+            await this.service.send(tx, {
+              ...base,
+              to: { userId: s.userId, mobile: normalizeMobile(s.mobile) ?? undefined, email: s.email ?? undefined },
+              data: { ...data, doctorName: s.name, staffName: s.name },
+              idempotencyKey: `event:${e.id}:${rule.templateKey}:${s.userId}`,
+            });
+          }
         }
       }),
     );
   }
+
+  private async doctor(tx: Tx, userId: string | undefined): Promise<StaffContact[]> {
+    if (!userId) return [];
+    const c = await this.repo.staffContact(tx, userId);
+    return c ? [c] : [];
+  }
 }
+
+const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
+
+/** EventDef.matchAny: true when no filter, or any listed key has an allowed value. */
+export function matches(def: n.EventDef, payload: Record<string, unknown>): boolean {
+  if (!def.matchAny) return true;
+  return Object.entries(def.matchAny).some(([k, allowed]) => typeof payload[k] === 'string' && allowed.includes(payload[k] as string));
+}
+
+const human = (v: string) => v.replace(/_/g, ' ');
+const clip = (v: string, max: number) => (v.length > max ? `${v.slice(0, max - 1).trimEnd()}…` : v);
 
 /** Template variables from an event payload (see the contracts in PARALLEL_PLAN.md section 4). */
 export function eventData(topic: string, p: Record<string, unknown>): Record<string, string> {
@@ -143,11 +186,27 @@ export function eventData(topic: string, p: Record<string, unknown>): Record<str
     if (typeof p.mode === 'string') out.mode = MODE_LABELS[p.mode] ?? p.mode;
   }
   if (typeof p.doctorName === 'string') out.doctorName = p.doctorName;
+  for (const k of ['testName', 'value', 'unit', 'orderNo', 'studyName', 'incidentNo', 'complaintNo'] as const) {
+    if (typeof p[k] === 'string' || typeof p[k] === 'number') out[k] = String(p[k]);
+  }
+  if (typeof p.flag === 'string') out.flag = p.flag.toUpperCase();
+  if (typeof p.impression === 'string') out.impression = clip(p.impression.replace(/\s+/g, ' ').trim(), 140);
+  for (const k of ['severity', 'kind', 'category'] as const) if (typeof p[k] === 'string') out[k] = human(p[k] as string);
+  for (const k of ['fromDate', 'toDate'] as const) {
+    if (typeof p[k] === 'string' && !Number.isNaN(Date.parse(p[k] as string))) out[k] = formatDateIST(new Date(`${(p[k] as string).slice(0, 10)}T12:00:00+05:30`));
+  }
+  if (typeof p.status === 'string') out.status = human(p.status);
+  if (topic === 'hr.leave.cancelled') out.status = 'cancelled';
+  if (typeof p.month === 'string') out.month = p.month;
+  if (p.employeeCount !== undefined) out.employeeCount = String(p.employeeCount);
+  if (p.netTotal !== undefined) out.netTotal = formatAmount(Number(p.netTotal));
+  const reportName = p.title ?? p.studyName ?? p.testName ?? p.panelName;
+  if (typeof reportName === 'string') out.reportName = reportName;
   return out;
 }
 
 function refIdOf(p: Record<string, unknown>): string | undefined {
-  for (const k of ['appointmentId', 'visitId', 'invoiceId', 'prescriptionId', 'encounterId', 'patientId']) {
+  for (const k of ['appointmentId', 'visitId', 'invoiceId', 'prescriptionId', 'encounterId', 'reportId', 'resultId', 'orderId', 'incidentId', 'complaintId', 'leaveId', 'runId', 'patientId']) {
     if (typeof p[k] === 'string') return p[k] as string;
   }
   return undefined;

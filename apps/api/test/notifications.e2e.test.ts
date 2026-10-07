@@ -260,6 +260,70 @@ describe('notifications: events and rules', () => {
     expect((await api('PUT', '/rules', admin, { eventTopic: 'nope.thing.done', channels: [], isActive: false })).statusCode).toBe(400);
   });
 
+  it('alerts the doctor about a critical lab value without messaging the patient', async () => {
+    const bus = app.get(EventBus);
+    const e = event('lab.result.critical', {
+      orderId: crypto.randomUUID(), orderNo: 'LB000123', resultId: crypto.randomUUID(), patientId: patient.id,
+      doctorId: doctorUserId, testName: 'Potassium', value: '6.8', unit: 'mmol/L', flag: 'critical_high',
+    });
+    await bus.dispatch(e);
+    await bus.dispatch(e);
+    const list = (await api('GET', `/messages?q=lab.critical&pageSize=100`, admin)).json();
+    const mine = list.items.filter((m: { sourceRef: string }) => m.sourceRef === e.payload.resultId);
+    expect(mine.map((m: { channel: string }) => m.channel).sort()).toEqual(['push', 'sms']);
+    const sms = mine.find((m: { channel: string }) => m.channel === 'sms');
+    expect(sms.recipient).toBe('9000000002');
+    expect(sms.userId).toBe(doctorUserId);
+    expect(sms.patientId).toBeNull();
+    expect(sms.body).toContain(`${patient.firstName}`);
+    expect(sms.body).toContain(patient.uhid);
+    expect(sms.body).toContain('Potassium 6.8 mmol/L CRITICAL_HIGH');
+  });
+
+  it('tells the patient a radiology report is ready and the doctor about a critical finding', async () => {
+    const bus = app.get(EventBus);
+    const reportId = crypto.randomUUID();
+    await bus.dispatch(event('radiology.report.finalized', { reportId, patientId: patient.id, title: 'X-ray chest PA', orderId: crypto.randomUUID(), version: 1, isCritical: true, referringDoctorId: doctorUserId, facilityId: crypto.randomUUID(), issuedAt: new Date().toISOString() }));
+    await bus.dispatch(event('radiology.report.critical', { reportId, orderId: crypto.randomUUID(), patientId: patient.id, referringDoctorId: doctorUserId, studyName: 'X-ray chest PA', impression: 'Large right-sided pneumothorax.' }));
+    const msgs = (await api('GET', `/messages?q=${encodeURIComponent('X-ray chest PA')}&pageSize=100`, admin)).json().items.filter((m: { sourceRef: string }) => m.sourceRef === reportId);
+    const ready = msgs.find((m: { templateKey: string }) => m.templateKey === 'report.ready');
+    expect(ready.recipient).toBe(patient.mobile);
+    expect(ready.body).toContain('your X-ray chest PA report');
+    const critical = msgs.find((m: { templateKey: string; channel: string }) => m.templateKey === 'radiology.critical' && m.channel === 'sms');
+    expect(critical.recipient).toBe('9000000002');
+    expect(critical.body).toContain('Large right-sided pneumothorax.');
+  });
+
+  it('alerts admins only for serious incidents, and SMSes a resolved complaint to the complainant', async () => {
+    const bus = app.get(EventBus);
+    const minor = event('quality.incident.reported', { incidentId: crypto.randomUUID(), incidentNo: 'INC-1', facilityId: null, kind: 'incident', category: 'patient_fall', severity: 'mild', patientId: null });
+    const severe = event('quality.incident.reported', { incidentId: crypto.randomUUID(), incidentNo: 'INC-2', facilityId: null, kind: 'incident', category: 'patient_fall', severity: 'severe', patientId: null });
+    await bus.dispatch(minor);
+    await bus.dispatch(severe);
+    const alerts = (await api('GET', '/messages?q=quality.incident_alert&pageSize=100', admin)).json().items;
+    expect(alerts.some((m: { sourceRef: string }) => m.sourceRef === minor.payload.incidentId)).toBe(false);
+    const sms = alerts.find((m: { sourceRef: string; channel: string }) => m.sourceRef === severe.payload.incidentId && m.channel === 'sms');
+    expect(sms.recipient).toBe('9000000001'); // hospital admin
+    expect(sms.body).toContain('Incident INC-2');
+    expect(sms.body).toContain('severe (patient fall)');
+
+    const mobile = uniqueMobile();
+    const c = event('quality.complaint.resolved', { complaintId: crypto.randomUUID(), complaintNo: 'CMP-7', patientId: null, complainantMobile: `+91${mobile}` });
+    await bus.dispatch(c);
+    const resolved = (await api('GET', `/messages?q=${mobile}`, admin)).json().items;
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0].body).toContain('complaint CMP-7');
+  });
+
+  it('tells an employee about their leave decision', async () => {
+    const bus = app.get(EventBus);
+    const e = event('hr.leave.decided', { leaveId: crypto.randomUUID(), employeeId: crypto.randomUUID(), userId: doctorUserId, status: 'approved', fromDate: '2026-10-20', toDate: '2026-10-22' });
+    await bus.dispatch(e);
+    const sms = (await api('GET', '/messages?q=hr.leave_update&channel=sms&pageSize=100', admin)).json().items.find((m: { sourceRef: string }) => m.sourceRef === e.payload.leaveId);
+    expect(sms.recipient).toBe('9000000002');
+    expect(sms.body).toContain('Dear Dr. Asha Rao, your leave from 20 Oct 2026 to 22 Oct 2026 has been approved');
+  });
+
   it('other modules can call send() inside their own transaction', async () => {
     const svc = app.get(NotificationsService);
     const db = app.get(DbService);

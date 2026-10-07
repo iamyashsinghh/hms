@@ -173,7 +173,7 @@ export class NotificationsService {
   }
 
   /** Reads the patient through PatientsService (works in requests and in the worker). */
-  private async lookupPatient(tenantId: string, patientId: string) {
+  async lookupPatient(tenantId: string, patientId: string) {
     const get = () => this.patients.get(patientId).catch(() => null);
     const ctx = currentContext();
     if (ctx?.tenantId === tenantId) return get();
@@ -338,6 +338,7 @@ export class NotificationsService {
       return {
         eventTopic: e.topic,
         eventName: e.name,
+        recipient: e.recipient,
         templateKey: e.templateKey,
         channels: (c ? c.channels : [...e.defaultChannels]) as Channel[],
         isActive: c ? c.isActive : e.defaultChannels.length > 0,
