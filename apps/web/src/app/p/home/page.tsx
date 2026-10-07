@@ -44,7 +44,9 @@ export default function PatientHomePage() {
             <Logo />
             <div>
               <p className="text-sm font-semibold leading-tight">{me.hospitalName}</p>
-              <p className="text-xs text-muted-foreground">Hello{me.name ? `, ${me.name}` : ''} · {me.mobile}</p>
+              <p className="text-xs text-muted-foreground">
+                Hello{me.name ? `, ${me.name}` : ''} · {me.mobile}
+              </p>
             </div>
           </div>
           <Button variant="ghost" size="sm" onClick={() => signOut()}>
@@ -57,7 +59,9 @@ export default function PatientHomePage() {
               key={t.key}
               onClick={() => setTab(t.key)}
               className={`flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm ${
-                tab === t.key ? 'border-primary font-medium text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
+                tab === t.key
+                  ? 'border-primary font-medium text-primary'
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
               }`}
             >
               <t.icon className="size-4" /> {t.label}
@@ -70,12 +74,28 @@ export default function PatientHomePage() {
         {['appointments', 'prescriptions', 'bills', 'reports'].includes(tab) && (
           <PatientPicker patients={me.patients} value={patientId} onChange={setPatientId} />
         )}
-        {tab === 'appointments' && <AppointmentsTab patientId={patientId} onBook={() => setTab('book')} />}
-        {tab === 'book' && <BookTab patients={me.patients} defaultPatientId={patientId} onBooked={() => setTab('appointments')} />}
+        {tab === 'appointments' && (
+          <AppointmentsTab patientId={patientId} onBook={() => setTab('book')} />
+        )}
+        {tab === 'book' && (
+          <BookTab
+            patients={me.patients}
+            defaultPatientId={patientId}
+            onBooked={() => setTab('appointments')}
+          />
+        )}
         {tab === 'prescriptions' && <PrescriptionsTab patientId={patientId} />}
         {tab === 'bills' && <BillsTab patientId={patientId} />}
         {tab === 'reports' && <ReportsTab patientId={patientId} />}
-        {tab === 'family' && <FamilyTab patients={me.patients} onChanged={reload} />}
+        {tab === 'family' && (
+          <FamilyTab
+            patients={me.patients}
+            onChanged={async () => {
+              setTab('family');
+              await reload();
+            }}
+          />
+        )}
       </main>
     </div>
   );

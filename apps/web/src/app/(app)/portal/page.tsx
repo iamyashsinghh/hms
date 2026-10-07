@@ -13,10 +13,23 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 
 const when = (iso: string) =>
-  new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+  new Date(iso).toLocaleString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZone: 'Asia/Kolkata',
+  });
 
 const STATUS_VARIANT: Record<string, 'secondary' | 'accent' | 'destructive' | 'outline'> = {
   requested: 'secondary',
@@ -30,7 +43,8 @@ export default function PortalAdminPage() {
   const canRead = usePermission('portal.booking.read');
   const { user } = useAuth();
   if (!canRead) return <NoAccess />;
-  const link = typeof window !== 'undefined' && user ? `${window.location.origin}/p?h=${user.tenantCode}` : '';
+  const link =
+    typeof window !== 'undefined' && user ? `${window.location.origin}/p?h=${user.tenantCode}` : '';
   return (
     <>
       <PageHeader
@@ -38,7 +52,12 @@ export default function PortalAdminPage() {
         description="Appointments patients booked on the patient portal, and their feedback."
         actions={
           link && (
-            <a href={link} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm text-primary hover:underline">
+            <a
+              href={link}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
+            >
               Patient portal link <ExternalLink className="size-3" />
             </a>
           )
@@ -61,11 +80,17 @@ function Bookings() {
   const [date, setDate] = React.useState('');
   const { data, isPending, error } = useQuery({
     queryKey: ['portal-staff', 'bookings', status, date],
-    queryFn: () => api.portal.staff.bookings({ status: status || undefined, date: date || undefined, pageSize: 100 }),
+    queryFn: () =>
+      api.portal.staff.bookings({
+        status: status || undefined,
+        date: date || undefined,
+        pageSize: 100,
+      }),
     placeholderData: keepPreviousData,
   });
   const decide = useMutation({
-    mutationFn: (v: { id: string; decision: 'confirm' | 'reject' }) => api.portal.staff.decide(v.id, { decision: v.decision }),
+    mutationFn: (v: { id: string; decision: 'confirm' | 'reject' }) =>
+      api.portal.staff.decide(v.id, { decision: v.decision }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['portal-staff', 'bookings'] }),
   });
 
@@ -74,10 +99,16 @@ function Bookings() {
       <CardHeader className="flex-row flex-wrap items-end justify-between gap-3">
         <div>
           <CardTitle>Booking requests</CardTitle>
-          <CardDescription>Confirm to accept the slot, or reject if the doctor is not available.</CardDescription>
+          <CardDescription>
+            Confirm to accept the slot, or reject if the doctor is not available.
+          </CardDescription>
         </div>
         <div className="flex gap-2">
-          <Select value={status} onChange={(e) => setStatus(e.target.value as portal.AppointmentStatus | '')} className="w-40">
+          <Select
+            value={status}
+            onChange={(e) => setStatus(e.target.value as portal.AppointmentStatus | '')}
+            className="w-40"
+          >
             <option value="">All statuses</option>
             <option value="requested">Waiting</option>
             <option value="confirmed">Confirmed</option>
@@ -85,11 +116,18 @@ function Bookings() {
             <option value="rejected">Rejected</option>
             <option value="cancelled">Cancelled</option>
           </Select>
-          <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-40" />
+          <Input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            className="w-40"
+          />
         </div>
       </CardHeader>
       <CardContent className="p-0">
-        {decide.error && <p className="px-6 pb-3 text-sm text-destructive">{errorMessage(decide.error)}</p>}
+        {decide.error && (
+          <p className="px-6 pb-3 text-sm text-destructive">{errorMessage(decide.error)}</p>
+        )}
         {isPending ? (
           <p className="p-6 text-sm text-muted-foreground">Loading…</p>
         ) : error ? (
@@ -114,7 +152,9 @@ function Bookings() {
                   <TableCell className="whitespace-nowrap">{when(b.slotStart)}</TableCell>
                   <TableCell>{b.patientName}</TableCell>
                   <TableCell>{b.doctorName}</TableCell>
-                  <TableCell className="max-w-56 truncate text-muted-foreground">{b.reason ?? '—'}</TableCell>
+                  <TableCell className="max-w-56 truncate text-muted-foreground">
+                    {b.reason ?? '—'}
+                  </TableCell>
                   <TableCell>
                     <Badge variant={STATUS_VARIANT[b.status] ?? 'outline'} className="capitalize">
                       {b.status}
@@ -123,10 +163,19 @@ function Bookings() {
                   <TableCell className="text-right">
                     {canManage && b.status === 'requested' && (
                       <div className="flex justify-end gap-1">
-                        <Button size="sm" disabled={decide.isPending} onClick={() => decide.mutate({ id: b.id, decision: 'confirm' })}>
+                        <Button
+                          size="sm"
+                          disabled={decide.isPending}
+                          onClick={() => decide.mutate({ id: b.id, decision: 'confirm' })}
+                        >
                           <Check /> Confirm
                         </Button>
-                        <Button size="sm" variant="outline" disabled={decide.isPending} onClick={() => decide.mutate({ id: b.id, decision: 'reject' })}>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={decide.isPending}
+                          onClick={() => decide.mutate({ id: b.id, decision: 'reject' })}
+                        >
                           <X /> Reject
                         </Button>
                       </div>
@@ -143,13 +192,18 @@ function Bookings() {
 }
 
 function Feedback() {
-  const { data, isPending, error } = useQuery({ queryKey: ['portal-staff', 'feedback'], queryFn: () => api.portal.staff.feedback({ pageSize: 50 }) });
+  const { data, isPending, error } = useQuery({
+    queryKey: ['portal-staff', 'feedback'],
+    queryFn: () => api.portal.staff.feedback({ pageSize: 50 }),
+  });
   return (
     <Card>
       <CardHeader>
         <CardTitle>Patient feedback</CardTitle>
         <CardDescription>
-          {data?.average != null ? `Average ${data.average} / 5 from ${data.count} ratings` : 'Ratings patients leave after their visit.'}
+          {data?.average != null
+            ? `Average ${data.average} / 5 from ${data.count} ratings`
+            : 'Ratings patients leave after their visit.'}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -161,7 +215,10 @@ function Feedback() {
           <p className="text-sm text-muted-foreground">No feedback yet.</p>
         ) : (
           data.items.map((f) => (
-            <div key={f.id} className="flex flex-wrap items-start justify-between gap-2 border-b pb-3 last:border-0">
+            <div
+              key={f.id}
+              className="flex flex-wrap items-start justify-between gap-2 border-b pb-3 last:border-0"
+            >
               <div>
                 <p className="text-sm font-medium">{f.patientName}</p>
                 {f.comment && <p className="text-sm text-muted-foreground">{f.comment}</p>}
@@ -169,7 +226,10 @@ function Feedback() {
               <div className="flex items-center gap-2 text-sm">
                 <span className="flex">
                   {[1, 2, 3, 4, 5].map((n) => (
-                    <Star key={n} className={`size-4 ${n <= f.rating ? 'fill-amber-400 text-amber-400' : 'text-muted-foreground'}`} />
+                    <Star
+                      key={n}
+                      className={`size-4 ${n <= f.rating ? 'fill-amber-400 text-amber-400' : 'text-muted-foreground'}`}
+                    />
                   ))}
                 </span>
                 <span className="text-muted-foreground">{when(f.createdAt)}</span>

@@ -2,4 +2,6 @@
 import { Globe } from 'lucide-react';
 import type { NavItem } from '../types';
 
-export const nav: NavItem[] = [{ label: 'Online bookings', href: '/portal', permission: 'portal.booking.read', icon: Globe }];
+export const nav: NavItem[] = [
+  { label: 'Online bookings', href: '/portal', permission: 'portal.booking.read', icon: Globe },
+];

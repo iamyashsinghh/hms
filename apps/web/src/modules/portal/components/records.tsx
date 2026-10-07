@@ -29,7 +29,12 @@ export function PrescriptionsTab({ patientId }: { patientId: string }) {
                   {formatDateTime(rx.issuedAt)} · {rx.patientName}
                 </p>
               </div>
-              <Button variant="ghost" size="sm" className="print:hidden" onClick={() => window.print()}>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="print:hidden"
+                onClick={() => window.print()}
+              >
                 <Printer /> Print
               </Button>
             </div>
@@ -38,7 +43,9 @@ export function PrescriptionsTab({ patientId }: { patientId: string }) {
                 <li key={i} className="flex flex-wrap justify-between gap-2 px-3 py-2">
                   <span className="font-medium">{l.drugName}</span>
                   <span className="text-muted-foreground">
-                    {[l.dose, l.frequency, l.days ? `${l.days} days` : null].filter(Boolean).join(' · ')}
+                    {[l.dose, l.frequency, l.days ? `${l.days} days` : null]
+                      .filter(Boolean)
+                      .join(' · ')}
                   </span>
                 </li>
               ))}
@@ -60,7 +67,10 @@ export function BillsTab({ patientId }: { patientId: string }) {
   const pay = useMutation({
     mutationFn: async (invoiceId: string) => {
       const intent = await patientApi.portal.createPaymentIntent({ invoiceId });
-      return patientApi.portal.confirmPayment(intent.id, { providerPaymentId: `pay_stub_${Date.now()}`, signature: 'stub' });
+      return patientApi.portal.confirmPayment(intent.id, {
+        providerPaymentId: `pay_stub_${Date.now()}`,
+        signature: 'stub',
+      });
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['portal', 'bills'] }),
   });
@@ -83,19 +93,26 @@ export function BillsTab({ patientId }: { patientId: string }) {
             <div className="flex items-center gap-3 text-right">
               <div>
                 <p className="font-semibold">{rupees(b.total)}</p>
-                {Number(b.due) > 0 && b.status !== 'cancelled' && <p className="text-xs text-destructive">Due {rupees(b.due)}</p>}
+                {Number(b.due) > 0 && b.status !== 'cancelled' && (
+                  <p className="text-xs text-destructive">Due {rupees(b.due)}</p>
+                )}
               </div>
               <StatusBadge status={b.status} />
               {Number(b.due) > 0 && b.status !== 'cancelled' && (
                 <Button size="sm" onClick={() => pay.mutate(b.invoiceId)} disabled={pay.isPending}>
-                  {pay.isPending && pay.variables === b.invoiceId && <Loader2 className="animate-spin" />} Pay {rupees(b.due)}
+                  {pay.isPending && pay.variables === b.invoiceId && (
+                    <Loader2 className="animate-spin" />
+                  )}{' '}
+                  Pay {rupees(b.due)}
                 </Button>
               )}
             </div>
           </CardContent>
         </Card>
       ))}
-      <p className="text-xs text-muted-foreground">Online payment is in test mode. No money is charged.</p>
+      <p className="text-xs text-muted-foreground">
+        Online payment is in test mode. No money is charged.
+      </p>
     </div>
   );
 }
@@ -107,7 +124,8 @@ export function ReportsTab({ patientId }: { patientId: string }) {
   });
   if (isPending) return <p className="text-sm text-muted-foreground">Loading…</p>;
   if (error) return <p className="text-sm text-destructive">{errorMessage(error)}</p>;
-  if (!data.length) return <Empty>Lab and scan reports will appear here once the hospital releases them.</Empty>;
+  if (!data.length)
+    return <Empty>Lab and scan reports will appear here once the hospital releases them.</Empty>;
   return (
     <div className="space-y-3">
       {data.map((r) => (
@@ -123,7 +141,12 @@ export function ReportsTab({ patientId }: { patientId: string }) {
               </div>
             </div>
             {r.url && (
-              <a href={r.url} target="_blank" rel="noreferrer" className="text-sm text-primary hover:underline">
+              <a
+                href={r.url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-sm text-primary hover:underline"
+              >
                 Open
               </a>
             )}

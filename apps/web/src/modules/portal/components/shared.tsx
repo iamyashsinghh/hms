@@ -4,16 +4,33 @@ import type { portal } from '@hms/shared';
 import { Badge } from '@/components/ui/badge';
 import { Select } from '@/components/ui/input';
 
-export const patientName = (p: Pick<portal.PortalPatient, 'firstName' | 'lastName'>) => [p.firstName, p.lastName].filter(Boolean).join(' ');
+export const patientName = (p: Pick<portal.PortalPatient, 'firstName' | 'lastName'>) =>
+  [p.firstName, p.lastName].filter(Boolean).join(' ');
 
 export const formatDateTime = (iso: string) =>
-  new Date(iso).toLocaleString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+  new Date(iso).toLocaleString('en-IN', {
+    weekday: 'short',
+    day: '2-digit',
+    month: 'short',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZone: 'Asia/Kolkata',
+  });
 
-export const formatTime = (iso: string) => new Date(iso).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+export const formatTime = (iso: string) =>
+  new Date(iso).toLocaleTimeString('en-IN', {
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZone: 'Asia/Kolkata',
+  });
 
-export const rupees = (v: string | number) => `₹${Number(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+export const rupees = (v: string | number) =>
+  `₹${Number(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-const STATUS: Record<string, { label: string; variant: 'default' | 'secondary' | 'accent' | 'outline' | 'destructive' }> = {
+const STATUS: Record<
+  string,
+  { label: string; variant: 'default' | 'secondary' | 'accent' | 'outline' | 'destructive' }
+> = {
   requested: { label: 'Waiting for hospital', variant: 'secondary' },
   booked: { label: 'Booked', variant: 'accent' },
   confirmed: { label: 'Confirmed', variant: 'accent' },
@@ -58,5 +75,9 @@ export function PatientPicker({
 }
 
 export function Empty({ children }: { children: React.ReactNode }) {
-  return <p className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">{children}</p>;
+  return (
+    <p className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
+      {children}
+    </p>
+  );
 }

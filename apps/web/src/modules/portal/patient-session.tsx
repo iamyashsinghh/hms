@@ -98,7 +98,10 @@ export function PatientSessionProvider({ children }: { children: React.ReactNode
     setMe(m);
   }, []);
 
-  const value = React.useMemo(() => ({ status, me, signIn, signOut, reload }), [status, me, signIn, signOut, reload]);
+  const value = React.useMemo(
+    () => ({ status, me, signIn, signOut, reload }),
+    [status, me, signIn, signOut, reload],
+  );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

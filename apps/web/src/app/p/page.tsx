@@ -34,7 +34,11 @@ function PatientLogin() {
     setBusy(true);
     try {
       const res = await patientApi.portal.auth.requestOtp({ tenantCode, mobile });
-      setHint(res.devCode ? `Test mode: your code is ${res.devCode}` : `We sent a 6-digit code to ${mobile}`);
+      setHint(
+        res.devCode
+          ? `Test mode: your code is ${res.devCode}`
+          : `We sent a 6-digit code to ${mobile}`,
+      );
       setStep('otp');
     } catch (err) {
       setError(errorMessage(err));
@@ -64,14 +68,21 @@ function PatientLogin() {
             <Logo />
             <span className="font-semibold">Patient portal</span>
           </div>
-          <CardTitle className="text-xl">{step === 'mobile' ? 'Sign in with your mobile' : 'Enter the code'}</CardTitle>
+          <CardTitle className="text-xl">
+            {step === 'mobile' ? 'Sign in with your mobile' : 'Enter the code'}
+          </CardTitle>
           <CardDescription>
-            {step === 'mobile' ? 'Book appointments, see prescriptions and pay bills online.' : hint}
+            {step === 'mobile'
+              ? 'Book appointments, see prescriptions and pay bills online.'
+              : hint}
           </CardDescription>
         </CardHeader>
         <CardContent>
           {error && (
-            <div role="alert" className="mb-4 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+            <div
+              role="alert"
+              className="mb-4 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+            >
               {error}
             </div>
           )}
@@ -79,11 +90,25 @@ function PatientLogin() {
             <form onSubmit={sendCode} className="space-y-4" noValidate>
               <div className="space-y-2">
                 <Label htmlFor="tenantCode">Hospital code</Label>
-                <Input id="tenantCode" autoCapitalize="none" placeholder="e.g. demo" value={tenantCode} onChange={(e) => setTenantCode(e.target.value.trim())} />
+                <Input
+                  id="tenantCode"
+                  autoCapitalize="none"
+                  placeholder="e.g. demo"
+                  value={tenantCode}
+                  onChange={(e) => setTenantCode(e.target.value.trim())}
+                />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="mobile">Mobile number</Label>
-                <Input id="mobile" inputMode="numeric" autoComplete="tel-national" maxLength={10} placeholder="98XXXXXXXX" value={mobile} onChange={(e) => setMobile(e.target.value.replace(/\D/g, ''))} />
+                <Input
+                  id="mobile"
+                  inputMode="numeric"
+                  autoComplete="tel-national"
+                  maxLength={10}
+                  placeholder="98XXXXXXXX"
+                  value={mobile}
+                  onChange={(e) => setMobile(e.target.value.replace(/\D/g, ''))}
+                />
               </div>
               <Button type="submit" className="w-full" size="lg" disabled={busy || !tenantCode}>
                 {busy && <Loader2 className="animate-spin" />} Send code
@@ -93,16 +118,38 @@ function PatientLogin() {
             <form onSubmit={verify} className="space-y-4" noValidate>
               <div className="space-y-2">
                 <Label htmlFor="otp">6-digit code</Label>
-                <Input id="otp" inputMode="numeric" autoComplete="one-time-code" maxLength={6} autoFocus value={otp} onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))} />
+                <Input
+                  id="otp"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={6}
+                  autoFocus
+                  value={otp}
+                  onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
+                />
               </div>
-              <Button type="submit" className="w-full" size="lg" disabled={busy || otp.length !== 6}>
+              <Button
+                type="submit"
+                className="w-full"
+                size="lg"
+                disabled={busy || otp.length !== 6}
+              >
                 {busy && <Loader2 className="animate-spin" />} Verify and sign in
               </Button>
               <div className="flex justify-between text-sm">
-                <button type="button" className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground" onClick={() => setStep('mobile')}>
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
+                  onClick={() => setStep('mobile')}
+                >
                   <ArrowLeft className="size-3" /> Change number
                 </button>
-                <button type="button" className="text-primary hover:underline" onClick={() => sendCode()} disabled={busy}>
+                <button
+                  type="button"
+                  className="text-primary hover:underline"
+                  onClick={() => sendCode()}
+                  disabled={busy}
+                >
                   Resend code
                 </button>
               </div>

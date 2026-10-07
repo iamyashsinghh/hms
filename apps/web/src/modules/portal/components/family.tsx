@@ -15,7 +15,13 @@ import { Label } from '@/components/ui/label';
 import { patientApi } from '../patient-session';
 import { patientName } from './shared';
 
-export function FamilyTab({ patients, onChanged }: { patients: portal.PortalPatient[]; onChanged: () => Promise<void> }) {
+export function FamilyTab({
+  patients,
+  onChanged,
+}: {
+  patients: portal.PortalPatient[];
+  onChanged: () => Promise<void>;
+}) {
   const [adding, setAdding] = React.useState(patients.length === 0);
   return (
     <div className="space-y-4">
@@ -23,7 +29,9 @@ export function FamilyTab({ patients, onChanged }: { patients: portal.PortalPati
         <Card key={p.id}>
           <CardContent className="flex items-center justify-between gap-3 p-4">
             <div className="flex items-center gap-3">
-              <div className="flex size-10 items-center justify-center rounded-full bg-secondary font-semibold text-primary">{p.firstName[0]?.toUpperCase()}</div>
+              <div className="flex size-10 items-center justify-center rounded-full bg-secondary font-semibold text-primary">
+                {p.firstName[0]?.toUpperCase()}
+              </div>
               <div>
                 <p className="font-medium">{patientName(p)}</p>
                 <p className="text-sm capitalize text-muted-foreground">
@@ -39,7 +47,13 @@ export function FamilyTab({ patients, onChanged }: { patients: portal.PortalPati
         </Card>
       ))}
       {adding ? (
-        <AddMember first={patients.length === 0} onDone={async () => { await onChanged(); setAdding(false); }} />
+        <AddMember
+          first={patients.length === 0}
+          onDone={async () => {
+            await onChanged();
+            setAdding(false);
+          }}
+        />
       ) : (
         <Button variant="outline" onClick={() => setAdding(true)}>
           <UserPlus /> Add family member
@@ -48,6 +62,8 @@ export function FamilyTab({ patients, onChanged }: { patients: portal.PortalPati
     </div>
   );
 }
+
+const emptyToUndefined = (v: unknown) => (v === '' || v == null ? undefined : v);
 
 type FormValues = {
   firstName: string;
@@ -69,7 +85,7 @@ function AddMember({ first, onDone }: { first: boolean; onDone: () => Promise<vo
   const onSubmit = handleSubmit(async (v) => {
     setError(null);
     try {
-      await patientApi.portal.addFamilyMember({ ...v, lastName: v.lastName || undefined, dateOfBirth: v.dateOfBirth || undefined });
+      await patientApi.portal.addFamilyMember(v);
       await onDone();
     } catch (err) {
       setError(errorMessage(err));
@@ -90,7 +106,7 @@ function AddMember({ first, onDone }: { first: boolean; onDone: () => Promise<vo
           </div>
           <div className="space-y-2">
             <Label htmlFor="fm-last">Last name</Label>
-            <Input id="fm-last" {...register('lastName')} />
+            <Input id="fm-last" {...register('lastName', { setValueAs: emptyToUndefined })} />
           </div>
           <div className="space-y-2">
             <Label htmlFor="fm-gender">Gender</Label>
@@ -114,12 +130,24 @@ function AddMember({ first, onDone }: { first: boolean; onDone: () => Promise<vo
           </div>
           <div className="space-y-2">
             <Label htmlFor="fm-dob">Date of birth</Label>
-            <Input id="fm-dob" type="date" {...register('dateOfBirth')} />
+            <Input
+              id="fm-dob"
+              type="date"
+              {...register('dateOfBirth', { setValueAs: emptyToUndefined })}
+            />
             <FieldError error={errors.dateOfBirth} />
           </div>
           <div className="space-y-2">
             <Label htmlFor="fm-age">or age in years</Label>
-            <Input id="fm-age" type="number" min={0} max={150} {...register('ageYears', { setValueAs: (v) => (v === '' || v == null ? undefined : Number(v)) })} />
+            <Input
+              id="fm-age"
+              type="number"
+              min={0}
+              max={150}
+              {...register('ageYears', {
+                setValueAs: (v) => (v === '' || v == null ? undefined : Number(v)),
+              })}
+            />
           </div>
           {error && <p className="text-sm text-destructive sm:col-span-2">{error}</p>}
           <div className="sm:col-span-2">

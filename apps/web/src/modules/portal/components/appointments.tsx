@@ -46,11 +46,19 @@ export function AppointmentsTab({ patientId, onBook }: { patientId: string; onBo
       ) : error ? (
         <p className="text-sm text-destructive">{errorMessage(error)}</p>
       ) : !data.length ? (
-        <Empty>{scope === 'upcoming' ? 'No upcoming appointments.' : 'No past appointments.'}</Empty>
+        <Empty>
+          {scope === 'upcoming' ? 'No upcoming appointments.' : 'No past appointments.'}
+        </Empty>
       ) : (
         <div className="space-y-3">
           {data.map((a) => (
-            <AppointmentCard key={a.id} a={a} scope={scope} cancelling={cancel.isPending && cancel.variables === a.id} onCancel={() => cancel.mutate(a.id)} />
+            <AppointmentCard
+              key={a.id}
+              a={a}
+              scope={scope}
+              cancelling={cancel.isPending && cancel.variables === a.id}
+              onCancel={() => cancel.mutate(a.id)}
+            />
           ))}
         </div>
       )}
@@ -58,7 +66,17 @@ export function AppointmentsTab({ patientId, onBook }: { patientId: string; onBo
   );
 }
 
-function AppointmentCard({ a, scope, cancelling, onCancel }: { a: portal.PortalAppointment; scope: string; cancelling: boolean; onCancel: () => void }) {
+function AppointmentCard({
+  a,
+  scope,
+  cancelling,
+  onCancel,
+}: {
+  a: portal.PortalAppointment;
+  scope: string;
+  cancelling: boolean;
+  onCancel: () => void;
+}) {
   const [rating, setRating] = React.useState(false);
   const live = ['requested', 'booked', 'confirmed'].includes(a.status);
   return (
@@ -84,26 +102,49 @@ function AppointmentCard({ a, scope, cancelling, onCancel }: { a: portal.PortalA
             </Button>
           )}
         </div>
-        {rating && <FeedbackForm patientId={a.patientId} appointmentRequestId={a.id} onDone={() => setRating(false)} />}
+        {rating && (
+          <FeedbackForm
+            patientId={a.patientId}
+            appointmentRequestId={a.id}
+            onDone={() => setRating(false)}
+          />
+        )}
       </CardContent>
     </Card>
   );
 }
 
-export function FeedbackForm({ patientId, appointmentRequestId, onDone }: { patientId: string; appointmentRequestId?: string; onDone?: () => void }) {
+export function FeedbackForm({
+  patientId,
+  appointmentRequestId,
+  onDone,
+}: {
+  patientId: string;
+  appointmentRequestId?: string;
+  onDone?: () => void;
+}) {
   const [stars, setStars] = React.useState(0);
   const [comment, setComment] = React.useState('');
   const send = useMutation({
-    mutationFn: () => patientApi.portal.feedback({ patientId, appointmentRequestId, rating: stars, comment: comment || undefined }),
+    mutationFn: () =>
+      patientApi.portal.feedback({
+        patientId,
+        appointmentRequestId,
+        rating: stars,
+        comment: comment || undefined,
+      }),
     onSuccess: () => onDone?.(),
   });
-  if (send.isSuccess) return <p className="w-full text-sm text-accent-foreground">Thank you for your feedback.</p>;
+  if (send.isSuccess)
+    return <p className="w-full text-sm text-accent-foreground">Thank you for your feedback.</p>;
   return (
     <div className="w-full space-y-2 border-t pt-3">
       <div className="flex gap-1">
         {[1, 2, 3, 4, 5].map((n) => (
           <button key={n} type="button" aria-label={`${n} stars`} onClick={() => setStars(n)}>
-            <Star className={`size-6 ${n <= stars ? 'fill-amber-400 text-amber-400' : 'text-muted-foreground'}`} />
+            <Star
+              className={`size-6 ${n <= stars ? 'fill-amber-400 text-amber-400' : 'text-muted-foreground'}`}
+            />
           </button>
         ))}
       </div>
