@@ -11,7 +11,11 @@ next 10 (Release 2/3 modules) follow. Read this whole file before writing code.
 2. Branch: `feat/<module-key>` (e.g. `feat/billing`). One PR per meaningful slice; keep PRs small and merge often.
 3. `./scripts/local-infra.sh` (no Docker) or `docker compose up -d` + `pnpm db:migrate && pnpm db:seed`.
 4. `pnpm dev`. Log in as hospital `demo`, `admin@demo.hms` / `Demo@12345`.
-5. Before every PR: `pnpm build && pnpm typecheck && pnpm lint && pnpm db:migrate && pnpm db:seed && pnpm test`.
+5. Before every push: `pnpm build && pnpm typecheck && pnpm lint && pnpm db:reset && pnpm test`
+   (`db:reset` drops all HMS schemas, migrates and seeds; local/CI only).
+   Tests share the seeded `demo` hospital, so never change data other tests rely on there: do not add
+   facilities, change roles or deactivate the seeded users in `demo`. Create your own records with unique names,
+   or provision a throwaway hospital with `provisionTenant` from `@hms/db`. Send `x-facility-id` explicitly.
 6. Copy the patterns in `apps/api/src/modules/patients` (controller → service → repository, `db.tx`, Zod pipe,
    `@RequirePermissions`, outbox event) and `apps/web/src/app/(app)/patients` (list, form, detail).
 
