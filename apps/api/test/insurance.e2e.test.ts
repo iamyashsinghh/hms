@@ -247,12 +247,18 @@ describe('claims and settlement', () => {
     const inv2 = (await call(clerk, 'GET', `/billing/invoices/${invoices[1]}`)).json();
     expect(inv1.paidAmount).toBe(18000);
     expect(inv1.balance).toBe(2000);
+    expect(inv1.payments.map((p: { mode: string }) => p.mode)).toEqual(['insurance']);
     expect(inv2.paidAmount).toBe(4000); // 2,000 money + 2,000 TDS
     expect(inv2.creditedAmount).toBe(1500);
     expect(inv2.balance).toBe(4500); // co-pay 1,000 + recovery 1,500 + 2,000 not approved
 
     const split = (await call(clerk, 'GET', `/insurance/invoices/${invoices[1]}/split`)).json();
     expect(split).toMatchObject({ claimStatus: 'settled', payerOutstanding: 0, patientDue: 4500 });
+
+    // Retrying a posted settlement changes nothing in billing.
+    const again = await call(admin, 'POST', `/insurance/settlements/${s.id}/post`);
+    expect(again.statusCode, again.body).toBe(200);
+    expect((await call(clerk, 'GET', `/billing/invoices/${invoices[1]}`)).json().balance).toBe(4500);
 
     const closed = await call(admin, 'POST', `/insurance/claims/${claimId}/settlements`, { settledOn: today, reference: 'UTR2', amountPaid: 1 });
     expect(closed.statusCode).toBe(409);

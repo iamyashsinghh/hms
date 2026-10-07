@@ -773,8 +773,9 @@ export class InsuranceService {
   // ---------- settlements ----------
 
   /**
-   * Record what the payer paid (plus TDS and deductions), then post it to billing: receipts for the money and
-   * TDS, credit notes for written-off deductions; deductions the patient pays stay due on the bill.
+   * Record what the payer paid (plus TDS and deductions) and post it to billing in the same transaction:
+   * 'insurance' receipts for the money and TDS, credit notes for written-off deductions; deductions the
+   * patient pays stay due on the bill.
    */
   async recordSettlement(claimId: string, input: I.SettlementInput): Promise<I.Claim> {
     const d = contracts.settlementInputSchema.parse(input);
@@ -782,7 +783,7 @@ export class InsuranceService {
     const links = await this.db.tx((tx) => this.repo.claimInvoices(tx, claimId));
     const balances = new Map(await Promise.all(links.map(async (l) => [l.invoiceId, paise((await this.billing.getInvoice(l.invoiceId)).balance)] as const)));
 
-    const settlementId = await this.db.tx(async (tx) => {
+    await this.db.tx(async (tx) => {
       const claim = await this.mustClaim(tx, claimId, true);
       if (!OPEN.includes(claim.status)) throw conflict('invalid_status', `A claim that is ${claim.status} cannot take a settlement`);
       const paid = paise(d.amountPaid);
@@ -875,55 +876,51 @@ export class InsuranceService {
         settledOn: d.settledOn,
       };
       await this.outbox.publish(tx, 'insurance.claim.settled', { ...event });
-      return s.id;
+      await this.postSettlementToBilling(tx, s.id);
     });
-
-    await this.postSettlementToBilling(settlementId);
     return this.getClaim(claimId);
   }
 
-  /** Retry posting a settlement whose billing entries failed (each entry posts once). */
+  /** Post any entries of a settlement that are not in billing yet (settlements recorded before atomic posting). */
   async retryPosting(settlementId: string): Promise<I.Claim> {
-    const s = await this.db.tx((tx) => this.repo.settlementById(tx, settlementId));
-    if (!s) throw notFound('Settlement');
-    await this.postSettlementToBilling(settlementId);
-    return this.getClaim(s.claimId);
+    const claimId = await this.db.tx(async (tx) => {
+      const s = await this.repo.settlementById(tx, settlementId);
+      if (!s) throw notFound('Settlement');
+      await this.postSettlementToBilling(tx, settlementId);
+      return s.claimId;
+    });
+    return this.getClaim(claimId);
   }
 
   /**
-   * Billing's payment and credit-note calls run in their own transactions, so each posting is marked
-   * done right after billing accepts it; a failure leaves the rest pending for retryPosting().
+   * Post a settlement's receipts and credit notes to billing inside the caller's transaction, so the
+   * settlement and the bills change together. Billing is idempotent on `reference`, so a retry never posts twice.
    */
-  private async postSettlementToBilling(settlementId: string): Promise<void> {
-    const { settlement, claim, postings } = await this.db.tx(async (tx) => {
-      const settlement = (await this.repo.settlementById(tx, settlementId))!;
-      const claim = (await this.repo.claimById(tx, settlement.claimId))!;
-      return { settlement, claim, postings: await this.repo.postings(tx, [settlementId]) };
-    });
-    let error: string | null = null;
-    for (const p of postings.filter((x) => !x.postedAt)) {
-      try {
-        let ref: string | null;
-        if (p.kind === 'write_off') {
-          const inv = await this.billing.createCreditNote(p.invoiceId, { amount: amt(p.amount), reason: `Insurance deduction written off on claim ${claim.number} (${settlement.reference})` });
-          ref = inv.creditNotes.at(-1)?.number ?? null;
-        } else {
-          const reference = p.kind === 'tds' ? `TDS ${claim.number}` : `${claim.number} ${settlement.reference}`.slice(0, 100);
-          const inv = await this.billing.collectPayment(p.invoiceId, {
-            mode: 'bank',
-            amount: amt(p.amount),
-            reference,
-            notes: p.kind === 'tds' ? `TDS deducted by payer on claim ${claim.number}` : `Insurance settlement for claim ${claim.number}`,
-          });
-          ref = inv.payments.filter((x) => x.reference === reference).at(-1)?.number ?? null;
-        }
-        await this.db.tx((tx) => this.repo.markPosted(tx, p.id, ref ?? 'posted'));
-      } catch (e) {
-        error = `${p.invoiceNumber} ${p.kind}: ${e instanceof Error ? e.message : String(e)}`.slice(0, 500);
-        break;
+  private async postSettlementToBilling(tx: Tx, settlementId: string): Promise<void> {
+    const settlement = (await this.repo.settlementById(tx, settlementId, true))!;
+    const claim = (await this.repo.claimById(tx, settlement.claimId))!;
+    for (const p of (await this.repo.postings(tx, [settlementId])).filter((x) => !x.postedAt)) {
+      const reference = `INS:${p.id}`;
+      let ref: string;
+      if (p.kind === 'write_off') {
+        const cn = await this.billing.creditNoteTx(tx, p.invoiceId, {
+          amount: amt(p.amount),
+          reason: `Insurance deduction written off on claim ${claim.number} (${settlement.reference})`.slice(0, 500),
+          reference,
+        });
+        ref = cn.number;
+      } else {
+        const payment = await this.billing.collectPaymentTx(tx, p.invoiceId, {
+          mode: 'insurance',
+          amount: amt(p.amount),
+          reference,
+          notes: (p.kind === 'tds' ? `TDS deducted by payer on claim ${claim.number}` : `Settlement of claim ${claim.number}, UTR ${settlement.reference}`).slice(0, 500),
+        });
+        ref = payment.number;
       }
+      await this.repo.markPosted(tx, p.id, ref);
     }
-    await this.db.tx((tx) => this.repo.updateSettlement(tx, settlementId, { postingStatus: error ? 'failed' : 'posted', postingError: error }));
+    await this.repo.updateSettlement(tx, settlementId, { postingStatus: 'posted', postingError: null });
   }
 
   private async mustClaim(tx: Tx, id: string, lock = false): Promise<ClaimRow> {
