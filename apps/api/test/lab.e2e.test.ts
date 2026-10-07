@@ -5,6 +5,8 @@ import { sql } from '@hms/db';
 import { lab } from '@hms/shared';
 import { DbService } from '../src/common/db/db.service';
 import { EventBus } from '../src/common/events/event-bus';
+import { LabController } from '../src/modules/lab/lab.controller';
+import { ENTITLEMENT } from '../src/modules/platform/entitlement.guard';
 import { bearer, bootApp, login } from './helpers';
 
 let app: NestFastifyApplication;
@@ -67,6 +69,12 @@ describe('lab flags', () => {
     expect(lab.flagFor(r, '> 21')).toBe('critical_high');
     expect(lab.flagFor(r, 'abc')).toBeNull();
     expect(lab.flagFor({ ...r, resultType: 'option', options: ['Negative', 'Positive'] }, 'Positive')).toBe('abnormal');
+  });
+});
+
+describe('lab plan entitlement', () => {
+  it('needs the lab module in the hospital plan', () => {
+    expect(Reflect.getMetadata(ENTITLEMENT, LabController)).toBe('lab');
   });
 });
 
@@ -380,23 +388,25 @@ describe('lab hospital isolation', () => {
     const [test] = (await inject('GET', '/lab/tests?q=HB', tech)).json() as lab.LabTest[];
     const o = (await inject('POST', '/lab/orders', reception, { patientId: malePatientId, items: [{ testId: test!.id }], bill: false })).json() as lab.Order;
 
-    // The city admin holds every lab permission, so these reach the database and RLS hides demo's rows.
+    // The city hospital's plan (Starter) has no lab, so the API refuses before touching data.
     const cityFacility = (await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: bearer(otherHospital) })).json().facilities[0].id;
-    const city = (method: 'GET' | 'POST' | 'PUT', url: string, payload?: object) =>
-      app.inject({ method, url: `/api/v1${url}`, headers: { ...bearer(otherHospital), 'x-facility-id': cityFacility }, payload });
-    expect((await city('GET', `/lab/orders/${o.id}`)).statusCode).toBe(404);
-    expect((await city('GET', `/lab/orders/${o.id}/report`)).statusCode).toBe(404);
-    expect((await city('GET', `/lab/orders?q=${o.orderNo}`)).json().items).toEqual([]);
-    expect((await city('GET', `/lab/tests/${test!.id}`)).statusCode).toBe(404);
-    expect((await city('POST', `/lab/samples/${o.samples[0]!.id}/collect`)).statusCode).toBe(404);
-    expect((await city('PUT', `/lab/orders/${o.id}/results`, { results: [{ resultId: o.results[0]!.id, value: '1' }] })).statusCode).toBe(404);
-    expect((await city('POST', '/lab/orders', { patientId: malePatientId, items: [{ testId: test!.id }], bill: false })).statusCode).toBe(404);
+    const city = (method: 'GET' | 'POST', url: string) => app.inject({ method, url: `/api/v1${url}`, headers: { ...bearer(otherHospital), 'x-facility-id': cityFacility } });
+    const blocked = await city('GET', `/lab/orders/${o.id}`);
+    expect(blocked.statusCode).toBe(403);
+    expect(blocked.json().error.code).toBe('plan_upgrade_required');
+    expect((await city('GET', '/lab/tests')).statusCode).toBe(403);
 
+    // And the database itself hides and protects demo's lab rows from the city hospital.
     const cityTenant = (await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: bearer(otherHospital) })).json().tenantId;
     const changed = await app.get(DbService).asTenant({ tenantId: cityTenant }, async (tx) => {
       const r = await tx.execute(sql`update lab.orders set clinical_notes = 'x' where id = ${o.id}`);
       return r.rowCount;
     });
     expect(changed).toBe(0);
+    const seen = await app.get(DbService).asTenant({ tenantId: cityTenant }, async (tx) => {
+      const r = await tx.execute(sql`select 1 from lab.orders where id = ${o.id} union all select 1 from lab.results where order_id = ${o.id} union all select 1 from lab.tests where id = ${test!.id}`);
+      return r.rows.length;
+    });
+    expect(seen).toBe(0);
   });
 });

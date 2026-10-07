@@ -3,12 +3,14 @@ import { lab, type Paginated } from '@hms/shared';
 import { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
+import { RequireEntitlement } from '../platform';
 import { LabService } from './lab.service';
 
 type Order = lab.Order;
 const billSchema = z.object({ payNow: lab.createOrderSchema.shape.payNow });
 
 @Controller('lab')
+@RequireEntitlement('lab')
 export class LabController {
   constructor(private readonly lab: LabService) {}
 
