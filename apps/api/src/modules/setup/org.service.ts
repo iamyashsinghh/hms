@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { and, asc, eq, facilities, iso, setupDepartments, setupSpecializations, sql, type Tx } from '@hms/db';
 import { setup as S } from '@hms/shared';
 import { DbService } from '../../common/db/db.service';
+import { PlatformService } from '../platform/platform.service';
 import { badRequest, conflict, notFound } from '../../common/errors/errors';
 import { ctx } from './setup.util';
 
@@ -14,7 +15,10 @@ const search = (col: unknown, q?: string) => (q ? sql`(lower(${col}) like ${'%' 
 /** Facilities (branches), departments and specializations. */
 @Injectable()
 export class OrgService {
-  constructor(private readonly db: DbService) {}
+  constructor(
+    private readonly db: DbService,
+    private readonly platform: PlatformService,
+  ) {}
 
   // ---------- facilities ----------
 
@@ -33,8 +37,9 @@ export class OrgService {
     return this.db.tx(async (tx) => facilityDto(await this.findFacility(tx, id)));
   }
 
-  createFacility(input: S.CreateFacility): Promise<S.FacilityDetail> {
+  async createFacility(input: S.CreateFacility): Promise<S.FacilityDetail> {
     const c = ctx();
+    await this.platform.assertWithinLimit('facilities');
     return this.db.tx(async (tx) => {
       await this.assertFacilityCodeFree(tx, input.code);
       const [row] = await tx
@@ -60,6 +65,7 @@ export class OrgService {
     return this.db.tx(async (tx) => {
       const cur = await this.findFacility(tx, id);
       if (input.code && input.code !== cur.code) await this.assertFacilityCodeFree(tx, input.code);
+      if (input.isActive === true && !cur.isActive) await this.platform.assertWithinLimit('facilities');
       if (input.isActive === false && cur.isActive) {
         const [{ n }] = (await tx.execute<{ n: number }>(sql`select count(*)::int as n from setup.facilities where is_active and id <> ${id}`)).rows as [{ n: number }];
         if (n === 0) throw conflict('last_facility', 'A hospital needs at least one active facility');

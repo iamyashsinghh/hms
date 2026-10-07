@@ -70,7 +70,7 @@ function NewUser() {
       <div className="max-w-2xl space-y-4">
         <BackLink href="/setup/users" label="All users" />
         <PageHeader title="User created" />
-        <TemporaryPassword name={created.name} password={created.temporaryPassword!} />
+        <TemporaryPassword name={created.name} password={created.temporaryPassword!} delivery={created.delivery} />
         <p className="text-sm text-muted-foreground">
           They sign in with hospital code, their {created.email ? 'email' : 'mobile number'} and this password.
         </p>
@@ -193,7 +193,7 @@ function EditUserForm({ u }: { u: setup.StaffUser }) {
   const { roles, facilities } = useMasters(true);
   const [details, setDetails] = React.useState({ name: u.name, email: u.email ?? '', mobile: u.mobile ?? '' });
   const [assignments, setAssignments] = React.useState<Assignment[]>(() => u.roles.map((r) => ({ roleId: r.roleId, facilityId: r.facilityId })));
-  const [temp, setTemp] = React.useState<string | null>(null);
+  const [temp, setTemp] = React.useState<setup.ResetPasswordResult | null>(null);
   const [saved, setSaved] = React.useState<string | null>(null);
 
   const onSaved = (msg: string) => (next: setup.StaffUser) => {
@@ -214,7 +214,7 @@ function EditUserForm({ u }: { u: setup.StaffUser }) {
   const reset = useMutation({
     mutationFn: () => api.setup.resetPassword(id),
     onSuccess: (r) => {
-      setTemp(r.temporaryPassword ?? null);
+      setTemp(r.temporaryPassword ? r : null);
       setSaved(null);
     },
   });
@@ -235,7 +235,7 @@ function EditUserForm({ u }: { u: setup.StaffUser }) {
         />
       </div>
       {saved && <SuccessBox>{saved}</SuccessBox>}
-      {temp && <TemporaryPassword name={u.name} password={temp} />}
+      {temp && <TemporaryPassword name={u.name} password={temp.temporaryPassword!} delivery={temp.delivery} />}
       <ErrorBox error={update.error ?? setRoles.error ?? toggle.error ?? reset.error} />
 
       <fieldset disabled={!canManage} className="space-y-6">
