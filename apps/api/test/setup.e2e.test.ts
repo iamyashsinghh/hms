@@ -71,6 +71,11 @@ describe('facilities, departments, specializations', () => {
     expect(dup.status).toBe(409);
     const list = await call(reception, 'GET', '/setup/facilities');
     expect((list.body as { code: string }[]).map((f) => f.code)).toContain(`BR${run}`);
+    // Other modules' tests assume the demo hospital has one active facility.
+    const off = await call(admin, 'PATCH', `/setup/facilities/${(created.body as { id: string }).id}`, { isActive: false });
+    expect(off.status).toBe(200);
+    const after = await call(reception, 'GET', '/setup/facilities');
+    expect((after.body as { code: string }[]).map((f) => f.code)).not.toContain(`BR${run}`);
   });
 
   it('will not deactivate the last active facility', async () => {
