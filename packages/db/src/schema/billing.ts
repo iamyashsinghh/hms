@@ -140,6 +140,7 @@ export const billingInvoices = pg.table(
     sourceModule: text('source_module').notNull().default('billing'),
     sourceRef: text('source_ref'),
     payerId: uuid('payer_id'),
+    doctorId: uuid('doctor_id'),
     invoiceDate: date('invoice_date', { mode: 'string' }).notNull().default(sql`current_date`),
     supplyType: text('supply_type').notNull().default('intra'),
     buyerGstin: text('buyer_gstin'),

@@ -27,6 +27,7 @@ type PaymentReceivedEvent = B.PaymentReceivedEvent;
 type PriceList = B.PriceList;
 type PriceListInput = B.PriceListInput;
 type RefundInput = B.RefundInput;
+type RefundIssuedEvent = B.RefundIssuedEvent;
 type Service = B.Service;
 type ServicePrice = B.ServicePrice;
 type UpdateInvoice = B.UpdateInvoice;
@@ -94,6 +95,7 @@ export class BillingService {
       sourceModule: data.source?.module ?? 'billing',
       sourceRef: data.source?.refId ?? null,
       payerId: data.payerId ?? null,
+      doctorId: data.doctorId ?? null,
       supplyType: data.supplyType,
       buyerGstin: data.buyerGstin ?? null,
       notes: data.notes ?? null,
@@ -327,6 +329,7 @@ export class BillingService {
       await this.repo.updateInvoice(tx, id, {
         supplyType,
         payerId: payerId ?? null,
+        ...(d.doctorId !== undefined && { doctorId: d.doctorId }),
         ...(d.buyerGstin !== undefined && { buyerGstin: d.buyerGstin || null }),
         ...(d.notes !== undefined && { notes: d.notes || null }),
         ...totalColumns(computeTotals(lineCalcs, supplyType, settings?.roundOff ?? true)),
@@ -391,6 +394,15 @@ export class BillingService {
       facilityId: row.facilityId,
       total: toNumber(row.total),
       source: { module: row.sourceModule, refId: row.sourceRef },
+      doctorId: row.doctorId,
+      invoiceDate: row.invoiceDate,
+      lines: (await this.repo.lines(tx, id)).map((l) => ({
+        serviceCode: l.serviceCode,
+        itemId: l.itemId,
+        description: l.description,
+        qty: toNumber(l.qty),
+        amount: toNumber(l.total),
+      })),
     };
     await this.publish(tx, 'billing.invoice.finalized', { ...event });
     return row;
@@ -454,6 +466,7 @@ export class BillingService {
       patientMobile: inv.patientMobile,
       sourceRef: inv.sourceRef,
       payerId: inv.payerId,
+      doctorId: inv.doctorId,
       supplyType: inv.supplyType as 'intra' | 'inter',
       buyerGstin: inv.buyerGstin,
       sellerName: inv.sellerName,
@@ -525,6 +538,7 @@ export class BillingService {
       amount: toNumber(payment.amount),
       mode: d.mode as PaymentReceivedEvent['mode'],
       kind: 'payment',
+      facilityId: inv.facilityId,
     };
     await this.publish(tx, 'billing.payment.received', { ...event });
     return payment;
@@ -549,7 +563,7 @@ export class BillingService {
         shiftId: shift?.id ?? null,
         receivedBy: userId,
       });
-      const event: PaymentReceivedEvent = { paymentId: row.id, invoiceId: null, patientId: d.patientId, amount: toNumber(row.amount), mode: d.mode, kind: 'deposit' };
+      const event: PaymentReceivedEvent = { paymentId: row.id, invoiceId: null, patientId: d.patientId, amount: toNumber(row.amount), mode: d.mode, kind: 'deposit', facilityId };
       await this.publish(tx, 'billing.payment.received', { ...event });
       return paymentDto(row);
     });
@@ -592,7 +606,8 @@ export class BillingService {
         shiftId: shift?.id ?? null,
         receivedBy: userId,
       });
-      await this.publish(tx, 'billing.refund.issued', { paymentId: row.id, invoiceId: row.invoiceId, patientId, amount: toNumber(row.amount), mode: d.mode });
+      const event: RefundIssuedEvent = { paymentId: row.id, invoiceId: row.invoiceId, patientId, facilityId, amount: toNumber(row.amount), mode: d.mode };
+      await this.publish(tx, 'billing.refund.issued', { ...event });
       return paymentDto(row);
     });
   }

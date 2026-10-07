@@ -216,6 +216,8 @@ export const createInvoiceSchema = z.object({
   facilityId: z.uuid().optional(),
   source: z.object({ module: z.string().min(1).max(40), refId: z.string().max(100).optional() }).optional(),
   payerId: z.uuid().optional(),
+  /** Treating / consulting doctor (staff user id), for doctor-wise revenue. */
+  doctorId: z.uuid().optional(),
   supplyType: z.enum(['intra', 'inter']).default('intra'),
   buyerGstin: gstin.optional(),
   notes: optionalText(1000),
@@ -227,7 +229,7 @@ export const createInvoiceSchema = z.object({
 export type CreateInvoice = z.input<typeof createInvoiceSchema>;
 
 export const updateInvoiceSchema = createInvoiceSchema
-  .pick({ supplyType: true, buyerGstin: true, notes: true, payerId: true })
+  .pick({ supplyType: true, buyerGstin: true, notes: true, payerId: true, doctorId: true })
   .extend({ lines: z.array(invoiceLineInputSchema).min(1).max(500) })
   .partial();
 export type UpdateInvoice = z.input<typeof updateInvoiceSchema>;
@@ -295,6 +297,7 @@ export interface Invoice extends InvoiceSummary {
   patientMobile: string | null;
   sourceRef: string | null;
   payerId: string | null;
+  doctorId: string | null;
   supplyType: 'intra' | 'inter';
   buyerGstin: string | null;
   sellerName: string | null;
@@ -447,6 +450,9 @@ export interface InvoiceFinalizedEvent {
   facilityId: string;
   total: number;
   source: { module: string; refId: string | null };
+  doctorId: string | null;
+  invoiceDate: string;
+  lines: { serviceCode: string | null; itemId: string | null; description: string; qty: number; amount: number }[];
 }
 export interface PaymentReceivedEvent {
   paymentId: string;
@@ -455,6 +461,15 @@ export interface PaymentReceivedEvent {
   amount: number;
   mode: SettlementMode;
   kind: 'payment' | 'deposit';
+  facilityId: string;
+}
+export interface RefundIssuedEvent {
+  paymentId: string;
+  invoiceId: string | null;
+  patientId: string;
+  facilityId: string;
+  amount: number;
+  mode: PaymentMode;
 }
 export interface InvoiceCancelledEvent {
   invoiceId: string;
