@@ -407,5 +407,9 @@ export interface EncounterSignedEvent {
 export interface PrescriptionCreatedEvent {
   prescriptionId: string;
   patientId: string;
+  doctorId: string;
+  doctorName: string | null;
+  /** When the prescription was first written (ISO 8601). */
+  createdAt: string;
   lines: { drugName: string; itemCode?: string; dose: string; frequency: string; days: number | null; qty: number | null }[];
 }

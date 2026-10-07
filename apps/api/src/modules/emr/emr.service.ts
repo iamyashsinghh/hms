@@ -314,10 +314,13 @@ export class EmrService {
       const signedEvent: EncounterSignedEvent = { encounterId: id, patientId: enc.patientId, doctorId: enc.doctorId };
       await this.outbox.publish(tx, 'emr.encounter.signed', { ...signedEvent });
       if (rx) {
-        const lines = await this.repo.lines(tx, [rx.id]);
+        const [lines, names] = await Promise.all([this.repo.lines(tx, [rx.id]), this.repo.userNames(tx, [rx.doctorId])]);
         const event: PrescriptionCreatedEvent = {
           prescriptionId: rx.id,
           patientId: enc.patientId,
+          doctorId: rx.doctorId,
+          doctorName: names.get(rx.doctorId) ?? null,
+          createdAt: iso(rx.createdAt),
           lines: lines.map((l) => ({
             drugName: l.drugName,
             ...(l.itemCode ? { itemCode: l.itemCode } : {}),

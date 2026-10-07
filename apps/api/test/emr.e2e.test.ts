@@ -144,8 +144,15 @@ describe('emr consultation flow', () => {
       return r.rows;
     });
     expect(topics.map((t) => t.topic).sort()).toEqual(['emr.encounter.signed', 'emr.prescription.created']);
-    const rxEvent = topics.find((t) => t.topic === 'emr.prescription.created')!.payload as { lines: { drugName: string; qty: number }[] };
+    const rxEvent = topics.find((t) => t.topic === 'emr.prescription.created')!.payload as {
+      doctorId: string;
+      doctorName: string;
+      createdAt: string;
+      lines: { drugName: string; qty: number }[];
+    };
     expect(rxEvent.lines[0]).toMatchObject({ drugName: 'Paracetamol 650', qty: 15 });
+    expect(rxEvent).toMatchObject({ doctorId, doctorName: 'Dr. Asha Rao' });
+    expect(new Date(rxEvent.createdAt).toISOString()).toBe(rxEvent.createdAt);
   });
 
   it('blocks direct database changes to a signed consultation (trigger)', async () => {
