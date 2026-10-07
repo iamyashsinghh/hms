@@ -1,5 +1,5 @@
-import { ComingSoon } from '@/components/coming-soon';
+import { redirect } from 'next/navigation';
 
-export default function Page() {
-  return <ComingSoon moduleKey="inventory" />;
+export default function InventoryHome() {
+  redirect('/inventory/indents');
 }
