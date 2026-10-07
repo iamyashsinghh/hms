@@ -5,7 +5,7 @@ import { DbService } from '../../common/db/db.service';
 import { AuditService } from '../../common/db/audit.service';
 import { OutboxService } from '../../common/events/outbox.service';
 import { currentContext } from '../../common/context/request-context';
-import { badRequest, conflict, notFound } from '../../common/errors/errors';
+import { AppError, badRequest, conflict, notFound } from '../../common/errors/errors';
 import { BillingService } from '../billing/billing.service';
 import { EmrService } from '../emr/emr.service';
 import { PatientsService } from '../patients/patients.service';
@@ -285,7 +285,12 @@ export class LabService {
    * for the lab to sort out. Idempotent per consultation.
    */
   async createFromEncounter(encounterId: string): Promise<Order | null> {
-    const enc = await this.emr.get(encounterId, false);
+    // An event for a consultation this hospital cannot see (or that no longer exists) has nothing for the lab.
+    const enc = await this.emr.get(encounterId, false).catch((e: unknown) => {
+      if (e instanceof AppError && e.getStatus() === 404) return null;
+      throw e;
+    });
+    if (!enc) return null;
     const lines = enc.orders.filter((o) => o.kind === 'lab' && o.status !== 'cancelled');
     if (!lines.length) return null;
     const patient = await this.patients.get(enc.patient.id);

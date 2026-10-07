@@ -336,6 +336,9 @@ describe('lab orders from a signed consultation', () => {
     ]);
     expect(o.results).toHaveLength(12);
 
+    // A signed event for an unknown consultation is ignored, not retried forever.
+    await expect(bus.dispatch({ ...event, id: randomUUID(), payload: { ...event.payload, encounterId: randomUUID() } })).resolves.toBeUndefined();
+
     // Lab progress flows back to the consultation's order lines.
     await inject('POST', `/lab/orders/${o.id}/collect`, tech);
     const statusEvents = (await outbox(o.id)).filter((e) => e.topic === 'lab.order.status_changed');
