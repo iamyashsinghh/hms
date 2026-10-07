@@ -1,5 +1,7 @@
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { inventoryPurchaseOrders, inventoryVendors, inArray } from '@hms/db';
+import { DbService } from '../src/common/db/db.service';
 import { bearer, bootApp, login } from './helpers';
 
 let app: NestFastifyApplication;
@@ -8,6 +10,7 @@ let pharmacist: string;
 let nurse: string;
 let doctor: string;
 let otherHospital: string;
+let otherTenantId: string;
 let facilityId: string;
 let mainStoreId: string;
 let wardStoreId: string;
@@ -52,7 +55,9 @@ beforeAll(async () => {
   pharmacist = (await login(app, 'pharmacy@demo.hms')).accessToken;
   nurse = (await login(app, 'nurse@demo.hms')).accessToken;
   doctor = (await login(app, 'doctor@demo.hms')).accessToken;
-  otherHospital = (await login(app, 'admin@city.hms', 'city')).accessToken;
+  const city = await login(app, 'admin@city.hms', 'city');
+  otherHospital = city.accessToken;
+  otherTenantId = (city.user as unknown as { tenantId: string }).tenantId;
   facilityId = (a.user as unknown as { facilities: { id: string }[] }).facilities[0]!.id;
 
   mainStoreId = (await ok(raw(admin, 'POST', '/pharmacy/stores', { facilityId, code: `MS${run}`, name: `Main store ${run}`, type: 'main' }), 201)).id;
@@ -273,26 +278,39 @@ describe('access control', () => {
     expect((await call(pharmacist, 'GET', `/purchase-orders/${draft.id}`)).statusCode).toBe(200);
   });
 
-  it('keeps one hospital out of another hospital’s procurement', async () => {
+  it('a store keeper buys and issues but cannot approve purchase orders', async () => {
+    const store = (await login(app, 'store@demo.hms')).accessToken;
+    const item = await newItem();
+    const draft = await ok(call(store, 'POST', '/purchase-orders', { vendorId, storeId: mainStoreId, lines: [{ itemId: item.id, qty: 2, rate: 5 }] }), 201);
+    expect((await call(store, 'POST', `/purchase-orders/${draft.id}/approve`)).statusCode).toBe(403);
+    const po = await ok(call(admin, 'POST', `/purchase-orders/${draft.id}/approve`));
+    await ok(call(store, 'POST', '/grns', { purchaseOrderId: po.id, lines: [{ poLineId: po.lines[0].id, qty: 2 }] }), 201);
+    expect(await stockIn(mainStoreId, item.id)).toBe(2);
+  });
+
+  it('needs a plan that includes inventory', async () => {
+    // The seeded "city" hospital is on the starter plan, which has no inventory module.
+    const res = await call(otherHospital, 'GET', '/purchase-orders');
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('plan_upgrade_required');
+    expect((await call(otherHospital, 'POST', '/vendors', { code: 'X', name: 'X' })).statusCode).toBe(403);
+  });
+
+  it('keeps one hospital out of another hospital’s procurement rows (RLS)', async () => {
     const item = await newItem();
     const po = await approvedPo(item.id, 3, 1);
-    const indent = await ok(call(nurse, 'POST', '/indents', { toStoreId: wardStoreId, fromStoreId: mainStoreId, lines: [{ itemId: item.id, qty: 1 }] }), 201);
-
-    expect((await call(otherHospital, 'GET', `/purchase-orders/${po.id}`)).statusCode).toBe(404);
-    expect((await call(otherHospital, 'GET', `/vendors/${vendorId}`)).statusCode).toBe(404);
-    expect((await call(otherHospital, 'GET', `/indents/${indent.id}`)).statusCode).toBe(404);
-    expect((await call(otherHospital, 'POST', `/purchase-orders/${po.id}/approve`)).statusCode).toBe(404);
-    expect((await call(otherHospital, 'POST', '/grns', { purchaseOrderId: po.id, lines: [{ poLineId: po.lines[0].id, qty: 1 }] })).statusCode).toBe(404);
-    expect((await call(otherHospital, 'POST', `/indents/${indent.id}/issue`, { lines: [{ indentLineId: indent.lines[0].id, qty: 1 }] })).statusCode).toBe(404);
-
-    const theirs = await ok(call(otherHospital, 'GET', '/purchase-orders?pageSize=200'));
-    expect(theirs.items.map((p: { id: string }) => p.id)).not.toContain(po.id);
-    const vendors = await ok(call(otherHospital, 'GET', `/vendors?q=${run}`));
-    expect(vendors.items).toEqual([]);
-
-    // Their own documents cannot point at our vendor, store or item.
-    const cross = await call(otherHospital, 'POST', '/purchase-orders', { vendorId, storeId: mainStoreId, lines: [{ itemId: item.id, qty: 1, rate: 1 }] });
-    expect([400, 404]).toContain(cross.statusCode);
-    expect((await ok(call(admin, 'GET', `/purchase-orders/${po.id}`))).lines[0].receivedQty).toBe(0);
+    const db = app.get(DbService);
+    const seen = await db.asTenant({ tenantId: otherTenantId }, async (tx) => ({
+      pos: await tx.select({ id: inventoryPurchaseOrders.id }).from(inventoryPurchaseOrders).where(inArray(inventoryPurchaseOrders.id, [po.id])),
+      vendors: await tx.select({ id: inventoryVendors.id }).from(inventoryVendors).where(inArray(inventoryVendors.id, [vendorId])),
+    }));
+    expect(seen).toEqual({ pos: [], vendors: [] });
+    // Updating another hospital's row touches nothing.
+    await expect(
+      db.asTenant({ tenantId: otherTenantId }, (tx) =>
+        tx.update(inventoryPurchaseOrders).set({ notes: 'hijack' }).where(inArray(inventoryPurchaseOrders.id, [po.id])).returning(),
+      ),
+    ).resolves.toEqual([]);
+    expect((await ok(call(admin, 'GET', `/purchase-orders/${po.id}`))).notes).toBeNull();
   });
 });

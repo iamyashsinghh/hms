@@ -3,6 +3,7 @@ import { inventory, type Paginated } from '@hms/shared';
 import type { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
+import { RequireEntitlement } from '../platform';
 import { InventoryIndentsService } from './indents.service';
 import { InventoryPurchaseService } from './purchase.service';
 import { InventoryVendorsService } from './vendors.service';
@@ -11,6 +12,7 @@ type Out<T extends z.ZodType> = z.output<T>;
 const id = new ParseUUIDPipe();
 
 @Controller('inventory/vendors')
+@RequireEntitlement('inventory')
 export class InventoryVendorsController {
   constructor(private readonly vendors: InventoryVendorsService) {}
 
@@ -40,6 +42,7 @@ export class InventoryVendorsController {
 }
 
 @Controller('inventory/requisitions')
+@RequireEntitlement('inventory')
 export class InventoryRequisitionsController {
   constructor(private readonly purchase: InventoryPurchaseService) {}
 
@@ -77,6 +80,7 @@ export class InventoryRequisitionsController {
 }
 
 @Controller('inventory/purchase-orders')
+@RequireEntitlement('inventory')
 export class InventoryPurchaseOrdersController {
   constructor(private readonly purchase: InventoryPurchaseService) {}
 
@@ -127,6 +131,7 @@ export class InventoryPurchaseOrdersController {
 }
 
 @Controller('inventory/grns')
+@RequireEntitlement('inventory')
 export class InventoryGrnsController {
   constructor(private readonly purchase: InventoryPurchaseService) {}
 
@@ -156,6 +161,7 @@ export class InventoryGrnsController {
 }
 
 @Controller('inventory/indents')
+@RequireEntitlement('inventory')
 export class InventoryIndentsController {
   constructor(private readonly indents: InventoryIndentsService) {}
 
