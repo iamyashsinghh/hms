@@ -330,6 +330,43 @@ describe('lab orders from a signed consultation', () => {
   });
 });
 
+describe('lab results from analysers', () => {
+  it('fills results by tube barcode and test code, leaving them for a person to verify', async () => {
+    const [panel] = (await inject('GET', '/lab/panels?q=KFT', tech)).json() as lab.LabPanel[];
+    const o = (await inject('POST', '/lab/orders', reception, { patientId: femalePatientId, items: [{ panelId: panel!.id }], bill: false })).json() as lab.Order;
+    const barcode = o.samples[0]!.barcode;
+    const event = {
+      id: randomUUID(),
+      tenantId,
+      topic: 'integrations.device.results_received',
+      payload: {
+        messageId: randomUUID(),
+        deviceId: randomUUID(),
+        deviceCode: 'BIO-1',
+        sampleId: barcode,
+        patientRef: o.patient.uhid,
+        results: [
+          { code: 'UREA', name: 'Urea', value: '32', unit: 'mg/dL' },
+          { code: 'k', name: 'Potassium', value: 6.8, unit: 'mmol/L' },
+          { code: 'XYZ', name: 'Unknown analyte', value: '1' },
+        ],
+      },
+      createdAt: new Date().toISOString(),
+    };
+    const bus = app.get(EventBus);
+    await bus.dispatch(event);
+    await bus.dispatch({ ...event, id: randomUUID() });
+
+    const after = (await inject('GET', `/lab/orders/${o.id}`, tech)).json() as lab.Order;
+    expect(after.samples[0]!.status).toBe('received');
+    expect(after.status).toBe('in_progress');
+    expect(after.results.find((r) => r.code === 'UREA')).toMatchObject({ value: '32', flag: 'normal', status: 'entered' });
+    expect(after.results.find((r) => r.code === 'K')).toMatchObject({ value: '6.8', flag: 'critical_high', status: 'entered' });
+    expect(after.results.filter((r) => r.status === 'pending')).toHaveLength(3);
+    expect((await outbox(o.id)).filter((e) => e.topic === 'lab.result.critical')).toHaveLength(1);
+  });
+});
+
 describe('lab hospital isolation', () => {
   it("never shows or changes one hospital's lab orders from another", async () => {
     const [test] = (await inject('GET', '/lab/tests?q=HB', tech)).json() as lab.LabTest[];

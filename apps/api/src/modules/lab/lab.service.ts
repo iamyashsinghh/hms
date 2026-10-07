@@ -29,6 +29,19 @@ type LabPanel = lab.LabPanel;
 type Order = lab.Order;
 type OrderSummary = lab.OrderSummary;
 
+/**
+ * `integrations.device.results_received` (published by the integrations module when an analyser
+ * sends results). Typed locally so lab does not depend on that module; `sampleId` is the tube barcode.
+ */
+export interface DeviceResultsReceived {
+  messageId?: string;
+  deviceId?: string;
+  deviceCode?: string;
+  sampleId: string;
+  patientRef?: string;
+  results: { code?: string; name?: string; value?: string | number | null; unit?: string; referenceRange?: string; flag?: string; observedAt?: string }[];
+}
+
 /** Patient fields the order snapshots (printed on the report). */
 type PatientSnapshot = Pick<Patient, 'id' | 'uhid' | 'firstName' | 'lastName' | 'gender' | 'dateOfBirth' | 'mobile'>;
 
@@ -424,56 +437,107 @@ export class LabService {
 
   enterResults(orderId: string, input: lab.EnterResults): Promise<Order> {
     const d = lab.enterResultsSchema.parse(input);
-    const ctx = currentContext()!;
     return this.tx(async (tx) => {
       const order = await this.openOrder(tx, orderId);
-      const [results, samples] = await Promise.all([this.repo.results(tx, [orderId]), this.repo.samples(tx, [orderId])]);
-      const now = new Date().toISOString();
-      for (const e of d.results) {
-        const r = results.find((x) => x.id === e.resultId);
-        if (!r) throw notFound('Result');
-        if (r.status === 'verified') throw conflict('result_verified', `${r.name} is verified. Amend it to make a correction.`);
-        const sample = samples.find((s) => s.id === r.sampleId);
-        if (!sample || sample.status === 'pending' || sample.status === 'rejected') {
-          throw conflict('sample_not_collected', `Collect the ${sample?.sampleType ?? ''} sample for ${r.name} first`.replace('  ', ' '));
-        }
-        const value = e.value.trim();
-        const dto = resultDto(r);
-        if (value && r.resultType === 'numeric' && !Number.isFinite(Number(value.replace(/^[<>]=?\s*/, '')))) {
-          throw badRequest('invalid_value', `${r.name}: enter a number`);
-        }
-        if (value && r.resultType === 'option' && r.options.length && !r.options.includes(value)) {
-          throw badRequest('invalid_value', `${r.name}: pick one of ${r.options.join(', ')}`);
-        }
-        const flag = value ? lab.flagFor(dto, value) : null;
-        const updated = await this.repo.updateResult(tx, r.id, {
-          value: value || null,
-          valueNum: value && r.resultType === 'numeric' ? String(Number(value.replace(/^[<>]=?\s*/, ''))) : null,
-          flag,
-          remarks: e.remarks || null,
-          status: value ? 'entered' : 'pending',
-          enteredAt: value ? now : null,
-          enteredBy: value ? (ctx.userId ?? null) : null,
-        });
-        if ((flag === 'critical_low' || flag === 'critical_high') && (r.flag !== flag || r.value !== value)) {
-          const event: lab.ResultCriticalEvent = {
-            orderId,
-            orderNo: order.orderNo,
-            resultId: r.id,
-            patientId: order.patientId,
-            doctorId: order.doctorId,
-            testName: r.name,
-            value,
-            unit: r.unit,
-            flag,
-          };
-          await this.outbox.publish(tx, 'lab.result.critical', { ...event });
-          await this.repo.updateOrder(tx, orderId, { hasCritical: true });
-        }
-        Object.assign(r, updated);
-      }
+      await this.applyEntries(tx, order, d.results, 'strict');
       return this.orderDto(tx, await this.recompute(tx, order));
     });
+  }
+
+  /**
+   * Handler for `integrations.device.results_received`: a lab analyser sent results for a tube.
+   * The tube is found by barcode; each result is matched to the order's tests by code and filled in
+   * as "entered" (a person still verifies). Verified or unknown results are skipped. Idempotent.
+   */
+  async applyDeviceResults(e: DeviceResultsReceived): Promise<{ orderId: string; applied: number } | null> {
+    if (!e.sampleId || !e.results?.length) return null;
+    return this.tx(async (tx) => {
+      const sample = (await this.repo.sampleByBarcode(tx, e.sampleId)) ?? (isUuid(e.sampleId) ? await this.repo.sampleById(tx, e.sampleId) : undefined);
+      if (!sample || sample.status === 'rejected') return null;
+      const order = await this.lockOrder(tx, sample.orderId);
+      if (order.status === 'cancelled') return null;
+      if (sample.status !== 'received') {
+        const now = new Date().toISOString();
+        await this.repo.updateSample(tx, sample.id, { status: 'received', receivedAt: now, ...(sample.collectedAt ? {} : { collectedAt: now }) });
+      }
+      const rows = (await this.repo.results(tx, [order.id])).filter((r) => r.sampleId === sample.id && r.status !== 'verified');
+      const entries = e.results.flatMap((x) => {
+        const code = String(x.code ?? '').trim().toUpperCase();
+        const r = rows.find((row) => row.code === code) ?? rows.find((row) => row.name.toLowerCase() === String(x.name ?? '').trim().toLowerCase());
+        const value = x.value === null || x.value === undefined ? '' : String(x.value).trim();
+        return r && value ? [{ resultId: r.id, value, remarks: r.remarks ?? undefined }] : [];
+      });
+      const applied = await this.applyEntries(tx, order, entries, 'lenient');
+      await this.recompute(tx, order);
+      return { orderId: order.id, applied };
+    });
+  }
+
+  /**
+   * Writes result values, flags them and raises critical alerts. `strict` throws on any problem
+   * (people at the screen); `lenient` skips what cannot be applied (machines). Returns how many were written.
+   */
+  private async applyEntries(tx: Tx, order: OrderRow, entries: { resultId: string; value: string; remarks?: string }[], mode: 'strict' | 'lenient'): Promise<number> {
+    const ctx = currentContext();
+    const [results, samples] = await Promise.all([this.repo.results(tx, [order.id]), this.repo.samples(tx, [order.id])]);
+    const now = new Date().toISOString();
+    let applied = 0;
+    const fail = (err: Error) => {
+      if (mode === 'strict') throw err;
+    };
+    for (const e of entries) {
+      const r = results.find((x) => x.id === e.resultId);
+      if (!r) {
+        fail(notFound('Result'));
+        continue;
+      }
+      if (r.status === 'verified') {
+        fail(conflict('result_verified', `${r.name} is verified. Amend it to make a correction.`));
+        continue;
+      }
+      const sample = samples.find((s) => s.id === r.sampleId);
+      if (!sample || sample.status === 'pending' || sample.status === 'rejected') {
+        fail(conflict('sample_not_collected', `Collect the ${sample?.sampleType ?? ''} sample for ${r.name} first`.replace('  ', ' ')));
+        continue;
+      }
+      const value = e.value.trim();
+      if (value && r.resultType === 'numeric' && !Number.isFinite(Number(value.replace(/^[<>]=?\s*/, '')))) {
+        fail(badRequest('invalid_value', `${r.name}: enter a number`));
+        continue;
+      }
+      if (value && r.resultType === 'option' && r.options.length && !r.options.includes(value)) {
+        fail(badRequest('invalid_value', `${r.name}: pick one of ${r.options.join(', ')}`));
+        continue;
+      }
+      const flag = value ? lab.flagFor(resultDto(r), value) : null;
+      const updated = await this.repo.updateResult(tx, r.id, {
+        value: value || null,
+        valueNum: value && r.resultType === 'numeric' ? String(Number(value.replace(/^[<>]=?\s*/, ''))) : null,
+        flag,
+        remarks: e.remarks || null,
+        status: value ? 'entered' : 'pending',
+        enteredAt: value ? now : null,
+        enteredBy: value ? (ctx?.userId ?? null) : null,
+      });
+      applied++;
+      if ((flag === 'critical_low' || flag === 'critical_high') && (r.flag !== flag || r.value !== value)) {
+        const event: lab.ResultCriticalEvent = {
+          orderId: order.id,
+          orderNo: order.orderNo,
+          resultId: r.id,
+          patientId: order.patientId,
+          doctorId: order.doctorId,
+          testName: r.name,
+          value,
+          unit: r.unit,
+          flag,
+        };
+        await this.outbox.publish(tx, 'lab.result.critical', { ...event });
+        Object.assign(order, await this.repo.updateOrder(tx, order.id, { hasCritical: true }));
+      }
+      Object.assign(r, updated);
+    }
+    return applied;
   }
 
   /** Verify entered results. When every result is verified the report is released (`lab.report.verified`). */
@@ -912,6 +976,10 @@ function resultDto(r: ResultRow): lab.Result {
     enteredAt: r.enteredAt ? iso(r.enteredAt) : null,
     verifiedAt: r.verifiedAt ? iso(r.verifiedAt) : null,
   };
+}
+
+function isUuid(v: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 }
 
 function hasHint(e: unknown, hint: string): boolean {
