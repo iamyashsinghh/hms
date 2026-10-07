@@ -1,8 +1,9 @@
 import { Module } from '@nestjs/common';
+import { SetupModule } from '../setup/setup.module';
 import { PatientsController } from './patients.controller';
 import { PatientsRepository } from './patients.repository';
 import { PatientsService } from './patients.service';
 
 /** Patient master. Other modules import PatientsModule and use PatientsService instead of querying clinical.patients. */
-@Module({ controllers: [PatientsController], providers: [PatientsService, PatientsRepository], exports: [PatientsService] })
+@Module({ imports: [SetupModule], controllers: [PatientsController], providers: [PatientsService, PatientsRepository], exports: [PatientsService] })
 export class PatientsModule {}

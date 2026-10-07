@@ -1,11 +1,12 @@
 import { Injectable } from '@nestjs/common';
-import { formatSeries, iso, nextCounter, type Tx } from '@hms/db';
+import { iso, type Tx } from '@hms/db';
 import type { CreatePatient, Paginated, Patient, UpdatePatient } from '@hms/shared';
 import { DbService } from '../../common/db/db.service';
 import { AuditService } from '../../common/db/audit.service';
 import { OutboxService } from '../../common/events/outbox.service';
 import { currentContext } from '../../common/context/request-context';
 import { conflict, notFound } from '../../common/errors/errors';
+import { SetupService } from '../setup/setup.service';
 import { PatientsRepository, type NewPatientRow, type PatientRow } from './patients.repository';
 
 @Injectable()
@@ -15,6 +16,7 @@ export class PatientsService {
     private readonly repo: PatientsRepository,
     private readonly audit: AuditService,
     private readonly outbox: OutboxService,
+    private readonly setup: SetupService,
   ) {}
 
   search(q: string | undefined, page: number, pageSize: number): Promise<Paginated<Patient>> {
@@ -36,7 +38,8 @@ export class PatientsService {
   create(input: CreatePatient): Promise<Patient> {
     const ctx = currentContext()!;
     return this.db.tx(async (tx) => {
-      const uhid = formatSeries('UH', await nextCounter(tx, 'uhid'));
+      // Prefix and width come from the hospital's number-series settings (Setup).
+      const uhid = await this.setup.nextNumber(tx, 'uhid', { prefix: 'UH' });
       const row = await this.repo.insert(tx, {
         ...toColumns(input),
         tenantId: ctx.tenantId!,
