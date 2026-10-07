@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { outbox, type Tx } from '@hms/db';
+import { outbox, sql, type Tx } from '@hms/db';
 import { currentContext } from '../context/request-context';
 
 /**
@@ -9,8 +9,8 @@ import { currentContext } from '../context/request-context';
 @Injectable()
 export class OutboxService {
   async publish(tx: Tx, topic: string, payload: Record<string, unknown>, tenantId?: string): Promise<void> {
-    const tid = tenantId ?? currentContext()?.tenantId;
-    if (!tid) throw new Error('OutboxService.publish needs a tenant');
-    await tx.insert(outbox).values({ tenantId: tid, topic, payload });
+    // Falls back to the transaction's tenant (DbService.asTenant in jobs and tests).
+    const tid = tenantId ?? currentContext()?.tenantId ?? sql`app.current_tenant_id()`;
+    await tx.insert(outbox).values({ tenantId: tid as string, topic, payload });
   }
 }

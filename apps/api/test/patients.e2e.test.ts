@@ -65,3 +65,20 @@ describe('patients', () => {
     expect([200, 403]).toContain(res.statusCode);
   });
 });
+
+describe('PatientsService.markMerged', () => {
+  it('retires the duplicate into the surviving record', async () => {
+    const mk = async (n: string) =>
+      (await app.inject({ method: 'POST', url: '/api/v1/patients', headers: bearer(reception), payload: { firstName: n, gender: 'male' } })).json();
+    const a = await mk('Dup');
+    const b = await mk('Keep');
+    const { PatientsService } = await import('../src/modules/patients/patients.service');
+    const { DbService } = await import('../src/common/db/db.service');
+    const svc = app.get(PatientsService);
+    const db = app.get(DbService);
+    const tenantId = (await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: bearer(reception) })).json().tenantId;
+    const merged = await db.asTenant({ tenantId }, (tx) => svc.markMerged(tx, a.id, b.id));
+    expect(merged.id).toBe(a.id);
+    await expect(db.asTenant({ tenantId }, (tx) => svc.markMerged(tx, a.id, b.id))).rejects.toThrow(/already been merged/);
+  });
+});
