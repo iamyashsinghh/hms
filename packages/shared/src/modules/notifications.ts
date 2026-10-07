@@ -297,6 +297,8 @@ export interface EventDef {
   mobileField?: string;
   /** Only fire when at least one payload key has one of the listed values. */
   matchAny?: Readonly<Record<string, readonly string[]>>;
+  /** Only fire when this payload key is null or absent (avoids repeating another module's message). */
+  unlessPresent?: string;
 }
 
 export const RECIPIENT_LABELS: Record<EventRecipient, string> = { patient: 'Patient', doctor: 'Doctor / staff member', staff: 'Staff (by role)' };
@@ -312,7 +314,10 @@ export const NOTIFICATION_EVENTS: readonly EventDef[] = [
   { topic: 'frontoffice.visit.checked_in', name: 'Patient checked in', templateKey: 'visit.checked_in', defaultChannels: [], recipient: 'patient' },
   { topic: 'billing.payment.received', name: 'Payment received', templateKey: 'payment.received', defaultChannels: ['sms'], recipient: 'patient' },
   { topic: 'emr.prescription.created', name: 'Prescription created', templateKey: 'prescription.created', defaultChannels: [], recipient: 'patient' },
-  { topic: 'portal.appointment.confirmed', name: 'Online booking confirmed', templateKey: 'appointment.booked', defaultChannels: ['push'], recipient: 'patient' },
+  // Portal bookings that became real appointments are already messaged by the frontoffice rules,
+  // so these only fire for requests with no appointment yet.
+  { topic: 'portal.appointment.confirmed', name: 'Online booking confirmed', templateKey: 'appointment.booked', defaultChannels: ['sms', 'push'], recipient: 'patient', unlessPresent: 'appointmentId' },
+  { topic: 'portal.appointment.cancelled', name: 'Online booking cancelled', templateKey: 'appointment.cancelled', defaultChannels: ['sms', 'push'], recipient: 'patient', unlessPresent: 'appointmentId' },
   { topic: 'portal.appointment.rejected', name: 'Online booking declined', templateKey: 'appointment.request_declined', defaultChannels: ['sms', 'push'], recipient: 'patient' },
   { topic: 'lab.result.critical', name: 'Critical lab result', templateKey: 'lab.critical', defaultChannels: ['sms', 'push'], recipient: 'doctor', userField: 'doctorId' },
   { topic: 'lab.report.verified', name: 'Lab report ready', templateKey: 'report.ready', defaultChannels: ['sms'], recipient: 'patient' },

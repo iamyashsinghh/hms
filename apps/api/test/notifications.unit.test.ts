@@ -59,6 +59,10 @@ describe('render', () => {
     expect(matches(def, { severity: 'severe' })).toBe(true);
     expect(matches(def, { severity: 'mild', kind: 'sentinel_event' })).toBe(true);
     expect(matches({ ...def, matchAny: undefined }, {})).toBe(true);
+    const portal = { ...def, matchAny: undefined, unlessPresent: 'appointmentId' };
+    expect(matches(portal, { appointmentId: 'a1' })).toBe(false);
+    expect(matches(portal, { appointmentId: null })).toBe(true);
+    expect(matches(portal, {})).toBe(true);
     expect(eventData('radiology.report.critical', { impression: 'a '.repeat(100), studyName: 'CT' }).impression!.length).toBeLessThanOrEqual(140);
     expect(eventData('quality.incident.reported', { kind: 'sentinel_event', severity: 'death' })).toEqual({ kind: 'sentinel event', severity: 'death' });
   });

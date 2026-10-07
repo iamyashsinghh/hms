@@ -165,8 +165,9 @@ export class NotificationsDispatcher implements OnModuleInit {
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
 
-/** EventDef.matchAny: true when no filter, or any listed key has an allowed value. */
+/** EventDef filters: unlessPresent must be empty; matchAny needs one listed key with an allowed value. */
 export function matches(def: n.EventDef, payload: Record<string, unknown>): boolean {
+  if (def.unlessPresent && payload[def.unlessPresent] != null) return false;
   if (!def.matchAny) return true;
   return Object.entries(def.matchAny).some(([k, allowed]) => typeof payload[k] === 'string' && allowed.includes(payload[k] as string));
 }

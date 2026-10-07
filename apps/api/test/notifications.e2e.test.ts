@@ -350,6 +350,28 @@ describe('notifications: events and rules', () => {
     expect(sms.body).toContain('09 Oct 2026 at 10:00 AM');
   });
 
+  it('sends one patient message per portal booking, not two', async () => {
+    const bus = app.get(EventBus);
+    const appointmentId = crypto.randomUUID();
+    const requestId = crypto.randomUUID();
+    const start = '2026-10-10T06:00:00.000Z';
+    // A portal booking emits both events; only the frontoffice one should message the patient.
+    await bus.dispatch(event('frontoffice.appointment.booked', { appointmentId, patientId: patient.id, doctorId: doctorUserId, start }));
+    await bus.dispatch(event('portal.appointment.confirmed', { requestId, appointmentId, patientId: patient.id, doctorId: doctorUserId, doctorName: 'Dr. Asha Rao', facilityId: null, slotStart: start, note: null }));
+    const sms = (await api('GET', `/messages?patientId=${patient.id}&channel=sms&pageSize=100`, admin)).json().items.filter(
+      (m: { sourceRef: string }) => m.sourceRef === appointmentId || m.sourceRef === requestId,
+    );
+    expect(sms).toHaveLength(1);
+    expect(sms[0].sourceModule).toBe('frontoffice');
+
+    // A request that never became an appointment is messaged by the portal rule.
+    const legacy = crypto.randomUUID();
+    await bus.dispatch(event('portal.appointment.cancelled', { requestId: legacy, appointmentId: null, patientId: patient.id, doctorId: doctorUserId, doctorName: 'Dr. Asha Rao', facilityId: null, slotStart: start, note: null }));
+    const cancelled = (await api('GET', `/messages?patientId=${patient.id}&channel=sms&pageSize=100`, admin)).json().items.filter((m: { sourceRef: string }) => m.sourceRef === legacy);
+    expect(cancelled).toHaveLength(1);
+    expect(cancelled[0].templateKey).toBe('appointment.cancelled');
+  });
+
   it('other modules can call send() inside their own transaction', async () => {
     const svc = app.get(NotificationsService);
     const db = app.get(DbService);
