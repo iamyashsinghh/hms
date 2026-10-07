@@ -110,6 +110,15 @@ export class EmrRepository {
     if (rows.length) await tx.insert(emrOrders).values(rows);
   }
 
+  async findOrder(tx: Tx, id: string): Promise<OrderRow | undefined> {
+    const [row] = await tx.select().from(emrOrders).where(eq(emrOrders.id, id)).limit(1);
+    return row;
+  }
+
+  async setOrderStatus(tx: Tx, id: string, status: string): Promise<void> {
+    await tx.update(emrOrders).set({ status }).where(eq(emrOrders.id, id));
+  }
+
   addenda(tx: Tx, encounterId: string): Promise<AddendumRow[]> {
     return tx.select().from(emrAddenda).where(eq(emrAddenda.encounterId, encounterId)).orderBy(asc(emrAddenda.createdAt));
   }

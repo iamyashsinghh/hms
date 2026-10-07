@@ -4,7 +4,7 @@ import { requestContext } from '../../common/context/request-context';
 import { PatientsModule } from '../patients/patients.module';
 import { EmrController } from './emr.controller';
 import { EmrRepository } from './emr.repository';
-import { EmrService, type VisitCheckedIn } from './emr.service';
+import { EmrService, type OrderStatusChanged, type VisitCheckedIn } from './emr.service';
 
 /**
  * OPD / EMR: doctor's queue, consultations (vitals, notes, ICD-10 diagnoses, orders), e-prescriptions
@@ -26,5 +26,15 @@ export class EmrModule implements OnModuleInit {
         () => this.emr.openFromCheckIn(e.payload).then(() => undefined),
       ),
     );
+
+    // Lab and radiology report progress on the orders the doctor placed. Idempotent; never moves backwards.
+    for (const topic of ['radiology.order.status_changed', 'lab.order.status_changed']) {
+      this.bus.on<OrderStatusChanged>(topic, (e) =>
+        requestContext.run(
+          { requestId: `event:${e.id}`, tenantId: e.tenantId, roles: [], permissions: new Set(), facilityIds: 'all' },
+          () => this.emr.mirrorOrderStatus(e.payload),
+        ),
+      );
+    }
   }
 }
