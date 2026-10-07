@@ -155,3 +155,68 @@ export function ErrorBox({ error }: { error: unknown }) {
     </div>
   );
 }
+
+/**
+ * Picks a start time. Doctors with a setup schedule get their slots (full ones disabled); doctors without
+ * one get a free time field. `value` is an ISO timestamp or ''.
+ */
+export function SlotPicker({
+  doctorId,
+  date,
+  value,
+  onChange,
+}: {
+  doctorId: string;
+  date: string;
+  value: string;
+  onChange: (iso: string) => void;
+}) {
+  const { data, isPending } = useQuery({
+    queryKey: ['frontoffice', 'slots', doctorId, date],
+    queryFn: () => api.frontoffice.slots(doctorId, { date }),
+    enabled: !!doctorId && !!date,
+  });
+  const [time, setTime] = React.useState('10:00');
+
+  if (!doctorId) return <p className="text-sm text-muted-foreground">Choose a doctor first.</p>;
+  if (isPending) return <Loader2 className="size-4 animate-spin text-muted-foreground" />;
+  if (data && data.length) {
+    return (
+      <div className="flex flex-wrap gap-2">
+        {data.map((s) => {
+          const selected = new Date(s.start).toISOString() === value;
+          return (
+            <Button
+              key={s.start}
+              type="button"
+              size="sm"
+              variant={selected ? 'default' : 'outline'}
+              disabled={!s.available}
+              title={`${s.booked}/${s.capacity} booked`}
+              onClick={() => onChange(new Date(s.start).toISOString())}
+            >
+              {timeOf(s.start)}
+              {s.capacity > 1 && <span className="text-[10px] opacity-70">{s.capacity - s.booked} left</span>}
+            </Button>
+          );
+        })}
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-1">
+      <Input
+        type="time"
+        step={300}
+        className="w-36"
+        value={time}
+        onChange={(e) => {
+          setTime(e.target.value);
+          onChange(new Date(`${date}T${e.target.value}:00+05:30`).toISOString());
+        }}
+        onFocus={() => !value && onChange(new Date(`${date}T${time}:00+05:30`).toISOString())}
+      />
+      <p className="text-xs text-muted-foreground">No schedule set up for this doctor, so any free time can be booked.</p>
+    </div>
+  );
+}

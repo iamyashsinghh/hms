@@ -1,7 +1,13 @@
-// Owned by the "frontoffice" workstream. Its routes go under app/(app)/frontoffice/.
-// Add one entry per screen; Home shows those matching the current app variant and the user's permissions.
-// Example:
-//   { title: 'My screen', route: '/frontoffice/my-screen', permission: 'frontoffice.<resource>.read', variants: ['doctor'] }
+// Front-office screens in the mobile apps (owned by the mobile workstream; API owned by "frontoffice").
 import type { MobileModuleScreen } from '../types';
 
-export const screens: MobileModuleScreen[] = [];
+export const screens: MobileModuleScreen[] = [
+  {
+    title: 'OPD queue',
+    route: '/frontoffice/queue',
+    permission: 'frontoffice.queue.read',
+    roles: ['receptionist', 'nurse', 'hospital_admin'],
+    variants: ['staff'],
+    description: 'Token queue per doctor for the day',
+  },
+];

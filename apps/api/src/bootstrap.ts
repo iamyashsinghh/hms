@@ -18,6 +18,8 @@ export async function createApp(opts: { logger?: boolean } = {}): Promise<NestFa
   });
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, adapter, {
     bufferLogs: true,
+    // Keeps the exact request bytes on req.rawBody (RawBodyRequest) for webhook signature checks.
+    rawBody: true,
     logger: opts.logger === false ? false : undefined,
   });
   if (opts.logger !== false) app.useLogger(app.get(Logger));
