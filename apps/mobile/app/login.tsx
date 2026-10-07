@@ -18,7 +18,8 @@ export default function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  if (status === 'signedIn') return <Redirect href="/" />;
+  if (variant.key === 'patient') return <Redirect href="/patient-login" />;
+  if (status === 'signedIn') return <Redirect href={variant.landing} />;
 
   async function submit() {
     setError(null);

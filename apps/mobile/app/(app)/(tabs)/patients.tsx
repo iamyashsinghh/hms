@@ -1,6 +1,7 @@
 import type { Patient } from '@hms/shared';
+import { router } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
 import { api, useAuth } from '@/lib/auth';
 import { Card, Centered, ErrorText, ageFrom, colors, radius, space } from '@/ui';
 
@@ -93,6 +94,11 @@ function PatientRow({ patient: p }: { patient: Patient }) {
   const age = ageFrom(p.dateOfBirth, p.ageYears);
   const meta = [p.gender !== 'unknown' ? p.gender[0]?.toUpperCase() : null, age].filter(Boolean).join(' / ');
   return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={() => router.push({ pathname: '/emr/patient/[id]', params: { id: p.id } })}
+      style={({ pressed }) => pressed && { opacity: 0.75 }}
+    >
     <Card style={s.row}>
       <View style={s.avatar}>
         <Text style={s.avatarText}>{name.slice(0, 1).toUpperCase()}</Text>
@@ -109,6 +115,7 @@ function PatientRow({ patient: p }: { patient: Patient }) {
       </View>
       {p.bloodGroup ? <Text style={s.blood}>{p.bloodGroup}</Text> : null}
     </Card>
+    </Pressable>
   );
 }
 
