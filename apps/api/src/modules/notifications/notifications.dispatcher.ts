@@ -6,6 +6,7 @@ import { EventBus, type EventEnvelope } from '../../common/events/event-bus';
 import { emptyContext, requestContext } from '../../common/context/request-context';
 import { ProviderError, type OutboundMessage } from './providers/provider';
 import { ProvidersService } from './providers/providers.service';
+import { PlatformService } from '../platform';
 import { NotificationsRepository, type StaffContact } from './notifications.repository';
 import { NotificationsService } from './notifications.service';
 import { formatAmount, formatDateIST, formatTimeIST, normalizeMobile } from './render';
@@ -29,6 +30,7 @@ export class NotificationsDispatcher implements OnModuleInit {
     private readonly repo: NotificationsRepository,
     private readonly service: NotificationsService,
     private readonly providers: ProvidersService,
+    private readonly platform: PlatformService,
   ) {}
 
   onModuleInit() {
@@ -108,6 +110,7 @@ export class NotificationsDispatcher implements OnModuleInit {
   /** Applies the hospital's rules to another module's event. */
   async onDomainEvent(e: EventEnvelope): Promise<void> {
     const payload = e.payload as Record<string, unknown>;
+    if (!(await this.platform.hasModule(e.tenantId, 'notifications'))) return;
     const ctx = { ...emptyContext(`event:${e.id}`), tenantId: e.tenantId, facilityIds: 'all' as const };
     await requestContext.run(ctx, () =>
       this.db.tx(async (tx) => {
@@ -175,8 +178,12 @@ const clip = (v: string, max: number) => (v.length > max ? `${v.slice(0, max - 1
 export function eventData(topic: string, p: Record<string, unknown>): Record<string, string> {
   const out: Record<string, string> = {};
   if (typeof p.uhid === 'string') out.uhid = p.uhid;
-  if (typeof p.start === 'string' && !Number.isNaN(Date.parse(p.start))) {
-    const d = new Date(p.start);
+  if (topic === n.OWNER_SUMMARY_TOPIC) {
+    return Object.fromEntries(Object.entries(p).filter(([, v]) => typeof v === 'string' || typeof v === 'number').map(([k, v]) => [k, String(v)]));
+  }
+  const start = p.start ?? p.slotStart;
+  if (typeof start === 'string' && !Number.isNaN(Date.parse(start))) {
+    const d = new Date(start);
     out.date = formatDateIST(d);
     out.time = formatTimeIST(d);
   }
@@ -206,7 +213,7 @@ export function eventData(topic: string, p: Record<string, unknown>): Record<str
 }
 
 function refIdOf(p: Record<string, unknown>): string | undefined {
-  for (const k of ['appointmentId', 'visitId', 'invoiceId', 'prescriptionId', 'encounterId', 'reportId', 'resultId', 'orderId', 'incidentId', 'complaintId', 'leaveId', 'runId', 'patientId']) {
+  for (const k of ['appointmentId', 'requestId', 'visitId', 'invoiceId', 'prescriptionId', 'encounterId', 'reportId', 'resultId', 'orderId', 'incidentId', 'complaintId', 'leaveId', 'runId', 'refId', 'patientId']) {
     if (typeof p[k] === 'string') return p[k] as string;
   }
   return undefined;

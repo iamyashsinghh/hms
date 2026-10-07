@@ -175,6 +175,27 @@ export const DEFAULT_TEMPLATES: readonly TemplateDef[] = [
     },
   },
   {
+    key: 'appointment.request_declined',
+    name: 'Online booking declined',
+    variables: ['hospitalName', 'patientName', 'date', 'time'],
+    channels: {
+      sms: { body: 'Dear {{patientName}}, {{hospitalName}} could not confirm your online appointment request for {{date}} at {{time}}. Please call us or pick another slot in the app.' },
+      whatsapp: { body: 'Dear {{patientName}}, *{{hospitalName}}* could not confirm your online appointment request for {{date}} at {{time}}. Please call us or pick another slot in the app.' },
+      push: { subject: 'Booking not confirmed', body: '{{date}} at {{time}}: please pick another slot' },
+    },
+  },
+  {
+    key: 'owner.daily_summary',
+    name: 'Owner daily summary',
+    variables: ['hospitalName', 'staffName', 'summaryDate', 'opdVisits', 'newPatients', 'billed', 'collections', 'pendingCount', 'pendingAmount'],
+    channels: {
+      whatsapp: { body: 'Good morning {{staffName}}. *{{hospitalName}}* on {{summaryDate}}:\nOPD visits: *{{opdVisits}}*\nNew patients: *{{newPatients}}*\nBilled: *Rs {{billed}}*\nCollected: *Rs {{collections}}*\nPending bills: {{pendingCount}} (Rs {{pendingAmount}})' },
+      sms: { body: '{{hospitalName}} {{summaryDate}}: OPD {{opdVisits}}, new {{newPatients}}, billed Rs {{billed}}, collected Rs {{collections}}, pending {{pendingCount}} bills Rs {{pendingAmount}}.' },
+      email: { subject: '{{hospitalName}} daily summary: {{summaryDate}}', body: 'Good morning {{staffName}},\n\n{{hospitalName}} on {{summaryDate}}:\nOPD visits: {{opdVisits}}\nNew patients: {{newPatients}}\nBilled: Rs {{billed}}\nCollected: Rs {{collections}}\nPending bills: {{pendingCount}} (Rs {{pendingAmount}})\n\nOpen HMS for the full dashboard.' },
+      push: { subject: 'Yesterday: Rs {{collections}} collected', body: 'OPD {{opdVisits}}, new patients {{newPatients}}, pending bills {{pendingCount}}' },
+    },
+  },
+  {
     key: 'lab.critical',
     name: 'Critical lab value (to doctor)',
     variables: ['hospitalName', 'doctorName', 'patientName', 'uhid', 'testName', 'value', 'unit', 'flag', 'orderNo'],
@@ -280,6 +301,9 @@ export interface EventDef {
 
 export const RECIPIENT_LABELS: Record<EventRecipient, string> = { patient: 'Patient', doctor: 'Doctor / staff member', staff: 'Staff (by role)' };
 
+/** Not an outbox event: the worker's 7 AM (IST) job runs this rule for every hospital, with yesterday's figures. */
+export const OWNER_SUMMARY_TOPIC = 'notifications.owner_summary.daily';
+
 /** Events the notifications module can react to. Hospitals switch rules on/off and pick channels. */
 export const NOTIFICATION_EVENTS: readonly EventDef[] = [
   { topic: 'core.patient.registered', name: 'Patient registered', templateKey: 'patient.registered', defaultChannels: ['sms'], recipient: 'patient' },
@@ -288,6 +312,8 @@ export const NOTIFICATION_EVENTS: readonly EventDef[] = [
   { topic: 'frontoffice.visit.checked_in', name: 'Patient checked in', templateKey: 'visit.checked_in', defaultChannels: [], recipient: 'patient' },
   { topic: 'billing.payment.received', name: 'Payment received', templateKey: 'payment.received', defaultChannels: ['sms'], recipient: 'patient' },
   { topic: 'emr.prescription.created', name: 'Prescription created', templateKey: 'prescription.created', defaultChannels: [], recipient: 'patient' },
+  { topic: 'portal.appointment.confirmed', name: 'Online booking confirmed', templateKey: 'appointment.booked', defaultChannels: ['push'], recipient: 'patient' },
+  { topic: 'portal.appointment.rejected', name: 'Online booking declined', templateKey: 'appointment.request_declined', defaultChannels: ['sms', 'push'], recipient: 'patient' },
   { topic: 'lab.result.critical', name: 'Critical lab result', templateKey: 'lab.critical', defaultChannels: ['sms', 'push'], recipient: 'doctor', userField: 'doctorId' },
   { topic: 'lab.report.verified', name: 'Lab report ready', templateKey: 'report.ready', defaultChannels: ['sms'], recipient: 'patient' },
   { topic: 'radiology.report.critical', name: 'Critical radiology finding', templateKey: 'radiology.critical', defaultChannels: ['sms', 'push'], recipient: 'doctor', userField: 'referringDoctorId' },
@@ -304,6 +330,14 @@ export const NOTIFICATION_EVENTS: readonly EventDef[] = [
   { topic: 'hr.leave.decided', name: 'Leave approved / rejected', templateKey: 'hr.leave_update', defaultChannels: ['sms', 'push'], recipient: 'doctor', userField: 'userId' },
   { topic: 'hr.leave.cancelled', name: 'Leave cancelled', templateKey: 'hr.leave_update', defaultChannels: ['push'], recipient: 'doctor', userField: 'userId' },
   { topic: 'hr.payroll.finalized', name: 'Payroll finalized', templateKey: 'hr.payroll_finalized', defaultChannels: ['email', 'push'], recipient: 'staff', roles: ['hospital_admin', 'accountant'] },
+  {
+    topic: 'notifications.owner_summary.daily',
+    name: 'Owner daily summary (7 AM)',
+    templateKey: 'owner.daily_summary',
+    defaultChannels: ['whatsapp', 'push'],
+    recipient: 'staff',
+    roles: ['owner'],
+  },
   { topic: 'quality.complaint.resolved', name: 'Complaint resolved', templateKey: 'complaint.resolved', defaultChannels: ['sms'], recipient: 'patient', mobileField: 'complainantMobile' },
 ];
 

@@ -6,6 +6,7 @@ import { EventBus } from '../src/common/events/event-bus';
 import { emptyContext, requestContext } from '../src/common/context/request-context';
 import { NotificationsDispatcher, MAX_ATTEMPTS } from '../src/modules/notifications/notifications.dispatcher';
 import { NotificationsService } from '../src/modules/notifications/notifications.service';
+import { NotificationsScheduler } from '../src/modules/notifications/notifications.scheduler';
 import { ConsoleProvider } from '../src/modules/notifications/providers/console.provider';
 import { ProviderError, type MessageProvider, type OutboundMessage } from '../src/modules/notifications/providers/provider';
 import { ProvidersService } from '../src/modules/notifications/providers/providers.service';
@@ -302,8 +303,9 @@ describe('notifications: events and rules', () => {
     await bus.dispatch(severe);
     const alerts = (await api('GET', '/messages?q=quality.incident_alert&pageSize=100', admin)).json().items;
     expect(alerts.some((m: { sourceRef: string }) => m.sourceRef === minor.payload.incidentId)).toBe(false);
-    const sms = alerts.find((m: { sourceRef: string; channel: string }) => m.sourceRef === severe.payload.incidentId && m.channel === 'sms');
-    expect(sms.recipient).toBe('9000000001'); // hospital admin
+    const smsList = alerts.filter((m: { sourceRef: string; channel: string }) => m.sourceRef === severe.payload.incidentId && m.channel === 'sms');
+    expect(smsList.map((m: { recipient: string }) => m.recipient)).toContain('9000000001'); // hospital admin
+    const sms = smsList[0];
     expect(sms.body).toContain('Incident INC-2');
     expect(sms.body).toContain('severe (patient fall)');
 
@@ -322,6 +324,30 @@ describe('notifications: events and rules', () => {
     const sms = (await api('GET', '/messages?q=hr.leave_update&channel=sms&pageSize=100', admin)).json().items.find((m: { sourceRef: string }) => m.sourceRef === e.payload.leaveId);
     expect(sms.recipient).toBe('9000000002');
     expect(sms.body).toContain('Dear Dr. Asha Rao, your leave from 20 Oct 2026 to 22 Oct 2026 has been approved');
+  });
+
+  it('sends the owner their daily summary once per day', async () => {
+    const scheduler = app.get(NotificationsScheduler);
+    // A fresh past day per run, since the summary is sent once per hospital per day.
+    const date = new Date(Date.UTC(2000, 0, 1) + Math.floor(Math.random() * 9000) * 86_400_000).toISOString().slice(0, 10);
+    await scheduler.sendOwnerSummary(tenantId, date);
+    await scheduler.sendOwnerSummary(tenantId, date);
+    const items = (await api('GET', '/messages?q=owner.daily_summary&pageSize=100', admin)).json().items.filter((m: { sourceRef: string }) => m.sourceRef === date);
+    const wa = items.filter((m: { channel: string }) => m.channel === 'whatsapp');
+    expect(wa).toHaveLength(1);
+    expect(wa[0].recipient).toBe('9000000005');
+    expect(wa[0].body).toContain('Good morning Sunil Mehta');
+    expect(wa[0].body).toContain(new Date(`${date}T12:00:00+05:30`).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' }));
+    expect(wa[0].body).toMatch(/OPD visits: \*\d+\*/);
+  });
+
+  it('messages the patient when an online booking is declined', async () => {
+    const bus = app.get(EventBus);
+    const e = event('portal.appointment.rejected', { requestId: crypto.randomUUID(), patientId: patient.id, doctorId: doctorUserId, slotStart: '2026-10-09T04:30:00.000Z' });
+    await bus.dispatch(e);
+    const sms = (await api('GET', '/messages?q=appointment.request_declined&channel=sms&pageSize=100', admin)).json().items.find((m: { sourceRef: string }) => m.sourceRef === e.payload.requestId);
+    expect(sms.recipient).toBe(patient.mobile);
+    expect(sms.body).toContain('09 Oct 2026 at 10:00 AM');
   });
 
   it('other modules can call send() inside their own transaction', async () => {
