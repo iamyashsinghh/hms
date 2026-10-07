@@ -3,6 +3,7 @@ import { crm, type Paginated } from '@hms/shared';
 import { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
+import { RequireEntitlement } from '../platform';
 import { CampsService } from './camps.service';
 import { CrmDashboardService } from './dashboard.service';
 import { FollowUpsService } from './followups.service';
@@ -15,6 +16,7 @@ const remindDueBody = z.object({ date: z.iso.date().optional() });
 
 /** Referral & CRM routes under /api/v1/crm. Services do the parsing; the pipes here give 400s early. */
 @Controller('crm')
+@RequireEntitlement('crm')
 export class CrmController {
   constructor(
     private readonly leads: LeadsService,

@@ -378,6 +378,14 @@ describe('follow-ups', () => {
   });
 });
 
+describe('plan entitlement', () => {
+  it('blocks CRM for a hospital whose plan does not include it', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/v1/crm/leads', headers: bearer(cityAdmin) });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('plan_upgrade_required');
+  });
+});
+
 describe('hospital isolation', () => {
   it("never shows one hospital's CRM data to another", async () => {
     const lead = (await call(reception, 'POST', '/crm/leads', { name: `Private ${tag}`, mobile: uniqueMobile(30) })).json();
