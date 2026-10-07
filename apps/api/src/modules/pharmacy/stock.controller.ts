@@ -3,9 +3,11 @@ import { paginationQuerySchema, pharmacy, type Paginated } from '@hms/shared';
 import type { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
+import { RequireEntitlement } from '../platform';
 import { PharmacyStockService } from './stock.service';
 
 @Controller('pharmacy')
+@RequireEntitlement('pharmacy')
 export class PharmacyStockController {
   constructor(private readonly stock: PharmacyStockService) {}
 

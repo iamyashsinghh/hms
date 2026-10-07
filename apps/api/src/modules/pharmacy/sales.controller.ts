@@ -3,10 +3,12 @@ import { pharmacy, type Paginated } from '@hms/shared';
 import type { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
+import { RequireEntitlement } from '../platform';
 import { PharmacySalesService } from './sales.service';
 import { PharmacyPrescriptionsService } from './prescriptions.service';
 
 @Controller('pharmacy')
+@RequireEntitlement('pharmacy')
 export class PharmacySalesController {
   constructor(
     private readonly sales: PharmacySalesService,

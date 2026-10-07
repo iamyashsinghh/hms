@@ -4,7 +4,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sql } from '@hms/db';
 import { DbService } from '../src/common/db/db.service';
 import { EventBus } from '../src/common/events/event-bus';
+import { ENTITLEMENT } from '../src/modules/platform/entitlement.guard';
+import { PharmacyCatalogController } from '../src/modules/pharmacy/catalog.controller';
+import { PharmacySalesController } from '../src/modules/pharmacy/sales.controller';
 import { PharmacyService } from '../src/modules/pharmacy/pharmacy.service';
+import { PharmacyStockController } from '../src/modules/pharmacy/stock.controller';
 import { bearer, bootApp, login } from './helpers';
 
 let app: NestFastifyApplication;
@@ -329,6 +333,12 @@ describe('prescription dispense queue', () => {
 });
 
 describe('pharmacy access control', () => {
+  it('needs the pharmacy module on the hospital plan', () => {
+    for (const c of [PharmacyCatalogController, PharmacyStockController, PharmacySalesController]) {
+      expect(Reflect.getMetadata(ENTITLEMENT, c)).toBe('pharmacy');
+    }
+  });
+
   it('enforces permissions per role', async () => {
     const sale = await call(doctor, 'POST', '/sales', { storeId, lines: [{ itemId: randomUUID(), qty: 1 }] });
     expect(sale.statusCode).toBe(403);

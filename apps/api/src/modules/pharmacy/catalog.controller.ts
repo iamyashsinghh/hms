@@ -3,9 +3,11 @@ import { pharmacy, type Paginated } from '@hms/shared';
 import type { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
+import { RequireEntitlement } from '../platform';
 import { PharmacyCatalogService } from './catalog.service';
 
 @Controller('pharmacy')
+@RequireEntitlement('pharmacy')
 export class PharmacyCatalogController {
   constructor(private readonly catalog: PharmacyCatalogService) {}
 
