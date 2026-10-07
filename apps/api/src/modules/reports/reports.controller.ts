@@ -3,9 +3,11 @@ import type { FastifyReply } from 'fastify';
 import { reports } from '@hms/shared';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
+import { RequireEntitlement } from '../platform';
 import { ReportsService } from './reports.service';
 
 @Controller('reports')
+@RequireEntitlement('reports')
 export class ReportsController {
   constructor(private readonly reports: ReportsService) {}
 
