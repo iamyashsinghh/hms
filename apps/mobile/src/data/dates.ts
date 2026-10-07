@@ -37,3 +37,16 @@ export function dateTimeLabel(iso: string | null): string | null {
 export function rupees(amount: number): string {
   return `₹${amount.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 }
+
+/** "+12 vs yesterday" / "−5% vs yesterday"; undefined without a previous day. */
+export function vsYesterday(now: number, before: number | undefined, money = false): string | undefined {
+  if (before === undefined) return undefined;
+  const diff = now - before;
+  if (diff === 0) return 'Same as yesterday';
+  const sign = diff > 0 ? '+' : '−';
+  if (money) {
+    const pct = before > 0 ? ` (${sign}${Math.round((Math.abs(diff) / before) * 100)}%)` : '';
+    return `${sign}${rupees(Math.abs(diff))}${pct} vs yesterday`;
+  }
+  return `${sign}${Math.abs(diff)} vs yesterday`;
+}

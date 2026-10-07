@@ -18,7 +18,9 @@ export function DemoBanner({ visible }: { visible: boolean }) {
 
 const STATUS: Record<QueueStatus, { label: string; fg: string; bg: string }> = {
   waiting: { label: 'Waiting', fg: colors.warning, bg: colors.warningSoft },
+  called: { label: 'Called', fg: colors.accent, bg: colors.accentSoft },
   in_consultation: { label: 'With doctor', fg: colors.primaryDark, bg: colors.primarySoft },
+  skipped: { label: 'Skipped', fg: colors.muted, bg: colors.border },
   completed: { label: 'Done', fg: colors.success, bg: colors.successSoft },
   cancelled: { label: 'Cancelled', fg: colors.muted, bg: colors.border },
   no_show: { label: 'No show', fg: colors.muted, bg: colors.border },

@@ -19,13 +19,16 @@ export interface PatientProfile {
   name: string;
   mobile: string;
   hospitalName: string | null;
+  /** Patient records linked to this account at this hospital (self and family). */
+  members: { id: string; name: string; uhid: string; relation: string }[];
 }
 
 interface VerifyResponse {
   accessToken: string;
   refreshToken?: string;
   expiresIn?: number;
-  patient?: Partial<PatientProfile> & { firstName?: string; lastName?: string };
+  /** PortalMe: account, hospital and linked patients (self + family). */
+  me?: unknown;
 }
 
 let accessToken: string | null = null;
@@ -43,39 +46,61 @@ export const patientSession = {
   getTenantCode: () => SecureStore.getItemAsync(TENANT_KEY),
 };
 
+/** Maps GET /portal/me (PortalMe) to the profile the app shows. */
 export function profileFrom(raw: unknown, fallbackMobile: string): PatientProfile {
   const o = (raw ?? {}) as Record<string, unknown>;
-  const name = typeof o.name === 'string' ? o.name : [o.firstName, o.lastName].filter((x) => typeof x === 'string' && x).join(' ');
+  const str = (v: unknown) => (typeof v === 'string' && v ? v : null);
+  const patients = Array.isArray(o.patients) ? (o.patients as Record<string, unknown>[]) : [];
+  const self = patients.find((p) => p.relation === 'self') ?? patients[0];
+  const selfName = self ? [str(self.firstName), str(self.lastName)].filter(Boolean).join(' ') : '';
   return {
-    id: typeof o.id === 'string' ? o.id : '',
-    name: name || 'Patient',
-    mobile: typeof o.mobile === 'string' ? o.mobile : fallbackMobile,
-    hospitalName: typeof o.hospitalName === 'string' ? o.hospitalName : typeof o.tenantName === 'string' ? o.tenantName : null,
+    id: str(o.accountId) ?? str(o.id) ?? '',
+    name: str(o.name) ?? (selfName || 'Patient'),
+    mobile: str(o.mobile) ?? fallbackMobile,
+    hospitalName: str(o.hospitalName) ?? str(o.tenantName),
+    members: patients.flatMap((p) => {
+      const id = str(p.id);
+      return id ? [{ id, name: [str(p.firstName), str(p.lastName)].filter(Boolean).join(' '), uhid: str(p.uhid) ?? '', relation: str(p.relation) ?? 'other' }] : [];
+    }),
   };
 }
 
-/** Sends the OTP. Returns 'demo' when the portal module is not on the server and demo data is allowed. */
-export async function requestOtp(tenantCode: string, mobile: string): Promise<'sent' | 'demo'> {
+export type OtpSent = { mode: 'sent'; devCode?: string } | { mode: 'demo' };
+
+/**
+ * Sends the OTP. `devCode` is returned only by non-production servers with the mock SMS provider.
+ * Returns demo mode when the portal module is not on the server and demo data is allowed.
+ */
+export async function requestOtp(tenantCode: string, mobile: string): Promise<OtpSent> {
   try {
-    await patientHttp.request('POST', ENDPOINTS.portal.otpRequest, { body: { tenantCode, mobile }, auth: false });
-    return 'sent';
+    const res = await patientHttp.request<{ devCode?: string } | undefined>('POST', ENDPOINTS.portal.otpRequest, {
+      body: { tenantCode, mobile },
+      auth: false,
+    });
+    return { mode: 'sent', ...(res?.devCode ? { devCode: res.devCode } : {}) };
   } catch (err) {
-    if (isMissingRoute(err) && DEMO_FALLBACK) return 'demo';
+    if (isMissingRoute(err) && DEMO_FALLBACK) return { mode: 'demo' };
     if (isMissingRoute(err)) throw new Error('Patient login is not available on this server yet');
     throw err;
   }
 }
 
-export async function verifyOtp(tenantCode: string, mobile: string, otp: string, demoMode: boolean): Promise<PatientProfile> {
+export async function verifyOtp(
+  tenantCode: string,
+  mobile: string,
+  otp: string,
+  demoMode: boolean,
+  deviceName?: string,
+): Promise<PatientProfile> {
   if (demoMode) {
     if (otp !== DEMO_OTP) throw new ApiError(401, 'invalid_otp', 'Wrong OTP');
     demo = true;
     accessToken = null;
     await SecureStore.setItemAsync(TENANT_KEY, tenantCode);
-    return { id: 'demo-patient', name: 'Demo Patient', mobile, hospitalName: tenantCode };
+    return { id: 'demo-patient', name: 'Demo Patient', mobile, hospitalName: tenantCode, members: [] };
   }
   const res = await patientHttp.request<VerifyResponse>('POST', ENDPOINTS.portal.otpVerify, {
-    body: { tenantCode, mobile, otp, client: 'mobile' },
+    body: { tenantCode, mobile, otp, client: 'mobile', ...(deviceName ? { deviceName } : {}) },
     auth: false,
   });
   if (!res.refreshToken) throw new Error('Server did not return a refresh token for the mobile client');
@@ -83,7 +108,7 @@ export async function verifyOtp(tenantCode: string, mobile: string, otp: string,
   accessToken = res.accessToken;
   await SecureStore.setItemAsync(REFRESH_KEY, res.refreshToken);
   await SecureStore.setItemAsync(TENANT_KEY, tenantCode);
-  return profileFrom(res.patient, mobile);
+  return profileFrom(res.me, mobile);
 }
 
 /** Same single-flight rotation as the staff session (see lib/auth/session.ts). */

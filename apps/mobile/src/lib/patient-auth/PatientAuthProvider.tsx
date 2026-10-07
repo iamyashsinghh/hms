@@ -6,6 +6,7 @@ import {
   refreshPatientToken,
   requestOtp,
   verifyOtp,
+  type OtpSent,
   type PatientProfile,
 } from './session';
 
@@ -15,8 +16,8 @@ interface PatientAuthValue {
   status: Status;
   profile: PatientProfile | null;
   bootError: string | null;
-  requestOtp: (tenantCode: string, mobile: string) => Promise<'sent' | 'demo'>;
-  verifyOtp: (tenantCode: string, mobile: string, otp: string, demo: boolean) => Promise<void>;
+  requestOtp: (tenantCode: string, mobile: string) => Promise<OtpSent>;
+  verifyOtp: (tenantCode: string, mobile: string, otp: string, demo: boolean, deviceName?: string) => Promise<void>;
   logout: () => Promise<void>;
   restore: () => Promise<void>;
 }
@@ -57,8 +58,8 @@ export function PatientAuthProvider({ children }: { children: ReactNode }) {
       profile,
       bootError,
       requestOtp,
-      verifyOtp: async (tenantCode, mobile, otp, demo) => {
-        setProfile(await verifyOtp(tenantCode, mobile, otp, demo));
+      verifyOtp: async (tenantCode, mobile, otp, demo, deviceName) => {
+        setProfile(await verifyOtp(tenantCode, mobile, otp, demo, deviceName));
         setBootError(null);
         setStatus('signedIn');
       },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { allergyHits, buildPrescription, dosesPerDay, emptyLine, suggestQty } from '@/data/rx';
+import { allergyHits, buildPrescription, dosesPerDay, draftFromLines, emptyLine, suggestQty } from '@/data/rx';
 
 describe('dosesPerDay', () => {
   it('reads Indian shorthand', () => {
@@ -36,14 +36,19 @@ describe('suggestQty', () => {
   });
 });
 
-describe('allergyHits', () => {
-  it('matches case-insensitively in either direction', () => {
+describe('allergyHits (same rules as the EMR server)', () => {
+  it('matches by name, case-insensitively', () => {
     expect(allergyHits('Tab Amoxicillin 500', ['amoxicillin'])).toEqual(['amoxicillin']);
-    expect(allergyHits('Penicillin', ['Penicillin V'])).toEqual(['Penicillin V']);
     expect(allergyHits('Cap Amoxyclav', ['Sulfa'])).toEqual([]);
   });
-  it('ignores tiny allergy strings and empty drugs', () => {
-    expect(allergyHits('Tab Paracetamol', ['pa'])).toEqual([]);
+  it('matches by drug class and Indian brand names', () => {
+    expect(allergyHits('Tab Augmentin 625', ['Penicillin'])).toEqual(['Penicillin']);
+    expect(allergyHits('Tab Combiflam', ['NSAIDs'])).toEqual(['NSAIDs']);
+    expect(allergyHits('Tab Dolo 650', ['Paracetamol'])).toEqual(['Paracetamol']);
+    expect(allergyHits('Tab Ciplox 500', ['Quinolones'])).toEqual(['Quinolones']);
+  });
+  it('ignores NKDA-style entries, tiny strings and empty drugs', () => {
+    expect(allergyHits('Tab Paracetamol', ['NKDA', 'none', 'xy'])).toEqual([]);
     expect(allergyHits('', ['penicillin'])).toEqual([]);
     expect(allergyHits('Tab X', undefined)).toEqual([]);
   });
@@ -73,6 +78,21 @@ describe('buildPrescription', () => {
   it('keeps a manual quantity', () => {
     const r = buildPrescription({ ...base, lines: [{ ...emptyLine(), drugName: 'Syp Cough', frequency: 'SOS', days: '3', qty: '1' }] });
     expect(r.body?.lines[0]?.qty).toBe(1);
+  });
+
+  it('requires an override reason for a line that matches an allergy', () => {
+    const line = { ...emptyLine(), drugName: 'Tab Augmentin 625', dose: '1 tab' };
+    expect(buildPrescription({ ...base, allergies: ['Penicillin'], lines: [line] }).errors[0]).toBe(
+      'Allergy: give a reason to prescribe anyway',
+    );
+    const ok = buildPrescription({ ...base, allergies: ['Penicillin'], sign: true, lines: [{ ...line, overrideReason: 'Tolerated before' }] });
+    expect(ok.body?.lines[0]?.allergyOverrideReason).toBe('Tolerated before');
+    expect(ok.body?.sign).toBe(true);
+  });
+
+  it('round-trips saved lines into form rows', () => {
+    const rows = draftFromLines([{ drugName: 'X', dose: '1 tab', frequency: 'BD', days: 3, qty: 6, instructions: 'after food' }]);
+    expect(rows[0]).toEqual({ drugName: 'X', dose: '1 tab', frequency: 'BD', days: '3', qty: '6', instructions: 'after food', overrideReason: '' });
   });
 
   it('reports per-line and form errors', () => {

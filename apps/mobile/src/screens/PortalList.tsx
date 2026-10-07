@@ -1,8 +1,8 @@
-import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, FlatList, Linking, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import type { ComponentProps } from 'react';
 import type Ionicons from '@expo/vector-icons/Ionicons';
 import { dateTimeLabel, rupees } from '@/data/dates';
-import type { PortalRecord } from '@/data/types';
+import type { PortalKind, PortalRecord } from '@/data/types';
 import { patientData } from '@/lib/patient-data';
 import { useLoad } from '@/lib/useLoad';
 import { Card, Chip, ErrorText, colors, space } from '@/ui';
@@ -12,7 +12,7 @@ export function PortalList({
   kinds,
   emptyIcon,
 }: {
-  kinds: { kind: 'appointments' | 'prescriptions' | 'bills'; title: string; empty: string }[];
+  kinds: { kind: PortalKind; title: string; empty: string }[];
   emptyIcon: ComponentProps<typeof Ionicons>['name'];
 }) {
   const state = useLoad(async () => {
@@ -48,7 +48,8 @@ export function PortalList({
 }
 
 function Row({ r }: { r: PortalRecord }) {
-  return (
+  const url = r.url;
+  const card = (
     <Card style={{ gap: 4 }}>
       <View style={s.top}>
         <Text style={s.title} numberOfLines={1}>
@@ -57,11 +58,25 @@ function Row({ r }: { r: PortalRecord }) {
         {r.amount !== null ? <Text style={s.amount}>{rupees(r.amount)}</Text> : null}
       </View>
       {r.subtitle ? <Text style={s.muted}>{r.subtitle}</Text> : null}
+      {r.lines.map((l, i) => (
+        <Text key={i} style={s.line}>
+          • {l}
+        </Text>
+      ))}
+      {r.due !== null ? <Text style={s.due}>Due {rupees(r.due)}</Text> : null}
       <View style={s.top}>
         <Text style={s.muted}>{dateTimeLabel(r.at)}</Text>
         {r.status ? <Chip label={r.status.replace(/_/g, ' ')} /> : null}
       </View>
+      {url ? <Text style={s.link}>Open report</Text> : null}
     </Card>
+  );
+  return url ? (
+    <Pressable accessibilityRole="link" onPress={() => void Linking.openURL(url)}>
+      {card}
+    </Pressable>
+  ) : (
+    card
   );
 }
 
@@ -71,4 +86,7 @@ const s = StyleSheet.create({
   title: { fontSize: 16, fontWeight: '700', color: colors.text, flex: 1 },
   amount: { fontSize: 16, fontWeight: '700', color: colors.text },
   muted: { fontSize: 13, color: colors.muted },
+  line: { fontSize: 14, color: colors.text },
+  due: { fontSize: 14, fontWeight: '700', color: colors.danger },
+  link: { fontSize: 14, fontWeight: '700', color: colors.primary },
 });

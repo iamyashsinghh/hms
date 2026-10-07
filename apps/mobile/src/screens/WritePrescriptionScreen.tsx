@@ -1,15 +1,20 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Stack, router } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { FREQUENCIES, allergyHits, buildPrescription, emptyLine, suggestQty, type RxDraftLine } from '@/data/rx';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { AllergyConflictError } from '@/data/client';
+import { FREQUENCIES, allergyHits, buildPrescription, draftFromLines, emptyLine, suggestQty, type RxDraftLine } from '@/data/rx';
+import type { EncounterRx, RxFavourite } from '@/data/types';
 import { data } from '@/lib/data';
-import { loadFavourites, removeFavourite, saveFavourite, type Favourite } from '@/lib/favourites';
+import { addFavourite, loadFavourites, removeFavourite, type FavouriteStore } from '@/lib/favourites';
 import { errorMessage, useLoad } from '@/lib/useLoad';
 import { Button, Card, ErrorText, Field, colors, radius, space } from '@/ui';
 import { DemoBanner, IconButton, SectionTitle } from '@/ui/widgets';
 
-/** E-prescription (doctor app lite): medicines with Indian dosing shorthand, favourites, allergy check. */
+/**
+ * E-prescription (doctor app lite): medicines with Indian dosing shorthand, auto quantity, favourites,
+ * allergy check with override reason. With an open consultation it edits that consultation's prescription.
+ */
 export function WritePrescriptionScreen({ patientId, encounterId }: { patientId: string; encounterId?: string }) {
   const patient = useLoad(() => data.patient(patientId), patientId);
   const allergies = patient.data?.allergies ?? [];
@@ -19,46 +24,73 @@ export function WritePrescriptionScreen({ patientId, encounterId }: { patientId:
   const [advice, setAdvice] = useState('');
   const [followUpDate, setFollowUpDate] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [busy, setBusy] = useState(false);
-  const [favourites, setFavourites] = useState<Favourite[]>([]);
+  const [busy, setBusy] = useState<'save' | 'sign' | null>(null);
+  const [favs, setFavs] = useState<FavouriteStore>({ items: [], local: true });
+  const [existing, setExisting] = useState<EncounterRx | null>(null);
+  const [loadingExisting, setLoadingExisting] = useState(!!encounterId);
 
   useEffect(() => {
-    void loadFavourites().then(setFavourites);
+    void loadFavourites().then(setFavs);
   }, []);
 
-  const update = (i: number, patch: Partial<RxDraftLine>) =>
-    setLines((prev) => prev.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+  useEffect(() => {
+    if (!encounterId) return;
+    data
+      .encounterRx(encounterId)
+      .then((enc) => {
+        setExisting(enc);
+        if (enc && enc.lines.length) setLines(draftFromLines(enc.lines));
+        if (enc?.advice) setAdvice(enc.advice);
+        if (enc?.followUpDate) setFollowUpDate(enc.followUpDate);
+      })
+      .catch((err: unknown) => setErrors({ form: errorMessage(err) }))
+      .finally(() => setLoadingExisting(false));
+  }, [encounterId]);
 
-  function addFavourite(f: Favourite) {
+  const locked = !!existing?.signed;
+  const update = (i: number, patch: Partial<RxDraftLine>) => setLines((prev) => prev.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+
+  function applyFavourite(f: RxFavourite) {
     setLines((prev) => {
-      const blankIdx = prev.findIndex((l) => !l.drugName.trim());
-      const line = { ...emptyLine(), ...f };
-      return blankIdx >= 0 ? prev.map((l, i) => (i === blankIdx ? line : l)) : [...prev, line];
+      const kept = prev.filter((l) => l.drugName.trim());
+      return [...kept, ...draftFromLines(f.lines)];
     });
   }
 
-  async function submit() {
-    const result = buildPrescription({ patientId, encounterId, lines, advice, followUpDate });
+  async function submit(sign: boolean) {
+    const result = buildPrescription({ patientId, encounterId: existing?.encounterId ?? encounterId, lines, advice, followUpDate, allergies, sign });
     setErrors(result.errors);
     if (!result.ok || !result.body) return;
     const body = result.body;
-    const hits = [...new Set(body.lines.flatMap((l) => allergyHits(l.drugName, allergies)))];
     const send = async () => {
-      setBusy(true);
+      setBusy(sign ? 'sign' : 'save');
       try {
-        await data.createPrescription(body);
-        Alert.alert('Prescription saved', `${body.lines.length} medicine${body.lines.length === 1 ? '' : 's'} prescribed for ${name || 'the patient'}.`);
+        const saved = await data.createPrescription(body);
+        Alert.alert(
+          sign ? 'Prescription signed' : 'Prescription saved',
+          [saved.rxNo, `${body.lines.length} medicine${body.lines.length === 1 ? '' : 's'} for ${name || 'the patient'}`].filter(Boolean).join(' · '),
+        );
         router.back();
       } catch (err) {
-        setErrors({ form: errorMessage(err) });
+        if (err instanceof AllergyConflictError) {
+          const next: Record<string, string> = { form: err.message };
+          // conflicts[].line indexes the submitted lines; map back to the form rows by drug name.
+          for (const c of err.conflicts) {
+            const row = lines.findIndex((l) => l.drugName.trim().toLowerCase() === c.drugName.toLowerCase());
+            if (row >= 0) next[row] = `Allergy (${c.allergy}): give a reason to prescribe anyway`;
+          }
+          setErrors(next);
+        } else {
+          setErrors({ form: errorMessage(err) });
+        }
       } finally {
-        setBusy(false);
+        setBusy(null);
       }
     };
-    if (hits.length > 0) {
-      Alert.alert('Allergy warning', `The patient is allergic to ${hits.join(', ')}. Prescribe anyway?`, [
-        { text: 'Go back', style: 'cancel' },
-        { text: 'Prescribe anyway', style: 'destructive', onPress: () => void send() },
+    if (sign) {
+      Alert.alert('Sign and lock?', 'A signed consultation cannot be edited. Corrections go in as addenda.', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Sign', onPress: () => void send() },
       ]);
       return;
     }
@@ -71,72 +103,107 @@ export function WritePrescriptionScreen({ patientId, encounterId }: { patientId:
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90}>
         <ScrollView contentContainerStyle={s.container} keyboardShouldPersistTaps="handled">
           <DemoBanner visible={patient.demo} />
+          {loadingExisting ? <ActivityIndicator color={colors.primary} /> : null}
           {allergies.length > 0 ? (
             <View style={s.allergy}>
               <Ionicons name="warning-outline" size={16} color={colors.danger} />
               <Text style={s.allergyText}>Allergies: {allergies.join(', ')}</Text>
             </View>
           ) : null}
+          {existing && existing.lines.length > 0 && !locked ? (
+            <Text style={s.note}>Editing this consultation's prescription. Saving replaces it.</Text>
+          ) : null}
+          {locked ? (
+            <Card>
+              <Text style={s.lockTitle}>This consultation is signed</Text>
+              <Text style={s.note}>Its prescription can no longer be changed. Add corrections as an addendum from the web app.</Text>
+            </Card>
+          ) : null}
 
-          {favourites.length > 0 ? (
+          {!locked && favs.items.length > 0 ? (
             <>
-              <SectionTitle>Favourites</SectionTitle>
+              <SectionTitle right={favs.local ? <Text style={s.note}>On this phone</Text> : undefined}>Favourites</SectionTitle>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: space.sm }}>
-                {favourites.map((f) => (
+                {favs.items.map((f) => (
                   <Pressable
-                    key={f.drugName}
+                    key={f.id}
                     style={s.fav}
-                    onPress={() => addFavourite(f)}
+                    onPress={() => applyFavourite(f)}
                     onLongPress={() =>
-                      Alert.alert('Remove favourite?', f.drugName, [
+                      Alert.alert('Remove favourite?', f.name, [
                         { text: 'Cancel', style: 'cancel' },
-                        { text: 'Remove', style: 'destructive', onPress: () => void removeFavourite(f.drugName, favourites).then(setFavourites) },
+                        {
+                          text: 'Remove',
+                          style: 'destructive',
+                          onPress: () => void removeFavourite(favs, f.id).then(setFavs).catch((e: unknown) => setErrors({ form: errorMessage(e) })),
+                        },
                       ])
                     }
                   >
-                    <Text style={s.favText}>{f.drugName}</Text>
-                    <Text style={s.favMeta}>{[f.dose, f.frequency, f.days ? `${f.days}d` : ''].filter(Boolean).join(' · ')}</Text>
+                    <Text style={s.favText} numberOfLines={1}>
+                      {f.name}
+                    </Text>
+                    <Text style={s.favMeta} numberOfLines={1}>
+                      {f.lines.length === 1 ? [f.lines[0]?.dose, f.lines[0]?.frequency, f.lines[0]?.days ? `${f.lines[0].days}d` : ''].filter(Boolean).join(' · ') : `${f.lines.length} medicines`}
+                    </Text>
                   </Pressable>
                 ))}
               </ScrollView>
             </>
           ) : null}
 
-          <SectionTitle>Medicines</SectionTitle>
-          {lines.map((l, i) => (
-            <LineEditor
-              key={i}
-              index={i}
-              line={l}
-              error={errors[i]}
-              allergyHit={allergyHits(l.drugName, allergies)}
-              onChange={(patch) => update(i, patch)}
-              onRemove={lines.length > 1 ? () => setLines((prev) => prev.filter((_, idx) => idx !== i)) : undefined}
-              onFavourite={
-                l.drugName.trim()
-                  ? () => void saveFavourite(l, favourites).then(setFavourites)
-                  : undefined
-              }
-            />
-          ))}
-          <Button title="Add medicine" variant="outline" onPress={() => setLines((prev) => [...prev, emptyLine()])} />
+          {!locked ? (
+            <>
+              <SectionTitle>Medicines</SectionTitle>
+              {lines.map((l, i) => (
+                <LineEditor
+                  key={i}
+                  index={i}
+                  line={l}
+                  error={errors[i]}
+                  allergyHit={allergyHits(l.drugName, allergies)}
+                  onChange={(patch) => update(i, patch)}
+                  onRemove={lines.length > 1 ? () => setLines((prev) => prev.filter((_, idx) => idx !== i)) : undefined}
+                  onFavourite={
+                    l.drugName.trim()
+                      ? () => {
+                          const qty = Number(l.qty) || suggestQty(l.frequency, Number(l.days)) || 0;
+                          void addFavourite(favs, { drugName: l.drugName.trim(), dose: l.dose.trim() || '1 unit', frequency: l.frequency, days: Number(l.days) || 0, qty })
+                            .then(setFavs)
+                            .catch((e: unknown) => setErrors({ form: errorMessage(e) }));
+                        }
+                      : undefined
+                  }
+                />
+              ))}
+              <Button title="Add medicine" variant="outline" onPress={() => setLines((prev) => [...prev, emptyLine()])} />
 
-          <SectionTitle>Advice and follow-up</SectionTitle>
-          <Card style={{ gap: space.md }}>
-            <Field label="Advice" value={advice} onChangeText={setAdvice} placeholder="e.g. Plenty of fluids, rest" multiline style={[s.input, { height: 80, textAlignVertical: 'top', paddingTop: space.sm }]} />
-            <Field
-              label="Follow-up date (YYYY-MM-DD)"
-              value={followUpDate}
-              onChangeText={setFollowUpDate}
-              placeholder="Optional"
-              autoCapitalize="none"
-              keyboardType="numbers-and-punctuation"
-            />
-            {errors.followUpDate ? <ErrorText>{errors.followUpDate}</ErrorText> : null}
-          </Card>
+              <SectionTitle>Advice and follow-up</SectionTitle>
+              <Card style={{ gap: space.md }}>
+                <Field
+                  label="Advice"
+                  value={advice}
+                  onChangeText={setAdvice}
+                  placeholder="e.g. Plenty of fluids, rest"
+                  multiline
+                  style={[s.input, { height: 80, textAlignVertical: 'top', paddingTop: space.sm }]}
+                />
+                <Field
+                  label="Follow-up date (YYYY-MM-DD)"
+                  value={followUpDate}
+                  onChangeText={setFollowUpDate}
+                  placeholder="Optional"
+                  autoCapitalize="none"
+                  keyboardType="numbers-and-punctuation"
+                />
+                {errors.followUpDate ? <ErrorText>{errors.followUpDate}</ErrorText> : null}
+              </Card>
 
-          {errors.form ? <ErrorText>{errors.form}</ErrorText> : null}
-          <Button title="Save prescription" onPress={() => void submit()} loading={busy} disabled={patient.loading || !!patient.error} />
+              {errors.form ? <ErrorText>{errors.form}</ErrorText> : null}
+              <Button title="Save prescription" onPress={() => void submit(false)} loading={busy === 'save'} disabled={busy !== null || patient.loading || !!patient.error || loadingExisting} />
+              <Button title="Save and sign" variant="outline" onPress={() => void submit(true)} loading={busy === 'sign'} disabled={busy !== null || patient.loading || !!patient.error || loadingExisting} />
+            </>
+          ) : null}
         </ScrollView>
       </KeyboardAvoidingView>
     </>
@@ -177,7 +244,19 @@ function LineEditor({
         {onFavourite ? <IconButton icon="star-outline" label="Save as favourite" onPress={onFavourite} /> : null}
         {onRemove ? <IconButton icon="trash-outline" label="Remove medicine" onPress={onRemove} /> : null}
       </View>
-      {allergyHit.length > 0 ? <ErrorText>Patient is allergic to {allergyHit.join(', ')}</ErrorText> : null}
+      {allergyHit.length > 0 || error?.startsWith('Allergy') ? (
+        <>
+          {allergyHit.length > 0 ? <ErrorText>Patient is allergic to {allergyHit.join(', ')}</ErrorText> : null}
+          <TextInput
+            value={l.overrideReason}
+            onChangeText={(overrideReason) => onChange({ overrideReason })}
+            placeholder="Reason to prescribe anyway (required)"
+            placeholderTextColor={colors.muted}
+            style={[s.input, { borderColor: colors.danger }]}
+            accessibilityLabel="Allergy override reason"
+          />
+        </>
+      ) : null}
       <View style={s.chips}>
         {FREQUENCIES.map((f) => {
           const active = l.frequency === f;
@@ -244,6 +323,8 @@ const s = StyleSheet.create({
   container: { padding: space.lg, gap: space.md, paddingBottom: space.xxl },
   allergy: { flexDirection: 'row', gap: space.sm, alignItems: 'center', backgroundColor: colors.dangerSoft, borderRadius: radius.sm, padding: space.sm },
   allergyText: { color: colors.danger, fontWeight: '700', fontSize: 14, flex: 1 },
+  note: { fontSize: 13, color: colors.muted },
+  lockTitle: { fontSize: 16, fontWeight: '700', color: colors.text },
   fav: { backgroundColor: colors.accentSoft, borderRadius: radius.md, paddingHorizontal: space.md, paddingVertical: space.sm, maxWidth: 200 },
   favText: { color: colors.accent, fontWeight: '700', fontSize: 14 },
   favMeta: { color: colors.accent, fontSize: 12 },

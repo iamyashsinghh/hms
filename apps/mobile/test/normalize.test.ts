@@ -7,6 +7,7 @@ import {
   normalizeTimeline,
   queueStatus,
 } from '@/data/normalize';
+import { vsYesterday } from '@/data/dates';
 
 const NOW = new Date(2026, 9, 7);
 
@@ -98,34 +99,129 @@ describe('normalizeTimeline', () => {
   });
 });
 
+describe('normalizeTimeline (EMR consultations)', () => {
+  it('turns a consultation into a card with diagnoses, medicines, orders, vitals and follow-up', () => {
+    const [row] = normalizeTimeline({
+      items: [
+        {
+          encounterId: 'e1',
+          encounterNo: 'OP000007',
+          encounterDate: '2026-10-01T05:00:00Z',
+          status: 'completed',
+          doctorName: 'Dr. Rao',
+          chiefComplaints: 'Fever 3 days',
+          diagnoses: [{ icd10Code: 'J02.9', description: 'Acute pharyngitis', kind: 'final', isPrimary: true }],
+          medicines: [{ drugName: 'Tab Dolo 650', dose: '1 tab', frequency: 'TDS', days: 3 }],
+          orders: [{ kind: 'lab', name: 'CBC' }],
+          vitals: { bpSystolic: 120, bpDiastolic: 80, pulse: 88, temperatureC: 38.2, spo2: 98 },
+          followUpDate: '2026-10-08',
+        },
+      ],
+    });
+    expect(row).toEqual({
+      id: 'e1',
+      type: 'encounter',
+      at: '2026-10-01T05:00:00Z',
+      title: 'OPD visit · OP000007',
+      summary: 'Fever 3 days',
+      doctorName: 'Dr. Rao',
+      details: [
+        'Dx: Acute pharyngitis (J02.9)',
+        'Rx: Tab Dolo 650 1 tab TDS × 3 days',
+        'Orders: CBC',
+        'Vitals: BP 120/80, Pulse 88, Temp 38.2°C, SpO2 98%',
+        'Follow-up: 2026-10-08',
+      ],
+    });
+  });
+
+  it('shows an unfinished consultation status in the title', () => {
+    expect(normalizeTimeline([{ encounterId: 'e2', encounterNo: 'OP2', encounterDate: 'x', status: 'in_progress' }])[0]?.title).toBe(
+      'OPD visit · OP2 (in progress)',
+    );
+  });
+});
+
 describe('normalizeOwnerSummary', () => {
-  it('reads numbers (also numeric strings from numeric(14,2)) and defaults the rest', () => {
+  it('maps the reports module response', () => {
     expect(
       normalizeOwnerSummary(
-        { opdVisits: 10, collections: '12500.50', topDoctors: [{ userId: 'd1', name: 'Dr. A', visits: 4, revenue: '2000.00' }] },
+        {
+          date: '2026-10-07',
+          timezone: 'Asia/Kolkata',
+          opdVisits: 10,
+          newPatients: 3,
+          billed: 15000,
+          collections: '12500.50',
+          collectionsByMode: [{ mode: 'upi', count: 4, amount: 9000 }],
+          pendingBills: { count: 2, amount: 2500 },
+          consultationsSigned: 9,
+          topDoctors: [{ doctorId: 'd1', name: 'Dr. A', visits: 4, revenue: '2000.00' }],
+          topServices: [{ code: 'CONS', description: 'Consultation', qty: 10, amount: 5000 }],
+          previous: { date: '2026-10-06', opdVisits: 8, newPatients: 1, billed: 1, collections: 10000 },
+        },
         '2026-10-07',
       ),
     ).toEqual({
       date: '2026-10-07',
       opdVisits: 10,
-      newPatients: 0,
+      newPatients: 3,
+      billed: 15000,
       collections: 12500.5,
-      pendingBills: 0,
+      collectionsByMode: [{ mode: 'upi', amount: 9000 }],
+      pendingBills: { count: 2, amount: 2500 },
+      consultationsSigned: 9,
       topDoctors: [{ doctorId: 'd1', name: 'Dr. A', visits: 4, revenue: 2000 }],
+      topServices: [{ description: 'Consultation', qty: 10, amount: 5000 }],
+      previous: { opdVisits: 8, newPatients: 1, collections: 10000 },
     });
+  });
+
+  it('defaults missing fields', () => {
+    const s = normalizeOwnerSummary({ pendingBills: 4 }, '2026-10-07');
+    expect(s).toMatchObject({ opdVisits: 0, pendingBills: { count: 4, amount: 0 }, previous: null, topDoctors: [] });
   });
 });
 
-describe('normalizePortalRecords', () => {
-  it('maps appointments and bills', () => {
+describe('vsYesterday', () => {
+  it('formats counts and money', () => {
+    expect(vsYesterday(10, 8)).toBe('+2 vs yesterday');
+    expect(vsYesterday(5, 5)).toBe('Same as yesterday');
+    expect(vsYesterday(9000, 10000, true)).toBe('−₹1,000 (−10%) vs yesterday');
+    expect(vsYesterday(1, undefined)).toBeUndefined();
+  });
+});
+
+describe('normalizePortalRecords (portal module shapes)', () => {
+  it('appointments', () => {
     expect(
-      normalizePortalRecords([
-        { id: 'a', doctorName: 'Dr. A', facilityName: 'Main', slotStart: 'x', status: 'booked' },
-        { id: 'b', number: 'INV-1', total: '500.00', status: 'paid' },
-      ]),
-    ).toEqual([
-      { id: 'a', title: 'Dr. A', subtitle: 'Main', at: 'x', amount: null, status: 'booked' },
-      { id: 'b', title: 'INV-1', subtitle: null, at: null, amount: 500, status: 'paid' },
-    ]);
+      normalizePortalRecords([{ id: 'a', doctorName: 'Dr. A', patientName: 'Asha', reason: 'Fever', slotStart: 'x', status: 'requested' }], 'appointments')[0],
+    ).toMatchObject({ title: 'Dr. A', subtitle: 'Asha · Fever', at: 'x', status: 'requested', amount: null });
+  });
+  it('prescriptions list their medicines', () => {
+    expect(
+      normalizePortalRecords(
+        [{ id: 'p', doctorName: null, patientName: 'Asha', issuedAt: 'y', lines: [{ drugName: 'Tab X', dose: '1 tab', frequency: 'BD', days: 3 }] }],
+        'prescriptions',
+      )[0],
+    ).toMatchObject({ title: 'Prescription', subtitle: 'Asha', at: 'y', lines: ['Tab X 1 tab BD × 3 days'] });
+  });
+  it('bills read numeric strings and show what is due', () => {
+    const [paid, unpaid] = normalizePortalRecords(
+      [
+        { id: 'b1', number: 'INV-1', patientName: 'Asha', total: '500.00', due: '0.00', status: 'paid', issuedAt: 'z' },
+        { id: 'b2', number: null, total: '800.00', due: '300.00', status: 'partially_paid' },
+      ],
+      'bills',
+    );
+    expect(paid).toMatchObject({ title: 'INV-1', amount: 500, due: null, status: 'paid', at: 'z' });
+    expect(unpaid).toMatchObject({ title: 'Bill', amount: 800, due: 300 });
+  });
+  it('reports carry their link', () => {
+    expect(normalizePortalRecords([{ id: 'r', title: 'CBC', kind: 'lab', patientName: 'Asha', url: 'https://x/r.pdf', issuedAt: 'w' }], 'reports')[0]).toMatchObject({
+      title: 'CBC',
+      subtitle: 'Asha · lab',
+      url: 'https://x/r.pdf',
+    });
   });
 });

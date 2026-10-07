@@ -9,9 +9,14 @@ export const ENDPOINTS = {
     queue: '/emr/queue',
     timeline: (patientId: string) => `/emr/patients/${patientId}/timeline`,
     createPrescription: '/emr/prescriptions',
+    encounter: (id: string) => `/emr/encounters/${id}`,
+    startEncounter: (id: string) => `/emr/encounters/${id}/start`,
+    favourites: '/emr/favourites',
+    favourite: (id: string) => `/emr/favourites/${id}`,
   },
   frontoffice: {
     queue: '/frontoffice/queue',
+    transition: (visitId: string) => `/frontoffice/visits/${visitId}/transition`,
   },
   setup: {
     doctors: '/setup/doctors',
@@ -31,5 +36,6 @@ export const ENDPOINTS = {
     appointments: '/portal/appointments',
     prescriptions: '/portal/prescriptions',
     bills: '/portal/bills',
+    reports: '/portal/reports',
   },
 } as const;

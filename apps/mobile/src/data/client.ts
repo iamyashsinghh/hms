@@ -7,12 +7,28 @@ import { demoDoctors, demoOwnerSummary, demoPatient, demoPortal, demoQueue, demo
 import { ENDPOINTS } from './endpoints';
 import {
   normalizeDoctors,
+  normalizeEncounterRx,
+  normalizeFavourites,
   normalizeOwnerSummary,
   normalizePortalRecords,
   normalizeQueue,
   normalizeTimeline,
 } from './normalize';
-import type { CreatePrescription, DoctorRef, Loaded, OwnerSummary, PortalRecord, QueueItem, TimelineEntry } from './types';
+import type {
+  CreatePrescription,
+  DoctorRef,
+  EncounterRx,
+  PrescriptionSaved,
+  RxFavourite,
+  RxLine,
+  Loaded,
+  OwnerSummary,
+  PortalKind,
+  PortalRecord,
+  QueueItem,
+  TimelineEntry,
+  VisitAction,
+} from './types';
 
 /** True when the server has no such route (module not merged yet), as opposed to a missing record. */
 export function isMissingRoute(err: unknown): boolean {
@@ -23,6 +39,23 @@ export class FeatureUnavailableError extends Error {
   constructor(readonly feature: string) {
     super(`${feature} is not available on this server yet`);
     this.name = 'FeatureUnavailableError';
+  }
+}
+
+export interface AllergyConflict {
+  line: number;
+  drugName: string;
+  allergy: string;
+}
+
+/** The EMR rejected the prescription: a line matches a recorded allergy and has no override reason. */
+export class AllergyConflictError extends Error {
+  constructor(
+    message: string,
+    readonly conflicts: AllergyConflict[],
+  ) {
+    super(message);
+    this.name = 'AllergyConflictError';
   }
 }
 
@@ -58,10 +91,21 @@ export function createMobileData(http: Http, opts: MobileDataOptions) {
   }
 
   return {
-    /** Doctor's checked-in patients for a day (EMR). */
-    async doctorQueue(date: string): Promise<Loaded<QueueItem[]>> {
+    /**
+     * Doctor's checked-in patients for a day. Uses the EMR queue; until EMR is on the server, the
+     * front-office token queue filtered to this doctor gives the same list.
+     */
+    async doctorQueue(date: string, doctorUserId: string): Promise<Loaded<QueueItem[]>> {
       try {
         return { data: normalizeQueue(await http.get(ENDPOINTS.emr.queue, { date })), demo: false };
+      } catch (err) {
+        if (!isMissingRoute(err)) throw err;
+      }
+      try {
+        return {
+          data: normalizeQueue(await http.get(ENDPOINTS.frontoffice.queue, { doctorId: doctorUserId, date })),
+          demo: false,
+        };
       } catch (err) {
         if (!isMissingRoute(err)) throw err;
         if (!opts.demoFallback) throw new FeatureUnavailableError("Doctor's queue");
@@ -78,6 +122,16 @@ export function createMobileData(http: Http, opts: MobileDataOptions) {
         if (!isMissingRoute(err)) throw err;
         if (!opts.demoFallback) throw new FeatureUnavailableError('OPD queue');
         return { data: normalizeQueue(demoQueue(date, await samplePatients())), demo: true };
+      }
+    },
+
+    /** Moves a front-office visit through the queue (call, start, complete, skip, requeue, cancel). */
+    async visitAction(visitId: string, action: VisitAction, room?: string): Promise<void> {
+      try {
+        await http.post(ENDPOINTS.frontoffice.transition(visitId), { action, ...(room ? { room } : {}) });
+      } catch (err) {
+        if (isMissingRoute(err)) throw new FeatureUnavailableError('Queue actions');
+        throw err;
       }
     },
 
@@ -102,15 +156,67 @@ export function createMobileData(http: Http, opts: MobileDataOptions) {
       );
     },
 
-    /** Returns the new prescription id. Never falls back to demo data: a clinical write must reach the server. */
-    async createPrescription(body: CreatePrescription): Promise<string> {
+    /**
+     * Saves the prescription (EMR quick prescription: opens a consultation when there is none, and
+     * replaces the consultation's prescription when there is). Never falls back to demo data.
+     */
+    async createPrescription(body: CreatePrescription): Promise<PrescriptionSaved> {
       try {
-        const res = await http.post<{ prescriptionId?: string; id?: string }>(ENDPOINTS.emr.createPrescription, body);
-        return res?.prescriptionId ?? res?.id ?? '';
+        const res = await http.post<Partial<PrescriptionSaved> & { id?: string }>(ENDPOINTS.emr.createPrescription, body);
+        return {
+          prescriptionId: res?.prescriptionId ?? res?.id ?? '',
+          encounterId: res?.encounterId ?? body.encounterId ?? '',
+          rxNo: res?.rxNo ?? '',
+        };
       } catch (err) {
         if (isMissingRoute(err)) throw new FeatureUnavailableError('Writing prescriptions');
+        if (err instanceof ApiError && err.code === 'allergy_conflict') {
+          const conflicts = (err.details as { conflicts?: AllergyConflict[] } | undefined)?.conflicts ?? [];
+          throw new AllergyConflictError(err.message, conflicts);
+        }
         throw err;
       }
+    },
+
+    /** The consultation's current prescription, advice and follow-up, so the Rx screen edits instead of overwriting. */
+    async encounterRx(encounterId: string): Promise<EncounterRx | null> {
+      if (encounterId.startsWith('demo-')) return null;
+      try {
+        return normalizeEncounterRx(await http.get(ENDPOINTS.emr.encounter(encounterId)));
+      } catch (err) {
+        if (isMissingRoute(err)) return null;
+        throw err;
+      }
+    },
+
+    /** Marks the consultation started (best effort: the visit transition is what the queue shows). */
+    async startEncounter(encounterId: string): Promise<void> {
+      try {
+        await http.post(ENDPOINTS.emr.startEncounter(encounterId), {});
+      } catch (err) {
+        if (isMissingRoute(err) || (err instanceof ApiError && err.status === 409)) return;
+        throw err;
+      }
+    },
+
+    /** Server favourites; null when the EMR module is not on this server (the app then keeps them on the phone). */
+    async favourites(): Promise<RxFavourite[] | null> {
+      try {
+        return normalizeFavourites(await http.get(ENDPOINTS.emr.favourites));
+      } catch (err) {
+        if (isMissingRoute(err)) return null;
+        throw err;
+      }
+    },
+
+    async saveFavourite(name: string, lines: RxLine[]): Promise<RxFavourite> {
+      const clean = lines.map(({ allergyOverrideReason: _drop, ...l }) => l);
+      const res = await http.post(ENDPOINTS.emr.favourites, { name, lines: clean });
+      return normalizeFavourites([res])[0] ?? { id: '', name, lines: clean };
+    },
+
+    deleteFavourite(id: string): Promise<void> {
+      return http.delete<void>(ENDPOINTS.emr.favourite(id));
     },
 
     ownerSummary(date: string): Promise<Loaded<OwnerSummary>> {
@@ -121,11 +227,12 @@ export function createMobileData(http: Http, opts: MobileDataOptions) {
       );
     },
 
-    portalList(kind: 'appointments' | 'prescriptions' | 'bills'): Promise<Loaded<PortalRecord[]>> {
+    portalList(kind: PortalKind): Promise<Loaded<PortalRecord[]>> {
+      const label = { appointments: 'Appointments', prescriptions: 'Prescriptions', bills: 'Bills', reports: 'Reports' }[kind];
       return withFallback(
-        kind === 'appointments' ? 'Appointments' : kind === 'prescriptions' ? 'Prescriptions' : 'Bills',
-        async () => normalizePortalRecords(await http.get(ENDPOINTS.portal[kind])),
-        () => normalizePortalRecords(demoPortal(kind)),
+        label,
+        async () => normalizePortalRecords(await http.get(ENDPOINTS.portal[kind]), kind),
+        () => normalizePortalRecords(demoPortal(kind), kind),
       );
     },
   };

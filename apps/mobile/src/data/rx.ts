@@ -26,14 +26,33 @@ export function suggestQty(frequency: string, days: number): number | null {
   return Math.ceil(perDay * days);
 }
 
-/** Allergies (from the patient record) that a drug name matches, case-insensitive, either way round. */
+// Mirrors the EMR server check (apps/api/src/modules/emr/allergy.ts) so the doctor sees the warning while
+// typing; the server stays the authority and rejects unmatched lines with 409 allergy_conflict.
+const CLASSES: Record<string, string[]> = {
+  penicillin: ['penicillin', 'amoxicillin', 'amoxycillin', 'ampicillin', 'cloxacillin', 'piperacillin', 'augmentin', 'amoxiclav', 'clavam', 'mox'],
+  cephalosporin: ['cef', 'ceph'],
+  sulfa: ['sulfa', 'sulpha', 'sulfamethoxazole', 'cotrimoxazole', 'co-trimoxazole', 'septran', 'bactrim'],
+  nsaid: ['ibuprofen', 'diclofenac', 'aspirin', 'naproxen', 'aceclofenac', 'ketorolac', 'mefenamic', 'piroxicam', 'etoricoxib', 'nimesulide', 'brufen', 'combiflam', 'voveran'],
+  aspirin: ['aspirin', 'ecosprin', 'disprin'],
+  quinolone: ['floxacin', 'ciplox'],
+  macrolide: ['azithromycin', 'clarithromycin', 'erythromycin', 'azithral'],
+  tetracycline: ['tetracycline', 'doxycycline', 'minocycline'],
+  opioid: ['morphine', 'codeine', 'tramadol', 'fentanyl', 'pethidine', 'tapentadol'],
+  paracetamol: ['paracetamol', 'acetaminophen', 'crocin', 'dolo', 'calpol'],
+};
+const IGNORE = new Set(['nkda', 'nka', 'none', 'nil', 'no known allergies', 'na', '-']);
+const norm = (v: string) => v.toLowerCase().replace(/[^a-z0-9 -]/g, ' ').trim();
+
+/** Recorded allergies a drug matches, by name or drug class ("penicillin" flags amoxicillin). */
 export function allergyHits(drugName: string, allergies: readonly string[] | undefined): string[] {
-  const drug = drugName.trim().toLowerCase();
-  if (!drug || !allergies?.length) return [];
-  return allergies.filter((a) => {
-    const allergy = a.trim().toLowerCase();
-    if (allergy.length < 3) return false;
-    return drug.includes(allergy) || allergy.includes(drug.split(/\s+/)[0] ?? drug);
+  const d = norm(drugName);
+  if (!d || !allergies?.length) return [];
+  return allergies.filter((raw) => {
+    const a = norm(raw);
+    if (!a || IGNORE.has(a)) return false;
+    const key = Object.keys(CLASSES).find((k) => a.includes(k) || k.includes(a.replace(/s$/, '')));
+    const needles = key ? [a, ...(CLASSES[key] ?? [])] : [a];
+    return needles.some((n) => n.length >= 3 && (d.includes(n) || (d.length >= 4 && n.includes(d))));
   });
 }
 
@@ -44,9 +63,32 @@ export interface RxDraftLine {
   days: string;
   qty: string;
   instructions: string;
+  /** Why the doctor prescribes despite a matching allergy (the EMR API requires ≥ 3 characters). */
+  overrideReason: string;
 }
 
-export const emptyLine = (): RxDraftLine => ({ drugName: '', dose: '', frequency: '1-0-1', days: '5', qty: '', instructions: '' });
+export const emptyLine = (): RxDraftLine => ({
+  drugName: '',
+  dose: '',
+  frequency: '1-0-1',
+  days: '5',
+  qty: '',
+  instructions: '',
+  overrideReason: '',
+});
+
+/** Form rows from saved lines (an open consultation's prescription or a favourite). */
+export function draftFromLines(lines: readonly RxLine[]): RxDraftLine[] {
+  return lines.map((l) => ({
+    drugName: l.drugName,
+    dose: l.dose,
+    frequency: l.frequency,
+    days: l.days ? String(l.days) : '',
+    qty: l.qty ? String(l.qty) : '',
+    instructions: l.instructions ?? '',
+    overrideReason: l.allergyOverrideReason ?? '',
+  }));
+}
 
 export interface RxBuildResult {
   ok: boolean;
@@ -64,6 +106,9 @@ export function buildPrescription(input: {
   lines: RxDraftLine[];
   advice: string;
   followUpDate: string;
+  /** Recorded allergies; a matching line needs an override reason. */
+  allergies?: readonly string[];
+  sign?: boolean;
 }): RxBuildResult {
   const errors: Record<string, string> = {};
   const lines: RxLine[] = [];
@@ -76,6 +121,8 @@ export function buildPrescription(input: {
     else if (!l.frequency.trim()) errors[i] = 'Choose how often';
     else if (!Number.isInteger(days) || days < 1 || days > 365) errors[i] = 'Days must be 1 to 365';
     else if (qty === null || !Number.isFinite(qty) || qty <= 0) errors[i] = 'Enter the quantity';
+    else if (allergyHits(l.drugName, input.allergies).length > 0 && l.overrideReason.trim().length < 3)
+      errors[i] = 'Allergy: give a reason to prescribe anyway';
     else {
       lines.push({
         drugName: l.drugName.trim(),
@@ -84,6 +131,7 @@ export function buildPrescription(input: {
         days,
         qty,
         ...(l.instructions.trim() ? { instructions: l.instructions.trim() } : {}),
+        ...(l.overrideReason.trim() ? { allergyOverrideReason: l.overrideReason.trim() } : {}),
       });
     }
   });
@@ -100,6 +148,7 @@ export function buildPrescription(input: {
       lines,
       ...(input.advice.trim() ? { advice: input.advice.trim() } : {}),
       ...(followUp ? { followUpDate: followUp } : {}),
+      ...(input.sign ? { sign: true } : {}),
     },
   };
 }

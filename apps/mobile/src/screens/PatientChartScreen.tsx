@@ -5,12 +5,13 @@ import type { ComponentProps } from 'react';
 import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { dateTimeLabel } from '@/data/dates';
 import { ageLabel } from '@/data/normalize';
-import type { TimelineEntry, TimelineType } from '@/data/types';
+import type { QueueStatus, TimelineEntry, TimelineType } from '@/data/types';
 import { useAuth } from '@/lib/auth';
 import { data } from '@/lib/data';
 import { useLoad } from '@/lib/useLoad';
 import { Button, Card, Chip, ErrorText, colors, radius, space } from '@/ui';
 import { Avatar, DemoBanner, EmptyState, SectionTitle } from '@/ui/widgets';
+import { VisitActions } from './VisitActions';
 
 const ICONS: Record<TimelineType, ComponentProps<typeof Ionicons>['name']> = {
   encounter: 'medkit-outline',
@@ -24,11 +25,19 @@ const ICONS: Record<TimelineType, ComponentProps<typeof Ionicons>['name']> = {
 };
 
 /** Patient header (demographics, allergies) + EMR timeline, with "Write prescription" for doctors. */
-export function PatientChartScreen({ patientId, encounterId }: { patientId: string; encounterId?: string }) {
+export function PatientChartScreen({
+  patientId,
+  encounterId,
+  visit,
+}: {
+  patientId: string;
+  encounterId?: string;
+  visit?: { id: string; status: QueueStatus; tokenNo: number | null };
+}) {
   const { user, can } = useAuth();
   const patient = useLoad(() => data.patient(patientId), patientId);
   const timeline = useLoad(() => data.timeline(patientId), patientId);
-  const canPrescribe = can('emr.prescription.create') || !!user?.roles.includes('doctor');
+  const canPrescribe = can('emr.prescription.write') || !!user?.roles.includes('doctor');
 
   const p = patient.data;
   const name = p ? [p.firstName, p.lastName].filter(Boolean).join(' ') : '';
@@ -52,6 +61,7 @@ export function PatientChartScreen({ patientId, encounterId }: { patientId: stri
         {patient.loading ? <ActivityIndicator color={colors.primary} /> : null}
         {patient.error ? <ErrorText>{patient.error}</ErrorText> : null}
         {p ? <PatientHeader patient={p} name={name} /> : null}
+        {visit ? <VisitActions visit={visit} encounterId={encounterId} /> : null}
 
         {p && canPrescribe ? (
           <Button
@@ -123,6 +133,11 @@ function TimelineRow({ entry: e, last }: { entry: TimelineEntry; last: boolean }
           <Text style={s.tlDate}>{dateTimeLabel(e.at)}</Text>
         </View>
         {e.summary ? <Text style={s.tlSummary}>{e.summary}</Text> : null}
+        {e.details.map((d, i) => (
+          <Text key={i} style={s.tlDetail}>
+            {d}
+          </Text>
+        ))}
         {e.doctorName ? <Text style={s.muted}>{e.doctorName}</Text> : null}
       </Card>
     </View>
@@ -160,4 +175,5 @@ const s = StyleSheet.create({
   tlTitle: { fontSize: 15, fontWeight: '700', color: colors.text, flexShrink: 1 },
   tlDate: { fontSize: 12, color: colors.muted },
   tlSummary: { fontSize: 14, color: colors.text, lineHeight: 20 },
+  tlDetail: { fontSize: 13, color: colors.text, lineHeight: 18 },
 });

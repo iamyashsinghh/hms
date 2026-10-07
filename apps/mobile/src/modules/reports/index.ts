@@ -5,7 +5,7 @@ export const screens: MobileModuleScreen[] = [
   {
     title: 'Daily summary',
     route: '/reports/owner',
-    permission: 'reports.owner_summary.read',
+    permission: 'reports.dashboard.read',
     roles: ['owner', 'hospital_admin'],
     variants: ['owner'],
     description: 'OPD visits, new patients, collections and top doctors',

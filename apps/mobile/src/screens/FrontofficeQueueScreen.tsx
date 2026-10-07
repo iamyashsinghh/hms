@@ -38,7 +38,18 @@ export function FrontofficeQueueScreen() {
     <QueueList
       state={state}
       emptyTitle={doctorId ? 'No patients in this queue' : 'Choose a doctor'}
-      onOpen={can('core.patient.read') ? (item) => router.push({ pathname: '/emr/patient/[id]', params: { id: item.patientId } }) : undefined}
+      onOpen={
+        can('core.patient.read')
+          ? (item) =>
+              router.push({
+                pathname: '/emr/patient/[id]',
+                params: {
+                  id: item.patientId,
+                  ...(item.visitId ? { visitId: item.visitId, visitStatus: item.status, token: String(item.tokenNo ?? '') } : {}),
+                },
+              })
+          : undefined
+      }
       header={
         <View style={{ gap: space.md }}>
           <DateSwitcher date={date} onChange={setDate} />

@@ -1,4 +1,5 @@
 import { ApiError } from '@hms/api-client';
+import * as Device from 'expo-device';
 import { Redirect } from 'expo-router';
 import { useState } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -19,6 +20,7 @@ export default function PatientLoginScreen() {
   const [otp, setOtp] = useState('');
   const [step, setStep] = useState<'mobile' | 'otp'>('mobile');
   const [demo, setDemo] = useState(false);
+  const [devCode, setDevCode] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -32,7 +34,8 @@ export default function PatientLoginScreen() {
     setBusy(true);
     try {
       const res = await requestOtp(code, mobile);
-      setDemo(res === 'demo');
+      setDemo(res.mode === 'demo');
+      setDevCode(res.mode === 'sent' ? (res.devCode ?? null) : null);
       setStep('otp');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : err instanceof Error && !(err instanceof TypeError) ? err.message : `Cannot reach the server (${API_URL})`);
@@ -43,10 +46,11 @@ export default function PatientLoginScreen() {
 
   async function confirm() {
     setError(null);
-    if (!/^\d{4,8}$/.test(otp)) return setError('Enter the OTP you received');
+    if (!/^\d{6}$/.test(otp)) return setError('Enter the 6-digit OTP you received');
     setBusy(true);
     try {
-      await verifyOtp(tenantCode.trim().toLowerCase(), mobile, otp, demo);
+      const deviceName = `${variant.title} · ${Device.deviceName ?? Device.modelName ?? Platform.OS}`.slice(0, 100);
+      await verifyOtp(tenantCode.trim().toLowerCase(), mobile, otp, demo, deviceName);
     } catch (err) {
       setError(err instanceof ApiError && (err.status === 401 || err.status === 400) ? 'Wrong or expired OTP' : err instanceof Error ? err.message : String(err));
     } finally {
@@ -78,7 +82,8 @@ export default function PatientLoginScreen() {
               <>
                 <DemoBanner visible={demo} />
                 <Text style={s.sent}>{demo ? `Demo mode: use OTP ${DEMO_OTP}` : `OTP sent to ${mobile}`}</Text>
-                <Field label="OTP" value={otp} onChangeText={(v) => setOtp(v.replace(/\D/g, '').slice(0, 8))} placeholder="6-digit code" keyboardType="number-pad" textContentType="oneTimeCode" autoComplete="sms-otp" />
+                {devCode ? <Text style={s.dev}>Test server code: {devCode}</Text> : null}
+                <Field label="OTP" value={otp} onChangeText={(v) => setOtp(v.replace(/\D/g, '').slice(0, 6))} placeholder="6-digit code" keyboardType="number-pad" textContentType="oneTimeCode" autoComplete="sms-otp" />
                 {error ? <ErrorText>{error}</ErrorText> : null}
                 <Button title="Verify and continue" onPress={() => void confirm()} loading={busy} />
                 <Button title="Change number" variant="outline" onPress={() => { setStep('mobile'); setOtp(''); setError(null); }} />
@@ -99,4 +104,5 @@ const s = StyleSheet.create({
   title: { fontSize: 26, fontWeight: '700', color: colors.text },
   tagline: { fontSize: 14, color: colors.muted, textAlign: 'center' },
   sent: { fontSize: 14, color: colors.text },
+  dev: { fontSize: 13, color: colors.warning, fontWeight: '600' },
 });

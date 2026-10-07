@@ -16,6 +16,14 @@ export default function MyAccount() {
         {profile?.mobile ? <Row label="Mobile" value={profile.mobile} /> : null}
         {profile?.hospitalName ? <Row label="Hospital" value={profile.hospitalName} /> : null}
       </Card>
+      {profile && profile.members.length > 0 ? (
+        <Card>
+          <Text style={s.heading}>Patients on this account</Text>
+          {profile.members.map((m) => (
+            <Row key={m.id} label={m.relation === 'self' ? 'You' : m.relation} value={`${m.name} · ${m.uhid}`} />
+          ))}
+        </Card>
+      ) : null}
       <Card>
         <Row label="App" value={`${variant.title} ${Constants.expoConfig?.version ?? ''}`} />
         <Row label="Server" value={API_URL} />
@@ -47,6 +55,7 @@ function Row({ label, value }: { label: string; value: string }) {
 const s = StyleSheet.create({
   container: { padding: space.lg, gap: space.md },
   name: { fontSize: 22, fontWeight: '700', color: colors.text },
+  heading: { fontSize: 13, fontWeight: '700', color: colors.muted, textTransform: 'uppercase' },
   row: { flexDirection: 'row', justifyContent: 'space-between', gap: space.md },
   label: { fontSize: 14, color: colors.muted },
   value: { fontSize: 14, color: colors.text, flexShrink: 1, textAlign: 'right' },

@@ -5,7 +5,7 @@ export const screens: MobileModuleScreen[] = [
   {
     title: "Today's OPD queue",
     route: '/emr/queue',
-    permission: 'emr.queue.read',
+    permission: 'emr.encounter.read',
     roles: ['doctor'],
     variants: ['doctor'],
     description: 'Checked-in patients, timeline and prescriptions',

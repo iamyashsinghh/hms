@@ -1,34 +1,51 @@
 import * as SecureStore from 'expo-secure-store';
-import type { RxDraftLine } from '@/data/rx';
+import type { RxFavourite, RxLine } from '@/data/types';
+import { data } from './data';
 
-// Doctor's favourite medicines, kept on the phone. Small on purpose: SecureStore values should stay under 2 KB.
-// Server-side favourites (shared with web) come with the EMR module; this is the offline-friendly lite version.
+// Favourites come from the EMR (shared with the web app). When the EMR is not on the server they are
+// kept on the phone instead, small on purpose: SecureStore values should stay under 2 KB.
 const KEY = 'hms.rx.favourites';
-const MAX = 12;
+const MAX_LOCAL = 12;
 
-export type Favourite = Pick<RxDraftLine, 'drugName' | 'dose' | 'frequency' | 'days'>;
-
-export async function loadFavourites(): Promise<Favourite[]> {
+async function readLocal(): Promise<RxFavourite[]> {
   try {
     const raw = await SecureStore.getItemAsync(KEY);
     const parsed: unknown = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? (parsed as Favourite[]).filter((f) => typeof f?.drugName === 'string') : [];
+    return Array.isArray(parsed) ? (parsed as RxFavourite[]).filter((f) => typeof f?.name === 'string' && Array.isArray(f.lines)) : [];
   } catch {
     return [];
   }
 }
 
-export async function saveFavourite(f: Favourite, current: Favourite[]): Promise<Favourite[]> {
-  const name = f.drugName.trim();
-  const trim = (v: string, n: number) => v.trim().slice(0, n);
-  const entry: Favourite = { drugName: trim(name, 40), dose: trim(f.dose, 20), frequency: trim(f.frequency, 10), days: trim(f.days, 3) };
-  const next = [entry, ...current.filter((x) => x.drugName.toLowerCase() !== name.toLowerCase())].slice(0, MAX);
-  await SecureStore.setItemAsync(KEY, JSON.stringify(next));
-  return next;
+export interface FavouriteStore {
+  items: RxFavourite[];
+  /** True when favourites live on this phone only. */
+  local: boolean;
 }
 
-export async function removeFavourite(drugName: string, current: Favourite[]): Promise<Favourite[]> {
-  const next = current.filter((x) => x.drugName !== drugName);
-  await SecureStore.setItemAsync(KEY, JSON.stringify(next));
-  return next;
+export async function loadFavourites(): Promise<FavouriteStore> {
+  const server = await data.favourites().catch(() => null);
+  return server ? { items: server, local: false } : { items: await readLocal(), local: true };
+}
+
+export async function addFavourite(store: FavouriteStore, line: RxLine): Promise<FavouriteStore> {
+  const name = line.drugName.trim().slice(0, 100);
+  const { allergyOverrideReason: _drop, ...clean } = line;
+  if (!store.local) {
+    const fav = await data.saveFavourite(name, [clean]);
+    return { ...store, items: [fav, ...store.items] };
+  }
+  const items = [
+    { id: `local-${Date.now()}`, name, lines: [clean] },
+    ...store.items.filter((f) => f.name.toLowerCase() !== name.toLowerCase()),
+  ].slice(0, MAX_LOCAL);
+  await SecureStore.setItemAsync(KEY, JSON.stringify(items));
+  return { ...store, items };
+}
+
+export async function removeFavourite(store: FavouriteStore, id: string): Promise<FavouriteStore> {
+  const items = store.items.filter((f) => f.id !== id);
+  if (store.local) await SecureStore.setItemAsync(KEY, JSON.stringify(items));
+  else await data.deleteFavourite(id);
+  return { ...store, items };
 }

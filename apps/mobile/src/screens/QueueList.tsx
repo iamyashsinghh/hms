@@ -69,7 +69,7 @@ function QueueRow({ item, onPress }: { item: QueueItem; onPress?: () => void }) 
     .filter(Boolean)
     .join(' / ');
   const time = timeLabel(item.at);
-  const faded = item.status === 'completed' || item.status === 'cancelled' || item.status === 'no_show';
+  const faded = item.status === 'completed' || item.status === 'cancelled' || item.status === 'no_show' || item.status === 'skipped';
   return (
     <Pressable onPress={onPress} disabled={!onPress} accessibilityRole={onPress ? 'button' : undefined}>
       {({ pressed }) => (

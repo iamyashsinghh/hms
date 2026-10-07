@@ -47,13 +47,25 @@ export function demoOwnerSummary(date: string) {
     date,
     opdVisits: 142,
     newPatients: 37,
+    billed: 201300,
     collections: 186450,
-    pendingBills: 6,
+    collectionsByMode: [
+      { mode: 'upi', count: 96, amount: 112400 },
+      { mode: 'cash', count: 51, amount: 61050 },
+      { mode: 'card', count: 9, amount: 13000 },
+    ],
+    pendingBills: { count: 6, amount: 14850 },
+    consultationsSigned: 131,
     topDoctors: [
       { doctorId: 'd1', name: 'Dr. Anjali Rao', visits: 38, revenue: 41800 },
       { doctorId: 'd2', name: 'Dr. Vikram Sethi', visits: 31, revenue: 37200 },
       { doctorId: 'd3', name: 'Dr. Meera Iyer', visits: 24, revenue: 26400 },
     ],
+    topServices: [
+      { code: 'CONS', description: 'Consultation', qty: 142, amount: 71000 },
+      { code: 'CBC', description: 'Complete blood count', qty: 44, amount: 17600 },
+    ],
+    previous: { date, opdVisits: 128, newPatients: 31, billed: 188000, collections: 171200 },
   };
 }
 
@@ -64,16 +76,28 @@ export function demoDoctors() {
   ];
 }
 
-export function demoPortal(kind: 'appointments' | 'prescriptions' | 'bills') {
+export function demoPortal(kind: 'appointments' | 'prescriptions' | 'bills' | 'reports') {
   const today = isoDate();
   if (kind === 'appointments')
     return [
-      { id: 'a1', title: 'Dr. Anjali Rao', subtitle: 'General Medicine · Demo Hospital', at: at(addDays(today, 2), 11, 0), status: 'booked' },
-      { id: 'a2', title: 'Dr. Vikram Sethi', subtitle: 'Orthopaedics · Demo Hospital', at: at(addDays(today, -20), 17, 30), status: 'completed' },
+      { id: 'a1', doctorName: 'Dr. Anjali Rao', patientName: 'Demo Patient', reason: 'Fever', slotStart: at(addDays(today, 2), 11, 0), status: 'booked' },
+      { id: 'a2', doctorName: 'Dr. Vikram Sethi', patientName: 'Demo Patient', reason: null, slotStart: at(addDays(today, -20), 17, 30), status: 'completed' },
     ];
   if (kind === 'prescriptions')
-    return [{ id: 'r1', title: 'Dr. Anjali Rao', subtitle: 'Paracetamol 650 mg, Azithromycin 500 mg', at: at(addDays(today, -14), 10, 45), status: null }];
-  return [{ id: 'b1', title: 'OPD-2026-000981', subtitle: 'Consultation', at: at(addDays(today, -14), 11, 0), amount: 500, status: 'paid' }];
+    return [
+      {
+        id: 'r1',
+        doctorName: 'Dr. Anjali Rao',
+        patientName: 'Demo Patient',
+        issuedAt: at(addDays(today, -14), 10, 45),
+        lines: [
+          { drugName: 'Tab Paracetamol 650 mg', dose: '1 tab', frequency: '1-0-1', days: 3 },
+          { drugName: 'Tab Azithromycin 500 mg', dose: '1 tab', frequency: '1-0-0', days: 3 },
+        ],
+      },
+    ];
+  if (kind === 'reports') return [{ id: 'l1', title: 'Complete blood count', kind: 'lab', patientName: 'Demo Patient', issuedAt: at(addDays(today, -13), 9, 0), url: null }];
+  return [{ id: 'b1', number: 'OPD-2026-000981', patientName: 'Demo Patient', total: '500.00', due: '0.00', issuedAt: at(addDays(today, -14), 11, 0), status: 'paid' }];
 }
 
 const DEMO_NAMES: Record<string, [string, string, 'male' | 'female', number]> = {
