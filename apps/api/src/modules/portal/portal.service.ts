@@ -38,21 +38,24 @@ export class PortalService {
     return this.gateway.listDoctors(q);
   }
 
-  /** The doctor's timetable (setup) minus time already booked in the diary (front office) or online. */
-  async slots(doctorId: string, date: string): Promise<portal.PortalSlot[]> {
+  /** Front office's bookable slots, minus online bookings still in flight here. */
+  async slots(tenantId: string, doctorId: string, date: string, facilityId?: string): Promise<Array<portal.PortalSlot & { facilityId: string }>> {
     await this.doctor(doctorId);
-    const slots = await this.gateway.slots(doctorId, date);
+    const facilityIds = facilityId ? [facilityId] : (await this.patients.facilities(tenantId)).map((f) => f.id);
+    const slots = await this.gateway.slots(doctorId, date, facilityIds);
     if (!slots.length) return [];
-    const busy = await this.gateway.busy(doctorId, date);
     const from = slots[0]!.start;
     const to = new Date(new Date(slots[slots.length - 1]!.start).getTime() + 1).toISOString();
     const online = await this.db.tx((tx) => this.repo.takenSlots(tx, doctorId, from, to));
     const now = Date.now();
     return slots.map((s) => {
       const t = new Date(s.start).getTime();
-      const e = new Date(s.end).getTime();
-      const taken = online.has(t) || busy.some((b) => b.start < e && t < b.end);
-      return { start: new Date(t).toISOString(), end: new Date(e).toISOString(), available: t > now && !taken };
+      return {
+        start: new Date(t).toISOString(),
+        end: new Date(s.end).toISOString(),
+        facilityId: s.facilityId,
+        available: s.available && t > now && !online.has(t),
+      };
     });
   }
 
@@ -68,12 +71,10 @@ export class PortalService {
       throw badRequest('slot_too_far', `You can book up to ${MAX_DAYS_AHEAD} days ahead`);
     }
     const date = new Date(start.getTime() + 330 * 60_000).toISOString().slice(0, 10); // IST date
-    const slot = (await this.slots(input.doctorId, date)).find((s) => new Date(s.start).getTime() === start.getTime());
+    const slot = (await this.slots(p.tenantId, input.doctorId, date, input.facilityId)).find((s) => new Date(s.start).getTime() === start.getTime());
     if (!slot) throw badRequest('slot_unavailable', 'This slot is not available');
     if (!slot.available) throw conflict('slot_taken', 'Someone just booked this slot. Please pick another time.');
-    const block = (await this.gateway.slots(input.doctorId, date)).find((s) => new Date(s.start).getTime() === start.getTime());
-    const facilityId = input.facilityId ?? block?.facilityId;
-    if (!facilityId) throw badRequest('slot_unavailable', 'This slot is not available');
+    const facilityId = slot.facilityId;
 
     const { appointmentId } = await this.gateway.book({
       patientId: input.patientId,

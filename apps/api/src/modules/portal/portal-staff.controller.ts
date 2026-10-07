@@ -3,9 +3,11 @@ import { portal } from '@hms/shared';
 import type { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
+import { RequireEntitlement } from '../platform';
 import { PortalService } from './portal.service';
 
 /** Hospital staff side of the portal: online booking requests and patient feedback. */
+@RequireEntitlement('portal')
 @Controller('portal/staff')
 export class PortalStaffController {
   constructor(private readonly portal: PortalService) {}

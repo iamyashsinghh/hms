@@ -3,9 +3,6 @@ import type { portal } from '@hms/shared';
 import { FrontofficeService } from '../frontoffice/frontoffice.service';
 import { SetupService } from '../setup/setup.service';
 
-/** Front office appointment states that still hold the doctor's time. */
-const BUSY = ['booked', 'checked_in', 'in_consultation', 'completed'];
-
 /**
  * The portal's calls into other modules (contracts in PARALLEL_PLAN.md section 4):
  * doctors and timetables from setup, bookings and the doctor's diary from front office.
@@ -29,18 +26,17 @@ export class PortalGateway {
     }));
   }
 
-  /** The doctor's timetable for an IST date (empty on leave days or without a schedule). */
-  async slots(doctorId: string, date: string): Promise<Array<{ start: string; end: string; facilityId: string }>> {
-    const slots = await this.setup.getDoctorSchedule(doctorId, date);
-    return slots.map((s) => ({ start: s.start, end: s.end, facilityId: s.facilityId }));
-  }
-
-  /** Time ranges already taken in front office's diary for that doctor and date. */
-  async busy(doctorId: string, date: string): Promise<Array<{ start: number; end: number }>> {
-    const res = await this.frontoffice.list({ date, doctorId, page: 1, pageSize: 200 });
-    return res.items
-      .filter((a) => BUSY.includes(a.status))
-      .map((a) => ({ start: new Date(a.slotStart).getTime(), end: new Date(a.slotEnd).getTime() }));
+  /**
+   * Bookable slots for an IST date at the given branches: front office applies the setup timetable,
+   * day offs and slot capacity, so its `available` is the source of truth.
+   */
+  async slots(doctorId: string, date: string, facilityIds: string[]): Promise<Array<{ start: string; end: string; facilityId: string; available: boolean }>> {
+    const out = [];
+    for (const facilityId of facilityIds) {
+      const slots = await this.frontoffice.availableSlots(doctorId, { date, facilityId });
+      out.push(...slots.map((s) => ({ start: s.start, end: s.end, facilityId: s.facilityId, available: s.available })));
+    }
+    return out.sort((x, y) => x.start.localeCompare(y.start));
   }
 
   async book(input: { patientId: string; doctorId: string; facilityId: string; slotStart: string; slotEnd: string; reason?: string | null }) {

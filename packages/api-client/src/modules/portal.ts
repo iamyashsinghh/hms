@@ -24,7 +24,8 @@ export const portalApi = (http: Http) => ({
   addFamilyMember: (body: portal.AddFamilyMember) => http.post<portal.PortalPatient>('/portal/family', body),
 
   doctors: (q: portal.DoctorQuery = {}) => http.get<portal.PortalDoctor[]>('/portal/doctors', q),
-  slots: (doctorId: string, date: string) => http.get<portal.PortalSlot[]>(`/portal/doctors/${doctorId}/slots`, { date }),
+  slots: (doctorId: string, date: string, facilityId?: string) =>
+    http.get<portal.PortalSlot[]>(`/portal/doctors/${doctorId}/slots`, { date, facilityId }),
 
   appointments: (q: portal.AppointmentListQuery = {}) => http.get<portal.PortalAppointment[]>('/portal/appointments', q),
   book: (body: portal.BookAppointment) => http.post<portal.PortalAppointment>('/portal/appointments', body),

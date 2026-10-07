@@ -139,11 +139,13 @@ export interface PortalDoctor {
 export const doctorQuerySchema = z.object({ facilityId: z.uuid().optional(), departmentId: z.uuid().optional() });
 export type DoctorQuery = { facilityId?: string; departmentId?: string };
 
-export const slotQuerySchema = z.object({ date: z.iso.date() });
+export const slotQuerySchema = z.object({ date: z.iso.date(), facilityId: z.uuid().optional() });
 
 export interface PortalSlot {
   start: string;
   end: string;
+  /** Branch where the doctor sits for this slot. */
+  facilityId?: string;
   available: boolean;
 }
 
