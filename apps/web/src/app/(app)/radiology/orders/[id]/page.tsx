@@ -92,7 +92,8 @@ function ScanActions({ order }: { order: Order }) {
       <CardContent className="space-y-4">
         {canBook && (
           <Can permission="radiology.order.schedule">
-            <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+            <div className="space-y-2">
+              <div className="grid gap-2 sm:grid-cols-2">
               <div>
                 <Label htmlFor="when">{order.status === 'scheduled' ? 'Move slot to' : 'Book slot'}</Label>
                 <Input id="when" type="datetime-local" className="mt-1.5" value={when} onChange={(e) => setWhen(e.target.value)} />
@@ -107,8 +108,9 @@ function ScanActions({ order }: { order: Order }) {
                   ))}
                 </Select>
               </div>
+              </div>
               <Button variant="outline" disabled={!when || schedule.isPending} onClick={() => schedule.mutate(undefined)}>
-                <CalendarClock /> Book
+                <CalendarClock /> {order.status === 'scheduled' ? 'Move slot' : 'Book slot'}
               </Button>
             </div>
           </Can>
@@ -121,7 +123,7 @@ function ScanActions({ order }: { order: Order }) {
                   <Play /> Patient on the machine
                 </Button>
               )}
-              <div className="grid gap-2 sm:grid-cols-2">
+              <div className="space-y-2">
                 <Input placeholder="Study UID from the machine (optional)" value={studyUid} onChange={(e) => setStudyUid(e.target.value)} />
                 <Input placeholder="PACS viewer link (optional)" value={imagesUrl} onChange={(e) => setImagesUrl(e.target.value)} />
               </div>
@@ -150,7 +152,7 @@ function ScanActions({ order }: { order: Order }) {
             )}
           </Can>
         )}
-        {!canScan && !canCancel && <p className="text-sm text-muted-foreground">Nothing to do here.</p>}
+        {!canScan && <p className="text-sm text-muted-foreground">Scan done{order.acquiredAt ? ` on ${dateTime(order.acquiredAt)}` : ''}.</p>}
         {error && <p className="text-sm text-destructive">{errorMessage(error)}</p>}
       </CardContent>
     </Card>
@@ -432,7 +434,7 @@ export default function RadiologyOrderPage({ params }: { params: Promise<{ id: s
               <TestPicker order={o} />
             </Can>
           )}
-          {o.testId && <ScanActions order={o} />}
+          {o.testId && o.status !== 'finalized' && o.status !== 'cancelled' && <ScanActions order={o} />}
         </div>
         {canReadReports || canWriteReports ? <ReportEditor data={data} /> : null}
       </div>
