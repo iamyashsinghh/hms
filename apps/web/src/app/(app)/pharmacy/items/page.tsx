@@ -2,8 +2,9 @@
 
 import * as React from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { ChevronLeft, ChevronRight, Loader2, PackagePlus, Search } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Loader2, Plus, Search } from 'lucide-react';
 import { api, errorMessage } from '@/lib/api';
 import { Can, usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
@@ -13,32 +14,27 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { SCHEDULE_LABEL, expiryLabel } from '@/modules/pharmacy/format';
-import { StorePicker, useActiveStore } from '@/modules/pharmacy/use-store';
-import { BatchesDialog } from '@/modules/pharmacy/batches-dialog';
+import { SCHEDULE_LABEL } from '@/modules/pharmacy/format';
 
 const PAGE_SIZE = 25;
 
-export default function PharmacyStockPage() {
-  const canRead = usePermission('pharmacy.stock.read');
-  const active = useActiveStore();
-  const storeId = active.store?.id;
+export default function DrugMasterPage() {
+  const canRead = usePermission('pharmacy.item.read');
+  const router = useRouter();
   const [search, setSearch] = React.useState('');
   const [q, setQ] = React.useState('');
-  const [lowOnly, setLowOnly] = React.useState(false);
   const [page, setPage] = React.useState(1);
-  const [batchesOf, setBatchesOf] = React.useState<{ id: string; name: string } | null>(null);
-
+  const [includeInactive, setIncludeInactive] = React.useState(false);
   React.useEffect(() => {
     const t = setTimeout(() => setQ(search.trim()), 300);
     return () => clearTimeout(t);
   }, [search]);
 
   const { data, isPending, isFetching, error } = useQuery({
-    queryKey: ['pharmacy', 'stock', { storeId, q, lowOnly, page }],
-    queryFn: () => api.pharmacy.stock.list({ storeId: storeId!, q: q || undefined, lowOnly, page, pageSize: PAGE_SIZE }),
+    queryKey: ['pharmacy', 'items', { q, page, includeInactive }],
+    queryFn: () => api.pharmacy.items.list({ q: q || undefined, page, pageSize: PAGE_SIZE, includeInactive }),
     placeholderData: keepPreviousData,
-    enabled: canRead && !!storeId,
+    enabled: canRead,
   });
 
   if (!canRead) return <NoAccess />;
@@ -47,17 +43,14 @@ export default function PharmacyStockPage() {
   return (
     <>
       <PageHeader
-        title="Pharmacy stock"
-        description="Sellable units per drug in the selected store. Expired units are shown separately and never sold."
+        title="Drug master"
+        description="Every drug and consumable the pharmacy stocks, with HSN, GST and schedule."
         actions={
-          <>
-            <StorePicker active={active} />
-            <Can permission="pharmacy.stock.receive">
-              <Link href="/pharmacy/receive" className={buttonVariants()}>
-                <PackagePlus /> Receive stock
-              </Link>
-            </Can>
-          </>
+          <Can permission="pharmacy.item.manage">
+            <Link href="/pharmacy/items/new" className={buttonVariants()}>
+              <Plus /> Add drug
+            </Link>
+          </Can>
         }
       />
       <Card>
@@ -66,7 +59,7 @@ export default function PharmacyStockPage() {
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               type="search"
-              placeholder="Search by name, generic or code…"
+              placeholder="Search drugs…"
               className="pl-9"
               value={search}
               onChange={(e) => {
@@ -76,15 +69,8 @@ export default function PharmacyStockPage() {
             />
           </div>
           <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={lowOnly}
-              onChange={(e) => {
-                setLowOnly(e.target.checked);
-                setPage(1);
-              }}
-            />
-            Only low stock
+            <input type="checkbox" checked={includeInactive} onChange={(e) => setIncludeInactive(e.target.checked)} />
+            Show inactive
           </label>
           {isFetching && <Loader2 className="size-4 animate-spin text-muted-foreground" />}
         </div>
@@ -95,44 +81,47 @@ export default function PharmacyStockPage() {
             <TableHeader>
               <TableRow className="hover:bg-transparent">
                 <TableHead>Code</TableHead>
-                <TableHead>Drug</TableHead>
+                <TableHead>Name</TableHead>
+                <TableHead>Form / strength</TableHead>
                 <TableHead>Schedule</TableHead>
-                <TableHead className="text-right">In stock</TableHead>
-                <TableHead className="text-right">Reorder at</TableHead>
-                <TableHead>Nearest expiry</TableHead>
-                <TableHead className="text-right">Expired</TableHead>
+                <TableHead>HSN</TableHead>
+                <TableHead className="text-right">GST</TableHead>
+                <TableHead>Unit</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {!storeId || isPending ? (
+              {isPending ? (
                 <TableRow>
                   <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
-                    {storeId ? 'Loading…' : 'Pick a store.'}
+                    Loading…
                   </TableCell>
                 </TableRow>
               ) : data.items.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
-                    No drugs found. Add drugs in the drug master, then receive stock.
+                    No drugs yet.
                   </TableCell>
                 </TableRow>
               ) : (
-                data.items.map((r) => (
-                  <TableRow key={r.itemId} className="cursor-pointer" onClick={() => setBatchesOf({ id: r.itemId, name: r.name })}>
-                    <TableCell className="font-mono text-xs">{r.code}</TableCell>
+                data.items.map((it) => (
+                  <TableRow key={it.id} className="cursor-pointer" onClick={() => router.push(`/pharmacy/items/${it.id}`)}>
+                    <TableCell className="font-mono text-xs">{it.code}</TableCell>
                     <TableCell>
-                      <div className="font-medium">{r.name}</div>
-                      <div className="text-xs text-muted-foreground">{[r.genericName, r.strength, r.form].filter(Boolean).join(' · ')}</div>
+                      <div className="font-medium">
+                        {it.name} {!it.isActive && <Badge variant="outline">Inactive</Badge>}
+                      </div>
+                      {it.genericName && <div className="text-xs text-muted-foreground">{it.genericName}</div>}
                     </TableCell>
+                    <TableCell className="capitalize">{[it.form, it.strength].filter(Boolean).join(' · ')}</TableCell>
                     <TableCell>
-                      <Badge variant={r.schedule === 'otc' ? 'secondary' : 'accent'}>{SCHEDULE_LABEL[r.schedule] ?? r.schedule}</Badge>
+                      <Badge variant={it.schedule === 'otc' ? 'secondary' : 'accent'}>{SCHEDULE_LABEL[it.schedule]}</Badge>
                     </TableCell>
-                    <TableCell className="text-right tabular-nums">
-                      {r.isLow ? <Badge variant="destructive">{r.qty}</Badge> : r.qty} <span className="text-xs text-muted-foreground">{r.unit}</span>
+                    <TableCell className="font-mono text-xs">{it.hsnCode ?? '—'}</TableCell>
+                    <TableCell className="text-right">{it.gstRate}%</TableCell>
+                    <TableCell>
+                      {it.unit}
+                      {it.packSize > 1 && <span className="text-xs text-muted-foreground"> ×{it.packSize}</span>}
                     </TableCell>
-                    <TableCell className="text-right tabular-nums">{r.reorderLevel || '—'}</TableCell>
-                    <TableCell>{r.nearestExpiry ? expiryLabel(r.nearestExpiry) : '—'}</TableCell>
-                    <TableCell className="text-right tabular-nums">{r.expiredQty ? <span className="text-destructive">{r.expiredQty}</span> : '—'}</TableCell>
                   </TableRow>
                 ))
               )}
@@ -158,7 +147,6 @@ export default function PharmacyStockPage() {
           </div>
         )}
       </Card>
-      {batchesOf && storeId && <BatchesDialog storeId={storeId} item={batchesOf} onClose={() => setBatchesOf(null)} />}
     </>
   );
 }
