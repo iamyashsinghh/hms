@@ -25,6 +25,7 @@ let accountant: string;
 let nurse: string;
 let doctor: string;
 let otherHospital: string;
+let starterHospital: string;
 
 type Inject = Parameters<NestFastifyApplication['inject']>[0];
 const call = (token: string, method: string, url: string, payload?: unknown) =>
@@ -65,7 +66,8 @@ beforeAll(async () => {
   accountant = (await login(app, `acc@${code}.hms`, code)).accessToken;
   nurse = (await login(app, `nurse@${code}.hms`, code)).accessToken;
   doctor = (await login(app, `doc@${code}.hms`, code)).accessToken;
-  otherHospital = (await login(app, 'admin@city.hms', 'city')).accessToken;
+  otherHospital = (await login(app, 'admin@demo.hms')).accessToken;
+  starterHospital = (await login(app, 'admin@city.hms', 'city')).accessToken;
 });
 afterAll(() => app.close());
 
@@ -350,6 +352,14 @@ describe('payroll', () => {
     const other = run.payslips.find((s: { employeeId: string }) => s.employeeId === wardBoyId);
     expect((await call(nurse, 'GET', `/hr/me/payslips/${other.id}`)).statusCode).toBe(404);
     expect((await call(nurse, 'GET', `/hr/payslips/${other.id}`)).statusCode).toBe(403);
+  });
+});
+
+describe('plan', () => {
+  it('is refused on a plan without HR', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/v1/hr/employees', headers: bearer(starterHospital) });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('plan_upgrade_required');
   });
 });
 

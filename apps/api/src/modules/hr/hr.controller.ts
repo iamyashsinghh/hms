@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Patch, P
 import { hr as contracts, type Paginated } from '@hms/shared';
 import { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
+import { RequireEntitlement } from '../platform/entitlement.guard';
 import { ZodPipe } from '../../common/validation/zod.pipe';
 import { AttendanceService } from './attendance.service';
 import { EmployeesService } from './employees.service';
@@ -13,6 +14,7 @@ const uuid = new ParseUUIDPipe();
 const dateQuery = z.object({ date: z.iso.date().optional() });
 const rangeQuery = z.object({ from: z.iso.date(), to: z.iso.date() });
 
+@RequireEntitlement('hr')
 @Controller('hr')
 export class EmployeesController {
   constructor(
@@ -94,6 +96,7 @@ export class EmployeesController {
   }
 }
 
+@RequireEntitlement('hr')
 @Controller('hr')
 export class RosterController {
   constructor(private readonly roster: RosterService) {}
@@ -142,6 +145,7 @@ export class RosterController {
   }
 }
 
+@RequireEntitlement('hr')
 @Controller('hr/attendance')
 export class AttendanceController {
   constructor(private readonly attendance: AttendanceService) {}
@@ -165,6 +169,7 @@ export class AttendanceController {
   }
 }
 
+@RequireEntitlement('hr')
 @Controller('hr')
 export class LeaveController {
   constructor(private readonly leave: LeaveService) {}
@@ -214,6 +219,7 @@ export class LeaveController {
   }
 }
 
+@RequireEntitlement('hr')
 @Controller('hr')
 export class PayrollController {
   constructor(private readonly payroll: PayrollService) {}
@@ -277,6 +283,7 @@ export class PayrollController {
 }
 
 /** Self-service for every staff member: own duty, punch in/out, leave and payslips. */
+@RequireEntitlement('hr')
 @Controller('hr/me')
 export class MeController {
   constructor(
