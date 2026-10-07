@@ -350,6 +350,7 @@ export class LabService {
       if (results.some((r) => r.status === 'verified')) throw conflict('order_reported', 'Results are already verified; this order cannot be cancelled');
       const row = await this.repo.updateOrder(tx, id, { status: 'cancelled', cancelledAt: new Date().toISOString(), cancelledReason: d.reason, updatedBy: ctx.userId });
       await this.outbox.publish(tx, 'lab.order.cancelled', { orderId: id, orderNo: order.orderNo, patientId: order.patientId, invoiceId: order.invoiceId, reason: d.reason });
+      await this.publishStatus(tx, row);
       return this.orderDto(tx, row);
     });
   }
@@ -769,7 +770,20 @@ export class LabService {
     if (status === 'completed') Object.assign(values, verified ?? {});
     else Object.assign(values, { verifiedAt: null, verifiedBy: null });
     if (status === order.status && !verified && order.verifiedAt === (values.verifiedAt ?? order.verifiedAt)) return order;
-    return this.repo.updateOrder(tx, order.id, values);
+    const row = await this.repo.updateOrder(tx, order.id, values);
+    if (status !== order.status) await this.publishStatus(tx, row);
+    return row;
+  }
+
+  /** `lab.order.status_changed`, one per EMR order line, so the consultation shows lab progress. */
+  private async publishStatus(tx: Tx, order: OrderRow) {
+    const status = EMR_STATUS[order.status as lab.OrderStatus];
+    if (!status || !order.encounterId) return;
+    for (const item of await this.repo.items(tx, [order.id])) {
+      if (!item.emrOrderId || (item.kind === 'unmatched' && status !== 'cancelled')) continue;
+      const event: lab.OrderStatusChangedEvent = { orderId: order.id, emrOrderId: item.emrOrderId, encounterId: order.encounterId, patientId: order.patientId, status };
+      await this.outbox.publish(tx, 'lab.order.status_changed', { ...event });
+    }
   }
 
   private async lockOrder(tx: Tx, id: string): Promise<OrderRow> {
@@ -836,6 +850,14 @@ export class LabService {
 }
 
 // ---------- helpers ----------
+
+/** Lab order status → the vocabulary of lab.order.status_changed (agreed with EMR). */
+const EMR_STATUS: Partial<Record<lab.OrderStatus, lab.OrderStatusChangedEvent['status']>> = {
+  collected: 'collected',
+  in_progress: 'processing',
+  completed: 'completed',
+  cancelled: 'cancelled',
+};
 
 function num(v: string | null | undefined): number | null {
   return v === null || v === undefined ? null : Number(v);

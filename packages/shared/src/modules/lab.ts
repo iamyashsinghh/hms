@@ -408,6 +408,18 @@ export interface ResultCriticalEvent {
   flag: 'critical_low' | 'critical_high';
 }
 
+/**
+ * `lab.order.status_changed`: one event per EMR order line (emrOrderId = clinical.encounter_orders.id)
+ * when a lab order made from a consultation moves on. EMR shows it on the consultation.
+ */
+export interface OrderStatusChangedEvent {
+  orderId: string;
+  emrOrderId: string;
+  encounterId: string | null;
+  patientId: string;
+  status: 'collected' | 'processing' | 'completed' | 'cancelled';
+}
+
 /** `lab.order.created`. */
 export interface OrderCreatedEvent {
   orderId: string;

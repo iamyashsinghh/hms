@@ -327,6 +327,14 @@ describe('lab orders from a signed consultation', () => {
       ['unmatched', null],
     ]);
     expect(o.results).toHaveLength(12);
+
+    // Lab progress flows back to the consultation's order lines.
+    await inject('POST', `/lab/orders/${o.id}/collect`, tech);
+    const statusEvents = (await outbox(o.id)).filter((e) => e.topic === 'lab.order.status_changed');
+    expect(statusEvents.map((e) => e.payload.status)).toEqual(['collected', 'collected']);
+    const emrLines = ((await inject('GET', `/emr/encounters/${enc.id}`, doctor)).json().orders as { id: string; name: string }[]).filter((l) => ['CBC', 'thyroid profile'].includes(l.name));
+    expect(statusEvents.map((e) => e.payload.emrOrderId).sort()).toEqual(emrLines.map((l) => l.id).sort());
+    expect(statusEvents[0]!.payload).toMatchObject({ encounterId: enc.id, patientId: malePatientId });
   });
 });
 
