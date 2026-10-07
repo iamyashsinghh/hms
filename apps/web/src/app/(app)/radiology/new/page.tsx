@@ -63,6 +63,9 @@ function NewOrder() {
   const tests = useQuery({ queryKey: ['radiology', 'tests'], queryFn: () => api.radiology.tests(), enabled: canCreate });
   const [testId, setTestId] = React.useState('');
   const [priority, setPriority] = React.useState<radiology.OrderPriority>('routine');
+  const canListDoctors = usePermission('setup.doctor.read');
+  const doctors = useQuery({ queryKey: ['setup', 'doctors'], queryFn: () => api.setup.listDoctors(), enabled: canCreate && canListDoctors });
+  const [doctorId, setDoctorId] = React.useState('');
   const [referrer, setReferrer] = React.useState('');
   const [notes, setNotes] = React.useState('');
   const [problem, setProblem] = React.useState<string | null>(null);
@@ -85,7 +88,8 @@ function NewOrder() {
       patientId: patient.id,
       testId,
       priority,
-      referringDoctorName: referrer || undefined,
+      referringDoctorId: doctorId || undefined,
+      referringDoctorName: doctorId ? undefined : referrer || undefined,
       clinicalNotes: notes || undefined,
     });
     if (!parsed.success) return setProblem(testId ? (parsed.error.issues[0]?.message ?? 'Check the form') : 'Pick the test');
@@ -151,7 +155,26 @@ function NewOrder() {
               </div>
               <div>
                 <Label htmlFor="ref">Referred by</Label>
-                <Input id="ref" className="mt-1.5" placeholder="Dr. name (outside doctor)" value={referrer} onChange={(e) => setReferrer(e.target.value)} />
+                {doctors.data && doctors.data.length > 0 && (
+                  <Select id="ref" className="mt-1.5" value={doctorId} onChange={(e) => setDoctorId(e.target.value)}>
+                    <option value="">Outside doctor / self</option>
+                    {doctors.data.map((d) => (
+                      <option key={d.userId} value={d.userId}>
+                        {d.name}
+                        {d.specialization ? ` (${d.specialization})` : ''}
+                      </option>
+                    ))}
+                  </Select>
+                )}
+                {!doctorId && (
+                  <Input
+                    id={doctors.data?.length ? 'ref-outside' : 'ref'}
+                    className="mt-1.5"
+                    placeholder="Outside doctor's name"
+                    value={referrer}
+                    onChange={(e) => setReferrer(e.target.value)}
+                  />
+                )}
               </div>
             </div>
             <div>
