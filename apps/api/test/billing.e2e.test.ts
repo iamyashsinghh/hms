@@ -275,6 +275,23 @@ describe('cross-module contract', () => {
     ).rejects.toThrow();
   });
 
+  it('takes insurer settlements and disallowance credit notes inside a caller transaction, once per reference', async () => {
+    const billing = app.get(BillingService);
+    const db = app.get(DbService);
+    const inv = await db.asTenant({ tenantId }, (tx) => billing.createInvoice(tx, { patientId, facilityId, lines: [{ serviceCode: CONS }] }));
+    const pay = { mode: 'insurance' as const, amount: 300, reference: `CLM-${tag}` };
+    const p1 = await db.asTenant({ tenantId }, (tx) => billing.collectPaymentTx(tx, inv.invoiceId, pay));
+    const p2 = await db.asTenant({ tenantId }, (tx) => billing.collectPaymentTx(tx, inv.invoiceId, pay));
+    expect(p2.id).toBe(p1.id);
+    expect(p1).toMatchObject({ mode: 'insurance', amount: 300, shiftId: null });
+    const cn = { amount: 100, reason: 'Disallowed by TPA', reference: `DIS-${tag}` };
+    const c1 = await db.asTenant({ tenantId }, (tx) => billing.creditNoteTx(tx, inv.invoiceId, cn));
+    const c2 = await db.asTenant({ tenantId }, (tx) => billing.creditNoteTx(tx, inv.invoiceId, cn));
+    expect(c2.id).toBe(c1.id);
+    const after = (await call(clerk, 'GET', `/billing/invoices/${inv.invoiceId}`)).json();
+    expect(after).toMatchObject({ paidAmount: 300, creditedAmount: 100, balance: 50 });
+  });
+
   it('records portal online payments once, keeping any excess as advance', async () => {
     const inv = (await call(clerk, 'POST', '/billing/invoices', { patientId, finalize: true, lines: [{ serviceCode: CONS }] })).json();
     const before = (await call(clerk, 'GET', `/billing/patients/${patientId}/account`)).json().depositBalance;

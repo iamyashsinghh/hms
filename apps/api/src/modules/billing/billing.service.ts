@@ -27,6 +27,8 @@ type PaymentReceivedEvent = B.PaymentReceivedEvent;
 type PriceList = B.PriceList;
 type PriceListInput = B.PriceListInput;
 type RefundInput = B.RefundInput;
+type CollectPaymentTxInput = B.CollectPaymentTxInput;
+type CreditNoteTxInput = B.CreditNoteTxInput;
 type InvoiceReturnInput = B.InvoiceReturnInput;
 type InvoiceReturnResult = B.InvoiceReturnResult;
 type PortalPaymentCaptured = B.PortalPaymentCaptured;
@@ -519,6 +521,43 @@ export class BillingService {
     });
   }
 
+  /**
+   * Cross-module (e.g. insurance settlements), inside the caller's transaction; works in the worker.
+   * Records a receipt against a final invoice. With `reference`, a repeat call returns the first receipt.
+   */
+  async collectPaymentTx(tx: Tx, invoiceId: string, input: CollectPaymentTxInput): Promise<Payment> {
+    const d = contracts.collectPaymentTxSchema.parse(input);
+    const inv = await this.repo.invoiceById(tx, invoiceId, true);
+    if (!inv) throw notFound('Invoice');
+    if (d.reference) {
+      const prior = await this.repo.invoicePaymentByReference(tx, invoiceId, d.reference);
+      if (prior) return paymentDto(prior);
+    }
+    return paymentDto(await this.collectTx(tx, inv, d));
+  }
+
+  /**
+   * Cross-module, inside the caller's transaction; works in the worker. Credits `amount` (up to the
+   * unpaid balance) on a final invoice, e.g. an insurer's disallowance. Idempotent on `reference`.
+   */
+  async creditNoteTx(tx: Tx, invoiceId: string, input: CreditNoteTxInput): Promise<CreditNote> {
+    const d = contracts.creditNoteTxSchema.parse(input);
+    const inv = await this.repo.invoiceById(tx, invoiceId, true);
+    if (!inv) throw notFound('Invoice');
+    if (d.reference) {
+      const prior = await this.repo.creditNoteByReference(tx, d.reference);
+      if (prior) {
+        if (prior.invoiceId !== invoiceId) throw conflict('reference_used', `Reference ${d.reference} was already credited on another invoice`);
+        return creditNoteDto(prior);
+      }
+    }
+    if (inv.status !== 'final') throw conflict('invoice_not_final', 'Credit notes can only be issued against final invoices');
+    const amount = paise(d.amount);
+    const balance = paise(inv.total) - paise(inv.paidAmount) - paise(inv.creditedAmount);
+    if (amount > balance) throw badRequest('credit_exceeds_balance', `Only ₹${rupees(balance)} is unpaid`, { balance: toNumber(rupees(balance)) });
+    return creditNoteDto(await this.insertCreditNote(tx, inv, amount, d.reason, d.reference));
+  }
+
   /** Invoice row must be locked FOR UPDATE by the caller. */
   private async collectTx(tx: Tx, inv: InvoiceRow, d: { mode: string; amount: number; reference?: string; notes?: string }): Promise<PaymentRow> {
     if (inv.status !== 'final') throw conflict('invoice_not_final', 'Finalize the invoice before taking payment');
@@ -531,7 +570,9 @@ export class BillingService {
       if (amount > available) throw badRequest('insufficient_deposit', `Advance balance is only ₹${rupees(available)}`, { available: toNumber(rupees(available)) });
     }
     const { userId } = await this.repo.scope(tx);
-    const shift = userId ? await this.repo.openShiftOf(tx, userId) : undefined;
+    // Gateway and insurer money never passes through a cashier's drawer.
+    const inDrawer = d.mode !== 'online' && d.mode !== 'insurance';
+    const shift = userId && inDrawer ? await this.repo.openShiftOf(tx, userId) : undefined;
     const payment = await this.repo.insertPayment(tx, {
       number: formatSeries('RCP', await nextCounter(tx, 'billing.receipt')),
       kind: 'payment',
