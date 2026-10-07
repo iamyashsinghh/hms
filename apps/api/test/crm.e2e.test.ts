@@ -258,6 +258,13 @@ describe('referrals and commission', () => {
     expect(st.json().error.code).toBe('nothing_to_pay');
   });
 
+  it('ignores a partial billing.invoice.finalized payload', async () => {
+    const bus = app.get(EventBus);
+    const env = { id: crypto.randomUUID(), tenantId, topic: 'billing.invoice.finalized', createdAt: new Date().toISOString() };
+    await bus.dispatch({ ...env, payload: { invoiceId: crypto.randomUUID(), patientId, number: 'INV-X', total: 500 } });
+    await bus.dispatch({ ...env, id: crypto.randomUUID(), payload: { invoiceId: crypto.randomUUID(), patientId } });
+  });
+
   it('picks the most specific rule', () => {
     const base = { tenantId: 't', isActive: true, effectiveTo: null, createdBy: null, updatedBy: null, createdAt: '', updatedAt: '' };
     const rules = [

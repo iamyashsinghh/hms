@@ -300,8 +300,10 @@ export class ReferralsService {
       .where(and(eq(crmCommissions.invoiceId, e.invoiceId), eq(crmCommissions.kind, 'accrual')))
       .limit(1);
     if (existing) return existing;
+    // Other modules' tests (and older publishers) may send a partial payload; without lines there is nothing to pay on.
+    if (!e.lines?.length || !e.patientId || !e.number) return null;
 
-    const day = e.invoiceDate.slice(0, 10);
+    const day = (e.invoiceDate ?? todayIST()).slice(0, 10);
     const [referral] = await tx
       .select({ r: crmReferrals, active: crmReferrers.isActive })
       .from(crmReferrals)
@@ -331,12 +333,12 @@ export class ReferralsService {
       );
     const module = e.source?.module ?? 'billing';
     const breakdown: CrmCommissionLine[] = e.lines.map((line) => {
-      const rule = pickRule(rules, line.serviceCode, module);
-      const base = paise(line.amount);
+      const rule = pickRule(rules, line.serviceCode ?? null, module);
+      const base = paise(line.amount ?? 0);
       const commission = !rule ? 0 : rule.rateType === 'percent' ? Math.round((base * Number(rule.rate)) / 100) : paise(rule.rate) * Math.max(1, Math.round(line.qty || 1));
       return {
         description: line.description,
-        serviceCode: line.serviceCode,
+        serviceCode: line.serviceCode ?? null,
         amount: rupees(base),
         ruleId: rule?.id ?? null,
         rateType: (rule?.rateType as crm.RateType | undefined) ?? null,
