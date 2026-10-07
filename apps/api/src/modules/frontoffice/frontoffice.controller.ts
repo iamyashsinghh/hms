@@ -19,6 +19,15 @@ export class FrontofficeController {
     return this.fo.listDoctors();
   }
 
+  @Get('doctors/:id/slots')
+  @RequirePermissions('frontoffice.appointment.read')
+  slots(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query(new ZodPipe(fo.availableSlotsQuerySchema)) q: Out<typeof fo.availableSlotsQuerySchema>,
+  ): Promise<fo.AvailableSlot[]> {
+    return this.fo.availableSlots(id, q);
+  }
+
   // ---------- appointments ----------
 
   @Get('appointments')
