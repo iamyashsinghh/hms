@@ -231,6 +231,20 @@ describe('cross-module contract', () => {
     );
     expect(created).toMatchObject({ status: 'final', total: 22 });
     expect(created.number).toMatch(/^INV\d{6}$/);
+    const events = await db.asTenant({ tenantId }, (tx) =>
+      tx.execute<{ topic: string; payload: Record<string, unknown> }>(
+        sql`select topic, payload from audit.outbox where payload->>'invoiceId' = ${created.invoiceId} order by created_at`,
+      ),
+    );
+    expect(events.rows.map((r) => r.topic)).toEqual(['billing.invoice.finalized', 'billing.payment.received']);
+    expect(events.rows[0]!.payload).toMatchObject({
+      number: created.number,
+      facilityId,
+      total: 22,
+      source: { module: 'pharmacy', refId: 'RX-1' },
+      lines: [{ description: 'Paracetamol 500mg', qty: 10, amount: 22.4 }],
+    });
+    expect(events.rows[1]!.payload).toMatchObject({ amount: 22, mode: 'cash', kind: 'payment', facilityId });
     const price = await db.asTenant({ tenantId }, (tx) => billing.getServicePrice(CONS, null, tx));
     expect(price.price).toBe(450);
   });

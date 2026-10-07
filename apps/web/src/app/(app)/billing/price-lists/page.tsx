@@ -1,0 +1,207 @@
+'use client';
+
+import * as React from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Loader2, Plus } from 'lucide-react';
+import type { billing as B } from '@hms/shared';
+import { api, errorMessage } from '@/lib/api';
+import { Can, usePermission } from '@/lib/auth';
+import { formatDate } from '@/lib/format';
+import { PageHeader } from '@/components/page-header';
+import { NoAccess } from '@/components/no-access';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { ErrorBox, Field, formatINR, todayIST } from '@/modules/billing/ui';
+
+interface Form {
+  id?: string;
+  name: string;
+  effectiveFrom: string;
+  effectiveTo: string;
+  isActive: boolean;
+  prices: Record<string, string>;
+}
+
+export default function PriceListsPage() {
+  const canRead = usePermission('billing.service.read');
+  const canManage = usePermission('billing.service.manage');
+  const queryClient = useQueryClient();
+  const [form, setForm] = React.useState<Form | null>(null);
+
+  const { data: lists, isPending, error } = useQuery({ queryKey: ['billing', 'price-lists'], queryFn: () => api.billing.priceLists.list(), enabled: canRead });
+  const { data: services } = useQuery({
+    queryKey: ['billing', 'services', 'active'],
+    queryFn: () => api.billing.services.list({ active: 'true', pageSize: 200 }),
+    enabled: !!form,
+  });
+
+  const save = useMutation({
+    mutationFn: (f: Form) => {
+      const body: B.PriceListInput = {
+        name: f.name,
+        effectiveFrom: f.effectiveFrom,
+        effectiveTo: f.effectiveTo || null,
+        isActive: f.isActive,
+        items: Object.entries(f.prices)
+          .filter(([, v]) => v !== '')
+          .map(([serviceId, price]) => ({ serviceId, price: Number(price) })),
+      };
+      return f.id ? api.billing.priceLists.update(f.id, body) : api.billing.priceLists.create(body);
+    },
+    onSuccess: () => {
+      setForm(null);
+      queryClient.invalidateQueries({ queryKey: ['billing', 'price-lists'] });
+    },
+  });
+
+  if (!canRead) return <NoAccess />;
+
+  return (
+    <>
+      <PageHeader
+        title="Price lists"
+        description="Dated price lists override base prices. The newest active list covering the bill date wins; payer-specific lists (insurance, corporate) come with the insurance module."
+        actions={
+          <Can permission="billing.service.manage">
+            <Button onClick={() => setForm({ name: '', effectiveFrom: todayIST(), effectiveTo: '', isActive: true, prices: {} })}>
+              <Plus /> New price list
+            </Button>
+          </Can>
+        }
+      />
+
+      {form && canManage && (
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle>{form.id ? `Edit ${form.name}` : 'New price list'}</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <ErrorBox error={save.error ? errorMessage(save.error) : null} />
+            <div className="grid gap-4 sm:grid-cols-4">
+              <Field id="pl-name" label="Name *" className="sm:col-span-2">
+                <Input id="pl-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Cash rates 2026-27" />
+              </Field>
+              <Field id="pl-from" label="Effective from *">
+                <Input id="pl-from" type="date" value={form.effectiveFrom} onChange={(e) => setForm({ ...form, effectiveFrom: e.target.value })} />
+              </Field>
+              <Field id="pl-to" label="Effective to">
+                <Input id="pl-to" type="date" value={form.effectiveTo} onChange={(e) => setForm({ ...form, effectiveTo: e.target.value })} />
+              </Field>
+            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={form.isActive} onChange={(e) => setForm({ ...form, isActive: e.target.checked })} /> Active
+            </label>
+            <div className="max-h-96 overflow-auto rounded-md border">
+              <Table>
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead>Service</TableHead>
+                    <TableHead className="text-right">Base price</TableHead>
+                    <TableHead className="w-40">List price (₹)</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {services?.items.map((s) => (
+                    <TableRow key={s.id}>
+                      <TableCell>
+                        {s.name} <span className="font-mono text-xs text-muted-foreground">{s.code}</span>
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">{formatINR(s.basePrice)}</TableCell>
+                      <TableCell>
+                        <Input
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          aria-label={`Price for ${s.name}`}
+                          placeholder="base"
+                          value={form.prices[s.id] ?? ''}
+                          onChange={(e) => setForm({ ...form, prices: { ...form.prices, [s.id]: e.target.value } })}
+                        />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setForm(null)}>
+                Cancel
+              </Button>
+              <Button disabled={save.isPending || !form.name.trim()} onClick={() => save.mutate(form)}>
+                {save.isPending && <Loader2 className="animate-spin" />}
+                Save
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      <Card>
+        {error ? (
+          <p className="p-6 text-sm text-destructive">{errorMessage(error)}</p>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead>Name</TableHead>
+                <TableHead>Valid</TableHead>
+                <TableHead className="text-right">Services</TableHead>
+                <TableHead />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {isPending ? (
+                <TableRow>
+                  <TableCell colSpan={4} className="py-10 text-center text-muted-foreground">
+                    Loading…
+                  </TableCell>
+                </TableRow>
+              ) : lists.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={4} className="py-10 text-center text-muted-foreground">
+                    No price lists. Bills use each service&apos;s base price.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                lists.map((l) => (
+                  <TableRow key={l.id}>
+                    <TableCell className="font-medium">
+                      {l.name} {!l.isActive && <Badge variant="secondary">Inactive</Badge>}
+                    </TableCell>
+                    <TableCell>
+                      {formatDate(l.effectiveFrom)} – {l.effectiveTo ? formatDate(l.effectiveTo) : 'open'}
+                    </TableCell>
+                    <TableCell className="text-right">{l.items.length}</TableCell>
+                    <TableCell className="text-right">
+                      {canManage && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() =>
+                            setForm({
+                              id: l.id,
+                              name: l.name,
+                              effectiveFrom: l.effectiveFrom,
+                              effectiveTo: l.effectiveTo ?? '',
+                              isActive: l.isActive,
+                              prices: Object.fromEntries(l.items.map((i) => [i.serviceId, String(i.price)])),
+                            })
+                          }
+                        >
+                          Edit
+                        </Button>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        )}
+      </Card>
+    </>
+  );
+}
