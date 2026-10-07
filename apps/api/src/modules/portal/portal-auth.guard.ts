@@ -58,6 +58,8 @@ export class PatientAuthGuard implements CanActivate {
     if (!live) throw unauthorized('Your session has ended');
 
     req.ctx.tenantId = claims.tid;
+    // A patient may visit any branch of the hospital (they hold no staff permissions).
+    req.ctx.facilityIds = 'all';
     req.patient = { tenantId: claims.tid, accountId: claims.sub, sessionId: claims.sid };
     return true;
   }

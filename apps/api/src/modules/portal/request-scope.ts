@@ -6,6 +6,6 @@ import { emptyContext, requestContext, type RequestContext } from '../../common/
  */
 export function runAsTenant<T>(tenantId: string, fn: () => Promise<T>): Promise<T> {
   const parent = requestContext.getStore();
-  const ctx: RequestContext = { ...(parent ?? emptyContext('portal')), tenantId, userId: undefined, facilityId: null };
+  const ctx: RequestContext = { ...(parent ?? emptyContext('portal')), tenantId, userId: undefined, facilityId: null, facilityIds: 'all' };
   return requestContext.run(ctx, fn);
 }

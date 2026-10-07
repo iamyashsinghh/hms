@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
+import { FrontofficeModule } from '../frontoffice/frontoffice.module';
 import { PatientsModule } from '../patients/patients.module';
+import { SetupModule } from '../setup/setup.module';
 import { ConsoleOtpSender, OTP_SENDER } from './otp.sender';
 import { PatientAuthGuard } from './portal-auth.guard';
 import { PortalAuthController } from './portal-auth.controller';
@@ -16,10 +18,10 @@ import { PortalStaffController } from './portal-staff.controller';
  * Patient Portal. Owned by the "portal" workstream (see PARALLEL_PLAN.md).
  * Patients sign in with mobile + OTP (typ 'patient' tokens, PatientAuthGuard); staff routes live under
  * /portal/staff with normal permissions. Prescriptions, bills, reports and desk appointments are read
- * models fed by other modules' events (PortalEventsService). Setup/front office are reached via PortalGateway.
+ * models fed by other modules' events (PortalEventsService). Doctors/timetables (setup) and bookings (front office) go through PortalGateway.
  */
 @Module({
-  imports: [PatientsModule],
+  imports: [PatientsModule, SetupModule, FrontofficeModule],
   controllers: [PortalAuthController, PortalStaffController, PortalController],
   providers: [
     PortalRepository,

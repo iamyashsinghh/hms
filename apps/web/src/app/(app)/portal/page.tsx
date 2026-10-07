@@ -76,7 +76,7 @@ export default function PortalAdminPage() {
 function Bookings() {
   const qc = useQueryClient();
   const canManage = usePermission('portal.booking.manage');
-  const [status, setStatus] = React.useState<portal.AppointmentStatus | ''>('requested');
+  const [status, setStatus] = React.useState<portal.AppointmentStatus | ''>('');
   const [date, setDate] = React.useState('');
   const { data, isPending, error } = useQuery({
     queryKey: ['portal-staff', 'bookings', status, date],

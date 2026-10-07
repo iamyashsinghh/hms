@@ -1,5 +1,9 @@
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { randomUUID } from 'node:crypto';
+import { resolve } from 'node:path';
+import { config } from 'dotenv';
+import { Client } from 'pg';
+import { DEMO_PASSWORD, provisionTenant, upsertUser } from '@hms/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { EventBus } from '../src/common/events/event-bus';
 import { bearer, bootApp, login } from './helpers';
@@ -9,6 +13,33 @@ let reception: string;
 let doctorStaff: string;
 let cityAdmin: string;
 let demoTenantId: string;
+
+config({ path: resolve(__dirname, '../../../.env'), quiet: true });
+
+/** Booking needs a doctor timetable, so it runs in a throwaway hospital (no schedule changes in shared demo data). */
+const HOSPITAL = { code: `portal-${Date.now().toString(36)}`, admin: '', doctorId: '' };
+
+async function provisionTestHospital() {
+  const client = new Client({ connectionString: process.env.DATABASE_MIGRATOR_URL });
+  await client.connect();
+  try {
+    await client.query('BEGIN');
+    const t = await provisionTenant(client, {
+      code: HOSPITAL.code,
+      name: 'Portal Test Hospital',
+      facility: { code: 'MAIN', name: 'Main' },
+      admin: { name: 'Portal Admin', email: `admin@${HOSPITAL.code}.test`, password: DEMO_PASSWORD },
+    });
+    await upsertUser(client, t.tenantId, { name: 'Dr. Portal Test', email: `doctor@${HOSPITAL.code}.test`, password: DEMO_PASSWORD, roleKeys: ['doctor'] });
+    await client.query('COMMIT');
+    return t.facilityId;
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    await client.end();
+  }
+}
 
 const randomMobile = () => `9${String(Math.floor(Math.random() * 1e9)).padStart(9, '0')}`;
 
@@ -47,6 +78,18 @@ beforeAll(async () => {
   demoTenantId = (r.user as unknown as { tenantId: string }).tenantId;
   doctorStaff = (await login(app, 'doctor@demo.hms')).accessToken;
   cityAdmin = (await login(app, 'admin@city.hms', 'city')).accessToken;
+
+  const facilityId = await provisionTestHospital();
+  HOSPITAL.admin = (await login(app, `admin@${HOSPITAL.code}.test`, HOSPITAL.code)).accessToken;
+  HOSPITAL.doctorId = (await login(app, `doctor@${HOSPITAL.code}.test`, HOSPITAL.code)).user.id;
+  const blocks = [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({ facilityId, weekday, startTime: '10:00', endTime: '13:00', slotMinutes: 15 }));
+  const schedule = await app.inject({
+    method: 'PUT',
+    url: `/api/v1/setup/doctors/${HOSPITAL.doctorId}/schedule`,
+    headers: { ...bearer(HOSPITAL.admin), 'x-facility-id': facilityId },
+    payload: { blocks },
+  });
+  if (schedule.statusCode !== 200) throw new Error(`schedule: ${schedule.body}`);
 });
 afterAll(() => app.close());
 
@@ -138,78 +181,59 @@ describe('portal: family, booking and staff inbox', () => {
     expect(me.json().patients.map((p: { relation: string }) => p.relation)).toEqual(['self', 'child']);
   });
 
-  it('books a slot, blocks double booking, and reception confirms it', async () => {
-    const a = await patientLogin(randomMobile());
-    const b = await patientLogin(randomMobile());
-    const pa = (await app.inject({ method: 'POST', url: '/api/v1/portal/family', headers: bearer(a.accessToken), payload: { firstName: 'A', gender: 'male', ageYears: 40, relation: 'self' } })).json();
-    const pb = (await app.inject({ method: 'POST', url: '/api/v1/portal/family', headers: bearer(b.accessToken), payload: { firstName: 'B', gender: 'male', ageYears: 41, relation: 'self' } })).json();
+  it('books into the doctor timetable, blocks double booking, shows it to staff and cancels', async () => {
+    const h = HOSPITAL.code;
+    const a = await patientLogin(randomMobile(), h);
+    const b = await patientLogin(randomMobile(), h);
+    const self = (token: string, firstName: string) =>
+      app.inject({ method: 'POST', url: '/api/v1/portal/family', headers: bearer(token), payload: { firstName, gender: 'male', ageYears: 40, relation: 'self' } });
+    const pa = (await self(a.accessToken, 'A')).json();
+    const pb = (await self(b.accessToken, 'B')).json();
 
     const doctors = await app.inject({ method: 'GET', url: '/api/v1/portal/doctors', headers: bearer(a.accessToken) });
-    const doctor = doctors.json().find((d: { name: string }) => d.name === 'Dr. Asha Rao');
-    expect(doctor).toBeTruthy();
+    expect(doctors.json().map((d: { userId: string }) => d.userId)).toContain(HOSPITAL.doctorId);
 
+    // Any weekday works: the test doctor sits 10:00-13:00 IST every day. The diary keeps earlier runs' bookings.
     const day = new Date(Date.now() + (2 + Math.floor(Math.random() * 50)) * 86_400_000).toISOString().slice(0, 10);
-    const slots = await app.inject({ method: 'GET', url: `/api/v1/portal/doctors/${doctor.userId}/slots?date=${day}`, headers: bearer(a.accessToken) });
+    const slotsUrl = `/api/v1/portal/doctors/${HOSPITAL.doctorId}/slots?date=${day}`;
+    const slots = await app.inject({ method: 'GET', url: slotsUrl, headers: bearer(a.accessToken) });
     expect(slots.statusCode).toBe(200);
+    expect(slots.json()).toHaveLength(12);
     const free = slots.json().filter((s: { available: boolean }) => s.available);
     const slot = free[Math.floor(Math.random() * free.length)];
+    expect(slot).toBeTruthy();
 
-    const booked = await app.inject({
-      method: 'POST',
-      url: '/api/v1/portal/appointments',
-      headers: bearer(a.accessToken),
-      payload: { patientId: pa.id, doctorId: doctor.userId, slotStart: slot.start, reason: 'Fever' },
-    });
-    expect(booked.statusCode).toBe(201);
-    expect(booked.json()).toMatchObject({ status: 'requested', source: 'portal', doctorName: 'Dr. Asha Rao' });
+    const book = (token: string, patientId: string, slotStart: string) =>
+      app.inject({ method: 'POST', url: '/api/v1/portal/appointments', headers: bearer(token), payload: { patientId, doctorId: HOSPITAL.doctorId, slotStart, reason: 'Fever' } });
+    const booked = await book(a.accessToken, pa.id, slot.start);
+    expect(booked.statusCode, booked.body).toBe(201);
+    expect(booked.json()).toMatchObject({ status: 'booked', source: 'portal', doctorName: 'Dr. Portal Test' });
+    expect(booked.json().appointmentId).toBeTruthy();
 
-    const clash = await app.inject({
-      method: 'POST',
-      url: '/api/v1/portal/appointments',
-      headers: bearer(b.accessToken),
-      payload: { patientId: pb.id, doctorId: doctor.userId, slotStart: slot.start },
-    });
-    expect(clash.statusCode).toBe(409);
+    expect((await book(b.accessToken, pb.id, slot.start)).statusCode).toBe(409);
+    // B cannot book for A's patient; a time outside the timetable is refused.
+    expect((await book(b.accessToken, pa.id, slot.end)).statusCode).toBe(403);
+    expect((await book(b.accessToken, pb.id, `${day}T15:00:00+05:30`)).statusCode).toBe(400);
 
-    // B cannot book for A's patient.
-    const foreign = await app.inject({
-      method: 'POST',
-      url: '/api/v1/portal/appointments',
-      headers: bearer(b.accessToken),
-      payload: { patientId: pa.id, doctorId: doctor.userId, slotStart: slot.end },
-    });
-    expect(foreign.statusCode).toBe(403);
-
-    const after = await app.inject({ method: 'GET', url: `/api/v1/portal/doctors/${doctor.userId}/slots?date=${day}`, headers: bearer(a.accessToken) });
+    const after = await app.inject({ method: 'GET', url: slotsUrl, headers: bearer(a.accessToken) });
     expect(after.json().find((s: { start: string }) => s.start === slot.start).available).toBe(false);
 
-    const inbox = await app.inject({ method: 'GET', url: `/api/v1/portal/staff/bookings?status=requested&date=${day}`, headers: bearer(reception) });
-    expect(inbox.statusCode).toBe(200);
+    // Front office has it in the doctor's diary.
+    const diary = await app.inject({ method: 'GET', url: `/api/v1/frontoffice/appointments?date=${day}&doctorId=${HOSPITAL.doctorId}`, headers: bearer(HOSPITAL.admin) });
+    expect(diary.json().items.find((x: { id: string }) => x.id === booked.json().appointmentId)).toMatchObject({ source: 'portal', status: 'booked' });
+
+    const inbox = await app.inject({ method: 'GET', url: `/api/v1/portal/staff/bookings?date=${day}`, headers: bearer(HOSPITAL.admin) });
     expect(inbox.json().items.map((i: { id: string }) => i.id)).toContain(booked.json().id);
 
-    const forbidden = await app.inject({
-      method: 'POST',
-      url: `/api/v1/portal/staff/bookings/${booked.json().id}/decision`,
-      headers: bearer(doctorStaff),
-      payload: { decision: 'confirm' },
-    });
-    expect(forbidden.statusCode).toBe(403);
-
-    const confirm = await app.inject({
-      method: 'POST',
-      url: `/api/v1/portal/staff/bookings/${booked.json().id}/decision`,
-      headers: bearer(reception),
-      payload: { decision: 'confirm', note: 'See you at 10' },
-    });
-    expect(confirm.json().status).toBe('confirmed');
-
     const mine = await app.inject({ method: 'GET', url: '/api/v1/portal/appointments?scope=upcoming', headers: bearer(a.accessToken) });
-    expect(mine.json()[0]).toMatchObject({ id: booked.json().id, status: 'confirmed', staffNote: 'See you at 10' });
+    expect(mine.json()[0]).toMatchObject({ id: booked.json().id, status: 'booked' });
 
-    const cancel = await app.inject({ method: 'POST', url: `/api/v1/portal/appointments/${booked.json().id}/cancel`, headers: bearer(a.accessToken) });
-    expect(cancel.json().status).toBe('cancelled');
     const cancelByOther = await app.inject({ method: 'POST', url: `/api/v1/portal/appointments/${booked.json().id}/cancel`, headers: bearer(b.accessToken) });
     expect(cancelByOther.statusCode).toBe(404);
+    const cancel = await app.inject({ method: 'POST', url: `/api/v1/portal/appointments/${booked.json().id}/cancel`, headers: bearer(a.accessToken) });
+    expect(cancel.json().status).toBe('cancelled');
+    const reopened = await app.inject({ method: 'GET', url: slotsUrl, headers: bearer(b.accessToken) });
+    expect(reopened.json().find((s: { start: string }) => s.start === slot.start).available).toBe(true);
   });
 
   it('collects feedback for the staff dashboard', async () => {
@@ -220,6 +244,8 @@ describe('portal: family, booking and staff inbox', () => {
     const list = await app.inject({ method: 'GET', url: '/api/v1/portal/staff/feedback', headers: bearer(reception) });
     expect(list.json().items[0]).toMatchObject({ id: fb.json().id, rating: 5 });
     expect(list.json().average).toBeGreaterThan(0);
+    const doctorView = await app.inject({ method: 'GET', url: '/api/v1/portal/staff/feedback', headers: bearer(doctorStaff) });
+    expect(doctorView.statusCode).toBe(403);
   });
 });
 

@@ -1,11 +1,11 @@
-import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
 import { iso, sql, type Tx } from '@hms/db';
 import type { Paginated, portal } from '@hms/shared';
 import { DbService } from '../../common/db/db.service';
 import { currentContext } from '../../common/context/request-context';
 import { OutboxService } from '../../common/events/outbox.service';
-import { AppError, badRequest, conflict, notFound } from '../../common/errors/errors';
+import { badRequest, conflict, notFound } from '../../common/errors/errors';
 import type { PatientPrincipal } from './portal-auth.guard';
 import { PortalGateway } from './portal.gateway';
 import { PortalPatientsService } from './portal-patients.service';
@@ -24,8 +24,6 @@ const LIVE = ['requested', 'booked', 'confirmed'];
 
 @Injectable()
 export class PortalService {
-  private readonly logger = new Logger(PortalService.name);
-
   constructor(
     private readonly db: DbService,
     private readonly repo: PortalRepository,
@@ -37,25 +35,30 @@ export class PortalService {
   // ---------- doctors & slots ----------
 
   listDoctors(q: portal.DoctorQuery): Promise<portal.PortalDoctor[]> {
-    return this.db.tx((tx) => this.gateway.listDoctors(tx, q));
+    return this.gateway.listDoctors(q);
   }
 
+  /** The doctor's timetable (setup) minus time already booked in the diary (front office) or online. */
   async slots(doctorId: string, date: string): Promise<portal.PortalSlot[]> {
     await this.doctor(doctorId);
     const slots = await this.gateway.slots(doctorId, date);
     if (!slots.length) return [];
+    const busy = await this.gateway.busy(doctorId, date);
     const from = slots[0]!.start;
     const to = new Date(new Date(slots[slots.length - 1]!.start).getTime() + 1).toISOString();
-    const taken = await this.db.tx((tx) => this.repo.takenSlots(tx, doctorId, from, to));
+    const online = await this.db.tx((tx) => this.repo.takenSlots(tx, doctorId, from, to));
     const now = Date.now();
     return slots.map((s) => {
       const t = new Date(s.start).getTime();
-      return { start: new Date(t).toISOString(), end: new Date(s.end).toISOString(), available: s.available !== false && t > now && !taken.has(t) };
+      const e = new Date(s.end).getTime();
+      const taken = online.has(t) || busy.some((b) => b.start < e && t < b.end);
+      return { start: new Date(t).toISOString(), end: new Date(e).toISOString(), available: t > now && !taken };
     });
   }
 
   // ---------- appointments ----------
 
+  /** Books straight into front office's diary (it rejects clashes), then keeps the portal's own copy. */
   async book(p: PatientPrincipal, input: portal.BookAppointment): Promise<portal.PortalAppointment> {
     const scope = await this.patients.scope(p.accountId, input.patientId);
     const doctor = await this.doctor(input.doctorId);
@@ -65,57 +68,42 @@ export class PortalService {
       throw badRequest('slot_too_far', `You can book up to ${MAX_DAYS_AHEAD} days ahead`);
     }
     const date = new Date(start.getTime() + 330 * 60_000).toISOString().slice(0, 10); // IST date
-    const valid = (await this.gateway.slots(input.doctorId, date)).find((s) => new Date(s.start).getTime() === start.getTime());
-    if (!valid || valid.available === false) throw badRequest('slot_unavailable', 'This slot is not available');
+    const slot = (await this.slots(input.doctorId, date)).find((s) => new Date(s.start).getTime() === start.getTime());
+    if (!slot) throw badRequest('slot_unavailable', 'This slot is not available');
+    if (!slot.available) throw conflict('slot_taken', 'Someone just booked this slot. Please pick another time.');
+    const block = (await this.gateway.slots(input.doctorId, date)).find((s) => new Date(s.start).getTime() === start.getTime());
+    const facilityId = input.facilityId ?? block?.facilityId;
+    if (!facilityId) throw badRequest('slot_unavailable', 'This slot is not available');
 
-    const facilityId = input.facilityId ?? (await this.patients.facilities(p.tenantId))[0]?.id ?? null;
-    let row = await this.db
-      .tx(async (tx) => {
-        const r = await this.repo.insertAppointment(tx, {
-          tenantId: p.tenantId,
-          patientId: input.patientId,
-          accountId: p.accountId,
-          doctorId: input.doctorId,
-          doctorName: doctor.name,
-          facilityId,
-          slotStart: start.toISOString(),
-          status: 'requested',
-          source: 'portal',
-          reason: input.reason || null,
-        });
-        if (!this.gateway.frontoffice) {
-          const event: portal.AppointmentRequestedEvent = {
-            requestId: r.id,
-            patientId: r.patientId,
-            doctorId: r.doctorId,
-            facilityId: r.facilityId,
-            slotStart: iso(r.slotStart),
-          };
-          await this.outbox.publish(tx, 'portal.appointment.requested', { ...event });
-        }
-        return r;
-      })
-      .catch((e: unknown) => {
-        if (isUniqueViolation(e)) throw conflict('slot_taken', 'Someone just booked this slot. Please pick another time.');
-        throw e;
+    const { appointmentId } = await this.gateway.book({
+      patientId: input.patientId,
+      doctorId: input.doctorId,
+      facilityId,
+      slotStart: slot.start,
+      slotEnd: slot.end,
+      reason: input.reason || null,
+    });
+    const row = await this.db.tx(async (tx) => {
+      const values = {
+        accountId: p.accountId,
+        doctorName: doctor.name,
+        facilityId,
+        status: 'booked',
+        source: 'portal',
+        reason: input.reason || null,
+      };
+      // The front office event may already have created the row (worker raced us): adopt it.
+      const existing = await this.repo.findAppointmentBySource(tx, appointmentId);
+      if (existing) return (await this.repo.updateAppointment(tx, existing.id, values))!;
+      return this.repo.insertAppointment(tx, {
+        ...values,
+        tenantId: p.tenantId,
+        patientId: input.patientId,
+        doctorId: input.doctorId,
+        slotStart: slot.start,
+        appointmentId,
       });
-
-    if (this.gateway.frontoffice && facilityId) {
-      try {
-        const appt = await this.gateway.frontoffice.book({
-          patientId: row.patientId,
-          doctorId: row.doctorId,
-          facilityId,
-          slotStart: iso(row.slotStart),
-          type: 'online',
-        });
-        const appointmentId = appt.appointmentId ?? appt.id ?? null;
-        row = (await this.db.tx((tx) => this.repo.updateAppointment(tx, row.id, { status: 'booked', appointmentId }))) ?? row;
-      } catch (e) {
-        await this.db.tx((tx) => this.repo.updateAppointment(tx, row.id, { status: 'rejected', staffNote: 'The hospital could not book this slot' }));
-        throw e;
-      }
-    }
+    });
     return toAppointment(row, scope);
   }
 
@@ -132,12 +120,7 @@ export class PortalService {
     if (!row || !scope.has(row.patientId)) throw notFound('Appointment');
     if (!LIVE.includes(row.status)) throw conflict('not_cancellable', 'This appointment can no longer be cancelled');
     if (new Date(row.slotStart).getTime() <= Date.now()) throw conflict('not_cancellable', 'This appointment has already started');
-    if (row.appointmentId) {
-      if (!this.gateway.frontoffice?.cancel) {
-        throw new AppError(HttpStatus.CONFLICT, 'call_hospital', 'Please call the hospital to cancel this appointment');
-      }
-      await this.gateway.frontoffice.cancel(row.appointmentId, { reason: 'Cancelled by patient (portal)' });
-    }
+    if (row.appointmentId) await this.gateway.cancel(row.appointmentId, 'Cancelled by patient (portal)');
     const updated = await this.db.tx(async (tx) => {
       const u = await this.repo.updateAppointment(tx, id, { status: 'cancelled' });
       await this.outbox.publish(tx, 'portal.appointment.cancelled', { requestId: id, patientId: row.patientId, appointmentId: row.appointmentId });
@@ -313,11 +296,6 @@ export class PortalService {
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
-
-function isUniqueViolation(e: unknown): boolean {
-  const err = e as { code?: string; cause?: { code?: string } };
-  return err?.code === '23505' || err?.cause?.code === '23505';
-}
 
 export function toAppointment(r: AppointmentRow, names: Map<string, string>): portal.PortalAppointment {
   return {
