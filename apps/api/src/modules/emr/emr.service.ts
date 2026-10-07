@@ -311,7 +311,13 @@ export class EmrService {
         signedBy: ctx.userId,
         updatedBy: ctx.userId,
       });
-      const signedEvent: EncounterSignedEvent = { encounterId: id, patientId: enc.patientId, doctorId: enc.doctorId };
+      const signedEvent: EncounterSignedEvent = {
+        encounterId: id,
+        patientId: enc.patientId,
+        doctorId: enc.doctorId,
+        followUpDate: enc.followUpDate,
+        followUpNotes: enc.followUpNotes,
+      };
       await this.outbox.publish(tx, 'emr.encounter.signed', { ...signedEvent });
       if (rx) {
         const [lines, names] = await Promise.all([this.repo.lines(tx, [rx.id]), this.repo.userNames(tx, [rx.doctorId])]);
