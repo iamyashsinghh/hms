@@ -234,11 +234,13 @@ describe('cross-module contract', () => {
     expect(created.number).toMatch(/^INV\d{6}$/);
     const events = await db.asTenant({ tenantId }, (tx) =>
       tx.execute<{ topic: string; payload: Record<string, unknown> }>(
-        sql`select topic, payload from audit.outbox where payload->>'invoiceId' = ${created.invoiceId} order by created_at`,
+        sql`select topic, payload from audit.outbox where payload->>'invoiceId' = ${created.invoiceId}`,
       ),
     );
-    expect(events.rows.map((r) => r.topic)).toEqual(['billing.invoice.finalized', 'billing.payment.received']);
-    expect(events.rows[0]!.payload).toMatchObject({
+    // Both rows come from one transaction (same now(), same uuid_v7 millisecond), so match by topic, not order.
+    const byTopic = (t: string) => events.rows.filter((r) => r.topic === t).map((r) => r.payload);
+    expect(events.rows.map((r) => r.topic).sort()).toEqual(['billing.invoice.finalized', 'billing.payment.received']);
+    expect(byTopic('billing.invoice.finalized')[0]).toMatchObject({
       number: created.number,
       facilityId,
       total: 22,
@@ -246,7 +248,7 @@ describe('cross-module contract', () => {
       lines: [{ description: 'Paracetamol 500mg', qty: 10, amount: 22.4 }],
       paid: 22,
     });
-    expect(events.rows[1]!.payload).toMatchObject({ amount: 22, mode: 'cash', kind: 'payment', facilityId, ref: null });
+    expect(byTopic('billing.payment.received')[0]).toMatchObject({ amount: 22, mode: 'cash', kind: 'payment', facilityId, ref: null });
     const price = await db.asTenant({ tenantId }, (tx) => billing.getServicePrice(CONS, null, tx));
     expect(price.price).toBe(450);
   });
@@ -271,6 +273,23 @@ describe('cross-module contract', () => {
     await expect(
       db.asTenant({ tenantId }, (tx) => billing.returnOnInvoice(tx, inv.invoiceId, { amount: 81, reason: 'Too much', refundMode: 'cash' })),
     ).rejects.toThrow();
+  });
+
+  it('takes insurer settlements and disallowance credit notes inside a caller transaction, once per reference', async () => {
+    const billing = app.get(BillingService);
+    const db = app.get(DbService);
+    const inv = await db.asTenant({ tenantId }, (tx) => billing.createInvoice(tx, { patientId, facilityId, lines: [{ serviceCode: CONS }] }));
+    const pay = { mode: 'insurance' as const, amount: 300, reference: `CLM-${tag}` };
+    const p1 = await db.asTenant({ tenantId }, (tx) => billing.collectPaymentTx(tx, inv.invoiceId, pay));
+    const p2 = await db.asTenant({ tenantId }, (tx) => billing.collectPaymentTx(tx, inv.invoiceId, pay));
+    expect(p2.id).toBe(p1.id);
+    expect(p1).toMatchObject({ mode: 'insurance', amount: 300, shiftId: null });
+    const cn = { amount: 100, reason: 'Disallowed by TPA', reference: `DIS-${tag}` };
+    const c1 = await db.asTenant({ tenantId }, (tx) => billing.creditNoteTx(tx, inv.invoiceId, cn));
+    const c2 = await db.asTenant({ tenantId }, (tx) => billing.creditNoteTx(tx, inv.invoiceId, cn));
+    expect(c2.id).toBe(c1.id);
+    const after = (await call(clerk, 'GET', `/billing/invoices/${inv.invoiceId}`)).json();
+    expect(after).toMatchObject({ paidAmount: 300, creditedAmount: 100, balance: 50 });
   });
 
   it('records portal online payments once, keeping any excess as advance', async () => {
