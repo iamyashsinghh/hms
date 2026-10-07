@@ -376,6 +376,9 @@ export interface SaleReturn {
   refundAmount: number;
   refundMode: string | null;
   reason: string | null;
+  /** Set when the sale was invoiced: the billing credit note and, if money went back, the refund receipt. */
+  creditNoteNumber: string | null;
+  billingRefundNumber: string | null;
   createdAt: string;
 }
 
