@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sql } from '@hms/db';
 import { DbService } from '../src/common/db/db.service';
 import { EventBus } from '../src/common/events/event-bus';
+import { PharmacyService } from '../src/modules/pharmacy/pharmacy.service';
 import { bearer, bootApp, login } from './helpers';
 
 let app: NestFastifyApplication;
@@ -359,5 +360,11 @@ describe('pharmacy access control', () => {
     expect(useStore.statusCode).toBe(404);
     const sellMine = await call(otherHospital, 'POST', `/sales/${sale.id}/returns`, { lines: [{ saleLineId: sale.lines[0].id, qty: 1 }] });
     expect(sellMine.statusCode).toBe(404);
+
+    const db = app.get(DbService);
+    const pharmacy = app.get(PharmacyService);
+    const mine = await db.asTenant({ tenantId }, (tx) => pharmacy.getStore(storeId, tx));
+    expect(mine).toMatchObject({ id: storeId, facilityId, name: `Pharmacy ${run}`, type: expect.any(String), isActive: true });
+    await expect(db.asTenant({ tenantId: randomUUID() }, (tx) => pharmacy.getStore(storeId, tx))).rejects.toThrow();
   });
 });

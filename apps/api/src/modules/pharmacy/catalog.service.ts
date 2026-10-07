@@ -97,6 +97,16 @@ export class PharmacyCatalogService {
     });
   }
 
+  /** One store by id (tenant-scoped by RLS). Pass the caller's tx to read inside it. */
+  getStore(id: string, tx?: Tx): Promise<pharmacy.Store> {
+    const read = async (t: Tx) => {
+      const [row] = await t.select().from(pharmacyStores).where(eq(pharmacyStores.id, id)).limit(1);
+      if (!row) throw notFound('Store');
+      return storeDto(row);
+    };
+    return tx ? read(tx) : this.db.tx(read);
+  }
+
   createStore(input: z.output<typeof pharmacy.createStoreSchema>): Promise<pharmacy.Store> {
     const ctx = currentContext()!;
     return this.db.tx(async (tx) => {
