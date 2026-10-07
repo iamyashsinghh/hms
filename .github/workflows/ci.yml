@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: hms
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+    env:
+      DATABASE_MIGRATOR_URL: postgres://hms_migrator:hms_migrator@localhost:5432/hms
+      DATABASE_URL: postgres://hms_app:hms_app@localhost:5432/hms
+      REDIS_URL: redis://localhost:6379
+      JWT_ACCESS_SECRET: ci-only-secret-that-is-at-least-32-characters
+      NODE_ENV: test
+      LOG_LEVEL: silent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Create database roles
+        run: PGPASSWORD=postgres psql -h localhost -U postgres -d hms -f infra/postgres/init.sql
+      - run: pnpm build
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - name: Migrate (twice, to prove re-runs are safe) and seed
+        run: pnpm db:migrate && pnpm db:migrate && pnpm db:seed && pnpm db:seed
+      - name: Tests (RLS coverage, schema drift, API e2e)
+        run: pnpm test

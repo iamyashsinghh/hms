@@ -8,3 +8,6 @@ coverage
 .env
 .env.local
 .pgdata
+tsconfig.tsbuildinfo
+*.tsbuildinfo
+next-env.d.ts

@@ -9,7 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

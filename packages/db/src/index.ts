@@ -2,6 +2,7 @@ export * as schema from './schema';
 export * from './schema';
 export * from './client';
 export * from './counters';
+export * from './time';
 export * from './password';
 export { migrate } from './migrator';
 export * from './provision';

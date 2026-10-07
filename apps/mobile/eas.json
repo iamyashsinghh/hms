@@ -1,0 +1,28 @@
+{
+  "cli": { "version": ">= 16.0.0", "appVersionSource": "remote" },
+  "build": {
+    "base": { "node": "22.22.0", "pnpm": "10.28.0" },
+    "development": { "extends": "base", "distribution": "internal", "env": { "APP_VARIANT": "doctor" } },
+    "preview": { "extends": "base", "distribution": "internal", "android": { "buildType": "apk" }, "env": { "APP_VARIANT": "doctor" } },
+    "production": { "extends": "base", "autoIncrement": true, "env": { "APP_VARIANT": "doctor" } },
+
+    "doctor-development": { "extends": "development", "env": { "APP_VARIANT": "doctor" } },
+    "doctor-preview": { "extends": "preview", "env": { "APP_VARIANT": "doctor" } },
+    "doctor-production": { "extends": "production", "env": { "APP_VARIANT": "doctor" } },
+
+    "staff-development": { "extends": "development", "env": { "APP_VARIANT": "staff" } },
+    "staff-preview": { "extends": "preview", "env": { "APP_VARIANT": "staff" } },
+    "staff-production": { "extends": "production", "env": { "APP_VARIANT": "staff" } },
+
+    "owner-development": { "extends": "development", "env": { "APP_VARIANT": "owner" } },
+    "owner-preview": { "extends": "preview", "env": { "APP_VARIANT": "owner" } },
+    "owner-production": { "extends": "production", "env": { "APP_VARIANT": "owner" } },
+
+    "patient-development": { "extends": "development", "env": { "APP_VARIANT": "patient" } },
+    "patient-preview": { "extends": "preview", "env": { "APP_VARIANT": "patient" } },
+    "patient-production": { "extends": "production", "env": { "APP_VARIANT": "patient" } }
+  },
+  "submit": {
+    "production": {}
+  }
+}
