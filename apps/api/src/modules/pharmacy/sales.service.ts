@@ -25,7 +25,7 @@ import { DbService } from '../../common/db/db.service';
 import { OutboxService } from '../../common/events/outbox.service';
 import { currentContext } from '../../common/context/request-context';
 import { badRequest, conflict, notFound } from '../../common/errors/errors';
-import { PharmacyBillingGateway } from './billing.gateway';
+import { PharmacyBillingGateway, type PharmacyInvoiceInput } from './billing.gateway';
 import { pgCode } from './catalog.service';
 import { lineAmounts, num, refundFor, toPaise, toRupees } from './money';
 import { PharmacyStockService } from './stock.service';
@@ -178,7 +178,7 @@ export class PharmacySalesService {
       });
 
     const totals = { gross: 0, discount: 0, taxable: 0, tax: 0, amount: 0 };
-    const invoiceLines: { itemId: string; description: string; qty: number; unitPrice: number; taxRate: number; discount: number }[] = [];
+    const invoiceLines: PharmacyInvoiceInput['lines'] = [];
     const removed = new Map<string, number>();
     for (const l of req.lines) {
       const item = items.get(l.itemId)!;
@@ -214,14 +214,14 @@ export class PharmacySalesService {
         totals.taxable += amt.taxable;
         totals.tax += amt.tax;
         totals.amount += amt.amount;
-        const exclusive = (p: number) => Number(toRupees(Math.round((p * 100) / (100 + gstRate))));
         invoiceLines.push({
           itemId: item.id,
           description: `${item.name} (batch ${a.batch.batchNo}, exp ${a.batch.expiryDate})`,
+          hsnSac: item.hsnCode ?? undefined,
           qty: a.qty,
-          unitPrice: exclusive(toPaise(a.batch.saleRate)),
+          unitPrice: num(a.batch.saleRate),
           taxRate: gstRate,
-          discount: exclusive(amt.discount),
+          discount: Number(toRupees(amt.discount)),
         });
       }
       removed.set(item.id, (removed.get(item.id) ?? 0) + l.qty);
@@ -234,7 +234,7 @@ export class PharmacySalesService {
           facilityId: store.facilityId,
           source: { module: 'pharmacy', refId: sale!.id },
           lines: invoiceLines,
-          payNow: req.paymentMode === 'credit' ? undefined : { mode: req.paymentMode, amount: Number(toRupees(totals.amount)) },
+          payNow: req.paymentMode === 'credit' ? undefined : { mode: req.paymentMode, ref: number },
         })
       : null;
 

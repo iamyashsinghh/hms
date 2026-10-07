@@ -114,7 +114,7 @@ describe('stock, FEFO sales and returns', () => {
     // 4 x 10 + 2 x 12 = 64.00 incl. 5% GST
     expect(s.total).toBe(64);
     expect(s.taxableAmount + s.taxAmount).toBeCloseTo(64, 2);
-    expect(s.invoiceId).toBeNull();
+    expect(s.invoiceId).toBeNull(); // walk-in: the PH bill is the bill
     expect(await stockOf(item.id)).toBe(8);
 
     const ledger = await call(pharmacist, 'GET', `/stock/ledger?itemId=${item.id}`);
@@ -157,6 +157,21 @@ describe('stock, FEFO sales and returns', () => {
     expect(writeOff.json().balance).toBe(0);
     const again = await call(pharmacist, 'POST', '/stock/adjustments', { storeId, batchId: expired.batchId, qtyChange: -1, reason: 'Oops' });
     expect(again.statusCode).toBe(409);
+  });
+
+  it('invoices OTC sales to registered patients through billing, credit sales stay unpaid', async () => {
+    const item = await newItem();
+    await stockUp(item.id, [{ batchNo: 'INV', expiryDate: daysFromNow(200), mrp: 13.45, qty: 10 }]);
+    const paid = await call(pharmacist, 'POST', '/sales', { storeId, patientId, paymentMode: 'upi', lines: [{ itemId: item.id, qty: 1 }] });
+    expect(paid.statusCode, paid.body).toBe(201);
+    const inv = (await app.inject({ method: 'GET', url: `/api/v1/billing/invoices/${paid.json().invoiceId}`, headers: bearer(admin) })).json();
+    expect(inv.status).toBe('final');
+    expect(inv.paidAmount).toBe(inv.total); // fully paid even when billing rounds to the rupee
+    expect(Math.abs(inv.total - 13.45)).toBeLessThan(1);
+
+    const credit = await call(pharmacist, 'POST', '/sales', { storeId, patientId, paymentMode: 'credit', lines: [{ itemId: item.id, qty: 1 }] });
+    const inv2 = (await app.inject({ method: 'GET', url: `/api/v1/billing/invoices/${credit.json().invoiceId}`, headers: bearer(admin) })).json();
+    expect(inv2.paidAmount).toBe(0);
   });
 
   it('asks for a prescription before selling Schedule H drugs over the counter', async () => {
@@ -258,6 +273,12 @@ describe('prescription dispense queue', () => {
     const part = await call(pharmacist, 'POST', `/prescriptions/${rx.id}/dispense`, { storeId, lines: [{ prescriptionLineId: rx.lines[0].id, qty: 15 }] });
     expect(part.statusCode, part.body).toBe(201);
     expect(part.json()).toMatchObject({ type: 'rx', patientId, total: 30 });
+    // Registered patient: billing raises a final, paid invoice for the dispense.
+    expect(part.json().invoiceId).toEqual(expect.any(String));
+    expect(part.json().invoiceNumber).toEqual(expect.any(String));
+    const inv = await app.inject({ method: 'GET', url: `/api/v1/billing/invoices/${part.json().invoiceId}`, headers: bearer(admin) });
+    expect(inv.statusCode, inv.body).toBe(200);
+    expect(inv.json()).toMatchObject({ status: 'final', total: 30, paidAmount: 30 });
     expect((await call(pharmacist, 'GET', `/prescriptions/${rx.id}`)).json().status).toBe('partial');
 
     // The pharmacist substitutes an item for the unmatched brand.

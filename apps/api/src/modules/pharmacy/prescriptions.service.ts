@@ -64,6 +64,7 @@ export class PharmacyPrescriptionsService {
           source: 'emr',
           patientId: p.patientId,
           doctorId: p.doctorId ?? null,
+          doctorName: p.doctorName ?? null,
           facilityId: p.facilityId ?? null,
           lines: p.lines ?? [],
         });
