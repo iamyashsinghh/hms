@@ -299,16 +299,33 @@ describe('permissions and isolation', () => {
     expect((await call(doctor, 'GET', `/insurance/preauths/${preauthId}`)).statusCode).toBe(200);
   });
 
+  it('needs a plan that includes insurance', async () => {
+    // The seeded 'city' hospital is on the starter plan, which has no insurance module.
+    const res = await app.inject({ method: 'GET', url: '/api/v1/insurance/claims', headers: bearer(otherHospital) } as Inject);
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('plan_upgrade_required');
+  });
+
   it("never shows one hospital's insurance data to another", async () => {
-    const other = (path: string, method = 'GET', payload?: unknown) =>
-      app.inject({ method, url: `/api/v1${path}`, headers: bearer(otherHospital), payload } as Inject);
-    expect((await other(`/insurance/claims/${claimId}`)).statusCode).toBe(404);
-    expect((await other(`/insurance/preauths/${preauthId}`)).statusCode).toBe(404);
-    expect((await other(`/insurance/policies/${policyId}`)).statusCode).toBe(404);
-    expect((await other(`/insurance/payers/${insurerId}`)).statusCode).toBe(404);
-    expect((await other(`/insurance/payers?q=${tag}`)).json().items).toEqual([]);
-    expect((await other(`/insurance/claims?q=${tag}`)).json().items).toEqual([]);
-    expect((await other(`/insurance/policies`, 'POST', { patientId, payerId: insurerId, policyNumber: 'X' })).statusCode).toBe(404);
-    expect((await other(`/insurance/claims/${claimId}/settlements`, 'POST', { settledOn: today, reference: 'UTR', amountPaid: 1 })).statusCode).toBe(404);
+    const me = (await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: bearer(otherHospital) })).json();
+    const db = app.get(DbService);
+    const seen = await db.asTenant({ tenantId: me.tenantId }, (tx) =>
+      tx.execute<{ n: number }>(sql`select
+        (select count(*) from insurance.payers where id = ${insurerId})
+        + (select count(*) from insurance.policies where id = ${policyId})
+        + (select count(*) from insurance.preauths where id = ${preauthId})
+        + (select count(*) from insurance.claims where id = ${claimId})
+        + (select count(*) from insurance.claim_invoices where claim_id = ${claimId})
+        + (select count(*) from insurance.settlements where claim_id = ${claimId}) as n`),
+    );
+    expect(Number(seen.rows[0]!.n)).toBe(0);
+    await expect(
+      db.asTenant({ tenantId: me.tenantId }, (tx) => tx.execute(sql`update insurance.claims set notes = 'x' where id = ${claimId} returning id`)),
+    ).resolves.toMatchObject({ rows: [] });
+    await expect(
+      db.asTenant({ tenantId: me.tenantId }, (tx) =>
+        tx.execute(sql`insert into insurance.payers (tenant_id, code, name, type) values (${tenantId}, ${'X' + tag}, 'Sneaky', 'insurer')`),
+      ),
+    ).rejects.toThrow();
   });
 });

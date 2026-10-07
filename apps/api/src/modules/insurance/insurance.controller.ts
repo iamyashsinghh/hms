@@ -3,12 +3,14 @@ import { insurance as contracts, type Paginated } from '@hms/shared';
 import { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
+import { RequireEntitlement } from '../platform';
 import { InsuranceService } from './insurance.service';
 
 const uuid = new ParseUUIDPipe();
 const packagesQuery = z.object({ all: z.enum(['true', 'false']).default('false') });
 
 @Controller('insurance')
+@RequireEntitlement('insurance')
 export class InsuranceController {
   constructor(private readonly insurance: InsuranceService) {}
 
