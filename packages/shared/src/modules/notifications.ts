@@ -151,6 +151,30 @@ export const DEFAULT_TEMPLATES: readonly TemplateDef[] = [
     },
   },
   {
+    key: 'staff.invited',
+    name: 'Staff invite (login details)',
+    variables: ['hospitalName', 'staffName', 'hospitalCode', 'loginId', 'tempPassword', 'loginUrl'],
+    channels: {
+      sms: { body: 'Dear {{staffName}}, your {{hospitalName}} HMS login: hospital code {{hospitalCode}}, user {{loginId}}, temporary password {{tempPassword}}. Change it after first login.' },
+      email: {
+        subject: 'Your {{hospitalName}} HMS login',
+        body: 'Dear {{staffName}},\n\nAn account has been created for you at {{hospitalName}}.\n\nHospital code: {{hospitalCode}}\nUser: {{loginId}}\nTemporary password: {{tempPassword}}\nSign in: {{loginUrl}}\n\nPlease change your password after the first login.\n\n{{hospitalName}}',
+      },
+    },
+  },
+  {
+    key: 'staff.password_reset',
+    name: 'Staff password reset',
+    variables: ['hospitalName', 'staffName', 'hospitalCode', 'loginId', 'tempPassword', 'loginUrl'],
+    channels: {
+      sms: { body: 'Dear {{staffName}}, your {{hospitalName}} HMS password was reset. Temporary password {{tempPassword}} (hospital code {{hospitalCode}}). Change it after login.' },
+      email: {
+        subject: 'Your {{hospitalName}} HMS password was reset',
+        body: 'Dear {{staffName}},\n\nYour password was reset by the hospital administrator.\n\nHospital code: {{hospitalCode}}\nUser: {{loginId}}\nTemporary password: {{tempPassword}}\nSign in: {{loginUrl}}\n\nIf you did not ask for this, contact your administrator.\n\n{{hospitalName}}',
+      },
+    },
+  },
+  {
     key: 'custom.message',
     name: 'Custom message (typed by staff)',
     variables: ['hospitalName', 'patientName', 'message'],

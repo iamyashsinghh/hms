@@ -287,6 +287,27 @@ describe('notifications: events and rules', () => {
 });
 
 describe('notifications: templates, settings, credits, devices', () => {
+  it('sends staff invite login details for the Setup module', async () => {
+    const svc = app.get(NotificationsService);
+    const db = app.get(DbService);
+    const mobile = uniqueMobile();
+    const res = await requestContext.run({ ...emptyContext('t'), tenantId }, () =>
+      db.tx((tx) =>
+        svc.send(tx, {
+          to: { mobile, email: 'new.staff@example.com' },
+          template: 'staff.invited',
+          data: { staffName: 'Ravi', hospitalCode: 'demo', loginId: 'ravi@demo.hms', tempPassword: 'Tmp@12345', loginUrl: 'https://demo.hms.test/login' },
+          channels: ['sms', 'email'],
+          source: { module: 'setup', refId: 'user-1' },
+        }),
+      ),
+    );
+    expect(res.messages.map((m) => m.status)).toEqual(['queued', 'queued']);
+    const sms = (await api('GET', `/messages/${res.messages[0]!.id}`, admin)).json();
+    expect(sms.body).toContain('temporary password Tmp@12345');
+    expect(sms.body).toContain('Dear Ravi');
+  });
+
   it('lets the admin customise, preview and reset a template', async () => {
     const list = (await api('GET', '/templates', admin)).json();
     expect(list.find((t: { key: string; channel: string }) => t.key === 'appointment.booked' && t.channel === 'sms')).toMatchObject({ isCustom: false });
