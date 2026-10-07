@@ -13,9 +13,7 @@ import {
   frontofficeVisits,
   inArray,
   patients,
-  roles,
   sql,
-  userRoles,
   users,
   type Tx,
 } from '@hms/db';
@@ -60,9 +58,8 @@ const patientBrief = {
 /**
  * Drizzle queries for the front office tables. Always called inside DbService.tx().
  *
- * Reads of clinical.patients, iam.users/roles and setup.facilities are joins for display names and
- * existence checks (PatientsService has no batch/brief API and SetupService has not landed yet).
- * The only write outside our own tables is markPatientMerged(); see the note there.
+ * Reads of clinical.patients, iam.users and setup.facilities are joins for display names and existence checks
+ * (PatientsService and SetupService have no batch lookups). Doctors and schedules come from SetupService.
  */
 @Injectable()
 export class FrontofficeRepository {
@@ -76,18 +73,6 @@ export class FrontofficeRepository {
 
   async patient(tx: Tx, id: string): Promise<PatientBriefRow | undefined> {
     return (await this.patientBriefs(tx, [id])).get(id);
-  }
-
-  /** Staff users holding the system `doctor` role. Replaced by SetupService.listDoctors once setup lands. */
-  async doctors(tx: Tx, ids?: string[]) {
-    const where = and(eq(roles.key, 'doctor'), eq(users.status, 'active'), ids ? inArray(users.id, ids) : undefined);
-    return tx
-      .selectDistinct({ userId: users.id, name: users.name })
-      .from(users)
-      .innerJoin(userRoles, and(eq(userRoles.tenantId, users.tenantId), eq(userRoles.userId, users.id)))
-      .innerJoin(roles, and(eq(roles.tenantId, userRoles.tenantId), eq(roles.id, userRoles.roleId)))
-      .where(where)
-      .orderBy(users.name);
   }
 
   async userNames(tx: Tx, ids: string[]): Promise<Map<string, string>> {
@@ -135,6 +120,39 @@ export class FrontofficeRepository {
       )
       .limit(1);
     return row;
+  }
+
+  /** Live (booked / checked in / with doctor) appointments of this doctor starting exactly at `start`. */
+  async liveCountAt(tx: Tx, doctorId: string, start: string, excludeId?: string): Promise<number> {
+    const [row] = await tx
+      .select({ n: count() })
+      .from(frontofficeAppointments)
+      .where(
+        and(
+          eq(frontofficeAppointments.doctorId, doctorId),
+          inArray(frontofficeAppointments.status, LIVE_APPOINTMENT),
+          sql`${frontofficeAppointments.slotStart} = ${start}::timestamptz`,
+          excludeId ? sql`${frontofficeAppointments.id} <> ${excludeId}` : undefined,
+        ),
+      );
+    return row?.n ?? 0;
+  }
+
+  /** Live appointment counts per start time (ISO) for a doctor in [from, to). */
+  async liveCountsByStart(tx: Tx, doctorId: string, from: string, to: string): Promise<Map<string, number>> {
+    const rows = await tx
+      .select({ start: frontofficeAppointments.slotStart, n: count() })
+      .from(frontofficeAppointments)
+      .where(
+        and(
+          eq(frontofficeAppointments.doctorId, doctorId),
+          inArray(frontofficeAppointments.status, LIVE_APPOINTMENT),
+          sql`${frontofficeAppointments.slotStart} >= ${from}::timestamptz`,
+          sql`${frontofficeAppointments.slotStart} < ${to}::timestamptz`,
+        ),
+      )
+      .groupBy(frontofficeAppointments.slotStart);
+    return new Map(rows.map((r) => [new Date(r.start).toISOString(), r.n]));
   }
 
   async listAppointments(
@@ -288,18 +306,6 @@ export class FrontofficeRepository {
       .returning({ id: frontofficeVisits.id });
     await tx.update(frontofficePatientAbha).set({ patientId: targetId }).where(eq(frontofficePatientAbha.patientId, sourceId));
     return { movedAppointments: appts.length, movedVisits: visits.length };
-  }
-
-  /**
-   * Deactivates the duplicate and points it at the kept record, in the same transaction as the merge.
-   * TODO(foundation): move into a PatientsService.markMerged(tx, sourceId, targetId) so the front office
-   * stops writing clinical.patients directly. Columns is_active / merged_into_id already exist for this.
-   */
-  async markPatientMerged(tx: Tx, sourceId: string, targetId: string, actorId: string | undefined) {
-    await tx
-      .update(patients)
-      .set({ isActive: false, mergedIntoId: targetId, updatedBy: actorId ?? null })
-      .where(eq(patients.id, sourceId));
   }
 
   async insertMerge(tx: Tx, values: typeof frontofficePatientMerges.$inferInsert): Promise<MergeRow> {
