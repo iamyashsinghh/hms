@@ -109,6 +109,7 @@ Owners implement these exactly; callers code against them now. Types go in the o
 | pharmacy | events `pharmacy.dispense.completed {prescriptionId, invoiceId}`, `pharmacy.stock.low {itemId, storeId, qty}` | reports, notifications |
 | notifications | `NotificationsService.send(tx, {to:{patientId? , userId?, mobile?, email?}, template: string, data, channels?: ('sms'|'whatsapp'|'email'|'push')[]})`; `POST /notifications/devices` (push token) | any module, mobile |
 | platform | `@RequireEntitlement('<moduleKey>')` decorator + guard exported from `apps/api/src/modules/platform`; `PlatformService.getPlan(tenantId)` | all modules (add the decorator once platform lands) |
+| inventory | events `inventory.po.approved`, `inventory.grn.posted`, `inventory.indent.issued` (payload types in `packages/shared/src/modules/inventory.ts`) | pharmacy, reports, notifications |
 | reports | `GET /reports/owner-summary?date` → `{opdVisits, newPatients, collections, pendingBills, topDoctors[], …}` | mobile owner app, notifications (7 AM summary) |
 | portal | none consumed by others | — |
 

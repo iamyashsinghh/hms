@@ -12,6 +12,10 @@ export const colors = {
   danger: '#DC2626',
   dangerSoft: '#FEE2E2',
   white: '#FFFFFF',
+  warning: '#B45309',
+  warningSoft: '#FEF3C7',
+  success: '#15803D',
+  successSoft: '#DCFCE7',
 } as const;
 
 export const space = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 } as const;
