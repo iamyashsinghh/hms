@@ -281,6 +281,31 @@ describe('emr check-in event', () => {
   });
 });
 
+describe('emr order status from lab/radiology', () => {
+  it('mirrors department progress on a signed consultation and never moves backwards', async () => {
+    const enc = (await inject('POST', '/emr/encounters', doctor, { patientId })).json();
+    let res = await inject('PUT', `/emr/encounters/${enc.id}/orders`, doctor, { orders: [{ kind: 'radiology', name: 'USG abdomen' }, { kind: 'lab', name: 'LFT' }] });
+    const [usg, lft] = res.json().orders;
+    await inject('PATCH', `/emr/encounters/${enc.id}`, doctor, { notes: { chiefComplaints: 'Pain abdomen' } });
+    expect((await inject('POST', `/emr/encounters/${enc.id}/sign`, doctor)).statusCode).toBe(200);
+
+    const bus = app.get(EventBus);
+    const send = (topic: string, emrOrderId: string, status: string) =>
+      bus.dispatch({ id: randomUUID(), tenantId, topic, payload: { orderId: randomUUID(), emrOrderId, encounterId: enc.id, patientId, status }, createdAt: new Date().toISOString() });
+    await send('radiology.order.status_changed', usg.id, 'acquired');
+    await send('lab.order.status_changed', lft.id, 'verified');
+    res = await inject('GET', `/emr/encounters/${enc.id}`, doctor);
+    expect(res.json().orders.map((o: { status: string }) => o.status)).toEqual(['in_progress', 'completed']);
+
+    await send('radiology.order.status_changed', usg.id, 'finalized');
+    await send('radiology.order.status_changed', usg.id, 'scheduled'); // late duplicate
+    await send('lab.order.status_changed', lft.id, 'cancelled'); // after completion
+    await send('radiology.order.status_changed', randomUUID(), 'finalized'); // unknown order
+    res = await inject('GET', `/emr/encounters/${enc.id}`, doctor);
+    expect(res.json().orders.map((o: { status: string }) => o.status)).toEqual(['completed', 'completed']);
+  });
+});
+
 describe('emr hospital isolation', () => {
   it("never shows or changes one hospital's consultations from another", async () => {
     const enc = (await inject('POST', '/emr/encounters', doctor, { patientId })).json();

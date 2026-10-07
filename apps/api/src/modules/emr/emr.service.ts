@@ -60,6 +60,36 @@ export interface VisitCheckedIn {
   tokenNo?: number | null;
 }
 
+/**
+ * Payload of radiology.order.status_changed / lab.order.status_changed (owned by those modules).
+ * emrOrderId is the clinical.encounter_orders id the order was created from.
+ */
+export interface OrderStatusChanged {
+  orderId: string;
+  emrOrderId?: string | null;
+  encounterId?: string | null;
+  patientId: string;
+  status: string;
+}
+
+/** Department status -> EMR order status. Unknown statuses are ignored. */
+const ORDER_STATUS_MAP: Record<string, 'ordered' | 'in_progress' | 'completed' | 'cancelled'> = {
+  ordered: 'ordered',
+  scheduled: 'in_progress',
+  in_progress: 'in_progress',
+  acquired: 'in_progress',
+  reported: 'in_progress',
+  collected: 'in_progress',
+  received: 'in_progress',
+  processing: 'in_progress',
+  resulted: 'in_progress',
+  finalized: 'completed',
+  verified: 'completed',
+  completed: 'completed',
+  cancelled: 'cancelled',
+};
+const ORDER_STATUS_RANK = { ordered: 0, in_progress: 1, completed: 2, cancelled: 3 } as const;
+
 @Injectable()
 export class EmrService {
   constructor(
@@ -379,6 +409,19 @@ export class EmrService {
     }
     const enc = input.sign ? await this.sign(encounterId) : await this.get(encounterId, false);
     return { prescriptionId: enc.prescription!.id, encounterId, rxNo: enc.prescription!.rxNo };
+  }
+
+  /** Mirrors a lab/radiology order's progress onto the EMR order line. Out-of-order or repeated events are harmless. */
+  async mirrorOrderStatus(e: OrderStatusChanged): Promise<void> {
+    const next = ORDER_STATUS_MAP[e.status];
+    if (!e.emrOrderId || !next) return;
+    await this.db.tx(async (tx) => {
+      const order = await this.repo.findOrder(tx, e.emrOrderId!);
+      if (!order || order.patientId !== e.patientId || (e.encounterId && order.encounterId !== e.encounterId)) return;
+      const current = order.status as keyof typeof ORDER_STATUS_RANK;
+      if (current === 'cancelled' || current === 'completed' || ORDER_STATUS_RANK[next] <= ORDER_STATUS_RANK[current]) return;
+      await this.repo.setOrderStatus(tx, order.id, next);
+    });
   }
 
   // ---------- reads ----------
