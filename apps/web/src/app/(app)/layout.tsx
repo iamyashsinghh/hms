@@ -6,6 +6,7 @@ import { Loader2 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { Sidebar } from '@/components/shell/sidebar';
 import { Header } from '@/components/shell/header';
+import { AnnouncementsBanner } from '@/modules/platform/ui';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { status } = useAuth();
@@ -39,7 +40,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </div>
       )}
       <Header onMenu={() => setNavOpen(true)} />
-      <main className="mx-auto max-w-7xl p-4 sm:p-6 lg:p-8">{children}</main>
+      <main className="mx-auto max-w-7xl p-4 sm:p-6 lg:p-8">
+        <AnnouncementsBanner className="mb-4" />
+        {children}
+      </main>
     </div>
   );
 }

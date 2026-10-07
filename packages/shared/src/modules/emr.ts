@@ -402,6 +402,9 @@ export interface EncounterSignedEvent {
   encounterId: string;
   patientId: string;
   doctorId: string;
+  /** YYYY-MM-DD, when the doctor asked the patient to come back. */
+  followUpDate?: string | null;
+  followUpNotes?: string | null;
 }
 
 export interface PrescriptionCreatedEvent {
