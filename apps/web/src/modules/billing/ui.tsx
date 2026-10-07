@@ -50,7 +50,8 @@ export const formatDateTime = (iso: string | null | undefined) =>
 
 export const todayIST = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
-export const MODE_LABELS: Record<B.SettlementMode, string> = {
+export const MODE_LABELS: Record<B.ReceiptMode, string> = {
+  online: 'Online',
   cash: 'Cash',
   upi: 'UPI',
   card: 'Card',
