@@ -70,6 +70,8 @@ export type InvoiceStatus = (typeof INVOICE_STATUSES)[number];
 export type PaymentMode = (typeof PAYMENT_MODES)[number];
 export type SettlementMode = (typeof SETTLEMENT_MODES)[number];
 export type PaymentKind = (typeof PAYMENT_KINDS)[number];
+/** Modes that can appear on a receipt: staff-entered modes plus 'online' (payment gateway via the patient portal). */
+export type ReceiptMode = SettlementMode | 'online';
 export type PaymentStatus = 'unpaid' | 'partial' | 'paid';
 
 const taxRate = z.coerce.number().refine((v) => (GST_RATES as readonly number[]).includes(v), 'Use a GST slab: 0, 0.1, 0.25, 3, 5, 12, 18, 28 or 40');
@@ -371,7 +373,7 @@ export interface Payment {
   facilityId: string;
   patientId: string;
   invoiceId: string | null;
-  mode: SettlementMode;
+  mode: ReceiptMode;
   amount: number;
   reference: string | null;
   notes: string | null;
@@ -406,6 +408,31 @@ export const creditNoteSchema = z.object({
 });
 export type CreditNoteInput = z.input<typeof creditNoteSchema>;
 
+/**
+ * BillingService.returnOnInvoice (cross-module, e.g. pharmacy returns): credits `amount` against a final
+ * invoice. If more than the unpaid balance is credited, the excess is refunded first with `refundMode`.
+ */
+export const invoiceReturnSchema = z.object({
+  amount: positiveMoney,
+  reason: z.string().trim().min(3).max(500),
+  /** Needed when part of the amount was already paid and must go back to the patient. */
+  refundMode: z.enum(PAYMENT_MODES).optional(),
+  /** Caller's id for this return (e.g. pharmacy return id). Repeating it returns the first result. */
+  reference: z.string().trim().min(1).max(100).optional(),
+});
+export type InvoiceReturnInput = z.input<typeof invoiceReturnSchema>;
+
+export interface InvoiceReturnResult {
+  invoiceId: string;
+  creditNoteId: string;
+  creditNoteNumber: string;
+  refundId: string | null;
+  refundNumber: string | null;
+  refundAmount: number;
+  /** Invoice balance after the return. */
+  balance: number;
+}
+
 export interface CreditNote {
   id: string;
   number: string;
@@ -413,6 +440,7 @@ export interface CreditNote {
   patientId: string;
   amount: number;
   reason: string;
+  reference: string | null;
   createdAt: string;
 }
 
@@ -453,15 +481,31 @@ export interface InvoiceFinalizedEvent {
   doctorId: string | null;
   invoiceDate: string;
   lines: { serviceCode: string | null; itemId: string | null; description: string; qty: number; amount: number }[];
+  /** Amount already paid at finalization (payNow / earlier receipts). */
+  paid: number;
+  finalizedAt: string;
 }
 export interface PaymentReceivedEvent {
   paymentId: string;
   invoiceId: string | null;
   patientId: string;
   amount: number;
-  mode: SettlementMode;
+  mode: ReceiptMode;
   kind: 'payment' | 'deposit';
   facilityId: string;
+  /** Receipt reference; for portal payments this is the payment intent id. */
+  ref: string | null;
+}
+
+/** `portal.payment.captured` as published by the portal module (billing records it). */
+export interface PortalPaymentCaptured {
+  intentId: string;
+  invoiceId: string;
+  patientId: string;
+  amount: string | number;
+  mode: 'online';
+  provider?: string;
+  providerPaymentId: string;
 }
 export interface RefundIssuedEvent {
   paymentId: string;

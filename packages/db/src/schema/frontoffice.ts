@@ -2,7 +2,6 @@
  * Front Office tables. Owned by the "frontoffice" workstream (Postgres schema: clinical).
  * SQL: migrations/20261007070000_frontoffice_init.sql.
  */
-import { sql } from 'drizzle-orm';
 import { boolean, date, index, integer, jsonb, primaryKey, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { actorColumns, clinical, idColumn, tenantIdColumn, timestamps } from './_common';
 
@@ -34,9 +33,6 @@ export const frontofficeAppointments = clinical.table(
     uniqueIndex('appointments_no_uq').on(t.tenantId, t.appointmentNo),
     index('appointments_doctor_day_idx').on(t.tenantId, t.doctorId, t.slotStart),
     index('appointments_facility_day_idx').on(t.tenantId, t.facilityId, t.slotStart),
-    uniqueIndex('appointments_slot_uq')
-      .on(t.tenantId, t.doctorId, t.slotStart)
-      .where(sql`status IN ('booked', 'checked_in', 'in_consultation')`),
   ],
 );
 

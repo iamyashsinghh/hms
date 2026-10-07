@@ -13,15 +13,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { DoctorSelect, ErrorBox, PatientPicker, StatusBadge, istToday, label, timeOf } from '@/modules/frontoffice/ui';
+import { DoctorSelect, ErrorBox, PatientPicker, SlotPicker, StatusBadge, istToday, label, timeOf } from '@/modules/frontoffice/ui';
 
 const shiftDate = (d: string, days: number) => {
   const x = new Date(`${d}T12:00:00Z`);
   x.setUTCDate(x.getUTCDate() + days);
   return x.toISOString().slice(0, 10);
 };
-/** Date + HH:MM in IST to an ISO timestamp. */
-const istSlot = (date: string, time: string) => new Date(`${date}T${time}:00+05:30`).toISOString();
 
 export default function AppointmentsPage() {
   const canRead = usePermission('frontoffice.appointment.read');
@@ -251,25 +249,16 @@ function BookCard({
   const [patient, setPatient] = React.useState<Patient | null>(null);
   const [doctorId, setDoctorId] = React.useState(defaultDoctorId);
   const [date, setDate] = React.useState(defaultDate);
-  const [time, setTime] = React.useState('10:00');
-  const [duration, setDuration] = React.useState(fo.DEFAULT_SLOT_MINUTES);
+  const [slotStart, setSlotStart] = React.useState('');
   const [type, setType] = React.useState<fo.AppointmentType>('new');
   const [reason, setReason] = React.useState('');
-
-  const booked = useQuery({
-    queryKey: ['frontoffice', 'appointments', { date, doctorId, booked: true }],
-    queryFn: () => api.frontoffice.appointments.list({ date, doctorId, pageSize: 200 }),
-    enabled: !!doctorId,
-  });
-  const taken = booked.data?.items.filter((a) => ['booked', 'checked_in', 'in_consultation'].includes(a.status)) ?? [];
 
   const book = useMutation({
     mutationFn: () =>
       api.frontoffice.appointments.book({
         patientId: patient!.id,
         doctorId,
-        slotStart: istSlot(date, time),
-        durationMinutes: duration,
+        slotStart,
         type,
         reason: reason || undefined,
       }),
@@ -294,7 +283,14 @@ function BookCard({
         <div>
           <Label htmlFor="b-doctor">Doctor</Label>
           <div className="mt-1">
-            <DoctorSelect id="b-doctor" value={doctorId} onChange={setDoctorId} />
+            <DoctorSelect
+              id="b-doctor"
+              value={doctorId}
+              onChange={(d) => {
+                setDoctorId(d);
+                setSlotStart('');
+              }}
+            />
           </div>
         </div>
         <div>
@@ -307,40 +303,30 @@ function BookCard({
             ))}
           </Select>
         </div>
-        <div className="grid grid-cols-3 gap-2">
-          <div className="col-span-1">
-            <Label htmlFor="b-date">Date</Label>
-            <Input id="b-date" type="date" className="mt-1" value={date} min={istToday()} onChange={(e) => setDate(e.target.value)} />
-          </div>
-          <div>
-            <Label htmlFor="b-time">Time</Label>
-            <Input id="b-time" type="time" step={300} className="mt-1" value={time} onChange={(e) => setTime(e.target.value)} />
-          </div>
-          <div>
-            <Label htmlFor="b-dur">Minutes</Label>
-            <Input id="b-dur" type="number" min={5} max={240} step={5} className="mt-1" value={duration} onChange={(e) => setDuration(Number(e.target.value))} />
-          </div>
+        <div>
+          <Label htmlFor="b-date">Date</Label>
+          <Input
+            id="b-date"
+            type="date"
+            className="mt-1"
+            value={date}
+            min={istToday()}
+            onChange={(e) => {
+              setDate(e.target.value);
+              setSlotStart('');
+            }}
+          />
         </div>
         <div>
           <Label htmlFor="b-reason">Reason</Label>
           <Input id="b-reason" className="mt-1" placeholder="Optional" value={reason} onChange={(e) => setReason(e.target.value)} />
         </div>
-        {doctorId && (
-          <div className="text-xs text-muted-foreground md:col-span-2">
-            {taken.length ? (
-              <>
-                Already booked that day:{' '}
-                {taken.map((a) => (
-                  <span key={a.id} className="mr-2 inline-block rounded bg-muted px-1.5 py-0.5 tabular-nums">
-                    {timeOf(a.slotStart)}–{timeOf(a.slotEnd)}
-                  </span>
-                ))}
-              </>
-            ) : (
-              'No bookings yet for this doctor on that day.'
-            )}
+        <div className="md:col-span-2">
+          <Label>Time</Label>
+          <div className="mt-2">
+            <SlotPicker doctorId={doctorId} date={date} value={slotStart} onChange={setSlotStart} />
           </div>
-        )}
+        </div>
         <div className="md:col-span-2">
           <ErrorBox error={book.error} />
         </div>
@@ -348,7 +334,7 @@ function BookCard({
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          <Button disabled={!patient || !doctorId || book.isPending} onClick={() => book.mutate()}>
+          <Button disabled={!patient || !doctorId || !slotStart || book.isPending} onClick={() => book.mutate()}>
             {book.isPending && <Loader2 className="animate-spin" />}
             Book
           </Button>
@@ -362,13 +348,13 @@ function RescheduleCard({ appointment, onClose, onDone }: { appointment: fo.Appo
   const start = new Date(appointment.slotStart);
   const ist = new Date(start.getTime() + 330 * 60_000).toISOString();
   const [date, setDate] = React.useState(ist.slice(0, 10));
-  const [time, setTime] = React.useState(ist.slice(11, 16));
+  const [slotStart, setSlotStart] = React.useState('');
   const [doctorId, setDoctorId] = React.useState(appointment.doctorId);
   const [reason, setReason] = React.useState('');
   const save = useMutation({
     mutationFn: () =>
       api.frontoffice.appointments.reschedule(appointment.id, {
-        slotStart: istSlot(date, time),
+        slotStart,
         doctorId: doctorId !== appointment.doctorId ? doctorId : undefined,
         reason: reason || undefined,
       }),
@@ -387,21 +373,40 @@ function RescheduleCard({ appointment, onClose, onDone }: { appointment: fo.Appo
       <CardContent className="grid gap-4 md:grid-cols-4">
         <div>
           <Label htmlFor="r-date">Date</Label>
-          <Input id="r-date" type="date" className="mt-1" min={istToday()} value={date} onChange={(e) => setDate(e.target.value)} />
-        </div>
-        <div>
-          <Label htmlFor="r-time">Time</Label>
-          <Input id="r-time" type="time" step={300} className="mt-1" value={time} onChange={(e) => setTime(e.target.value)} />
+          <Input
+            id="r-date"
+            type="date"
+            className="mt-1"
+            min={istToday()}
+            value={date}
+            onChange={(e) => {
+              setDate(e.target.value);
+              setSlotStart('');
+            }}
+          />
         </div>
         <div>
           <Label htmlFor="r-doctor">Doctor</Label>
           <div className="mt-1">
-            <DoctorSelect id="r-doctor" value={doctorId} onChange={setDoctorId} />
+            <DoctorSelect
+              id="r-doctor"
+              value={doctorId}
+              onChange={(d) => {
+                setDoctorId(d);
+                setSlotStart('');
+              }}
+            />
           </div>
         </div>
         <div>
           <Label htmlFor="r-reason">Reason</Label>
           <Input id="r-reason" className="mt-1" value={reason} onChange={(e) => setReason(e.target.value)} />
+        </div>
+        <div className="md:col-span-4">
+          <Label>New time</Label>
+          <div className="mt-2">
+            <SlotPicker doctorId={doctorId} date={date} value={slotStart} onChange={setSlotStart} />
+          </div>
         </div>
         <div className="md:col-span-4">
           <ErrorBox error={save.error} />
@@ -410,7 +415,7 @@ function RescheduleCard({ appointment, onClose, onDone }: { appointment: fo.Appo
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          <Button disabled={save.isPending || !doctorId} onClick={() => save.mutate()}>
+          <Button disabled={save.isPending || !doctorId || !slotStart} onClick={() => save.mutate()}>
             {save.isPending && <Loader2 className="animate-spin" />}
             Save
           </Button>
