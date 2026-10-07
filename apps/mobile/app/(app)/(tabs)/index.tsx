@@ -11,7 +11,7 @@ export default function HomeScreen() {
   if (!user) return null;
 
   const facility = user.facilities.find((f) => f.id === facilityId);
-  const screens = availableScreens(variant.key, user.permissions);
+  const screens = availableScreens(variant.key, user.permissions, user.roles);
   const builtIn = [
     variant.tabs.includes('patients') && can('core.patient.read')
       ? { title: 'Patients', description: 'Search patients by name, UHID or mobile', route: '/patients' }
