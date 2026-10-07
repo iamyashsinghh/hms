@@ -3,6 +3,7 @@ import { billing as contracts, type Paginated } from '@hms/shared';
 import { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
+import { RequireEntitlement } from '../platform';
 import { BillingService } from './billing.service';
 
 const uuid = new ParseUUIDPipe();
@@ -16,6 +17,7 @@ const shiftQuery = z.object({
 });
 
 @Controller('billing')
+@RequireEntitlement('billing')
 export class BillingController {
   constructor(private readonly billing: BillingService) {}
 
