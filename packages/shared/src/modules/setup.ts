@@ -260,6 +260,9 @@ export interface Doctor {
   specialization: string | null;
   qualification: string | null;
   registrationNo: string | null;
+  registrationCouncil: string | null;
+  /** Image URL for printed prescriptions. */
+  signatureUrl: string | null;
   consultationFee?: number;
   followUpFee?: number;
   followUpDays?: number;

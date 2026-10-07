@@ -135,7 +135,7 @@ describe('users, doctors, schedules', () => {
   it('lists doctors per the cross-module contract', async () => {
     const all = (await call(reception, 'GET', '/setup/doctors')).body as { userId: string; name: string; consultationFee?: number; departmentId: string | null }[];
     const mine = all.find((d) => d.userId === doctorId);
-    expect(mine).toMatchObject({ departmentId, consultationFee: 500, specialization: null });
+    expect(mine).toMatchObject({ departmentId, consultationFee: 500, specialization: null, registrationNo: `MMC-${run}`, signatureUrl: null });
     // The seeded doctor has the doctor role but no profile yet; still listed.
     expect(all.some((d) => d.name === 'Dr. Asha Rao')).toBe(true);
 

@@ -333,6 +333,8 @@ function doctorDto(r: StaffRow): S.Doctor {
     specialization: r.specialization_name,
     qualification: r.qualification,
     registrationNo: r.registration_no,
+    registrationCouncil: r.registration_council,
+    signatureUrl: r.signature_url,
   };
   if (r.consultation_fee !== null) d.consultationFee = Number(r.consultation_fee);
   if (r.follow_up_fee !== null) d.followUpFee = Number(r.follow_up_fee);
