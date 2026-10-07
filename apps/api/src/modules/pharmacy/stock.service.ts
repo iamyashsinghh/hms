@@ -379,7 +379,7 @@ export class PharmacyStockService {
           left join inventory.stock_balances b on b.tenant_id = i.tenant_id and b.item_id = i.id and b.store_id = ${q.storeId}
           left join inventory.batches bt on bt.tenant_id = b.tenant_id and bt.id = b.batch_id
          where i.is_active ${search}
-         group by i.id`;
+         group by i.tenant_id, i.id`;
       const filtered = q.lowOnly ? sql`select * from (${base}) s where s.qty <= s.reorder_level` : sql`select * from (${base}) s`;
       const [rows, totals] = await Promise.all([
         tx.execute<StockSqlRow>(sql`${filtered} order by name limit ${q.pageSize} offset ${(q.page - 1) * q.pageSize}`),

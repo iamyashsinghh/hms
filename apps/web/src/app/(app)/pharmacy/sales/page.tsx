@@ -50,7 +50,7 @@ export default function SalesPage() {
         description={data ? `Net of returns on this page: ${inr(pageTotal)}` : undefined}
         actions={
           <Can permission="pharmacy.sale.create">
-            <Link href="/pharmacy/sales/new" className={buttonVariants()}>
+            <Link href="/pharmacy/pos" className={buttonVariants()}>
               <Plus /> New sale
             </Link>
           </Can>

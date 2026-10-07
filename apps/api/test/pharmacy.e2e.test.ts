@@ -120,6 +120,16 @@ describe('stock, FEFO sales and returns', () => {
     const ledger = await call(pharmacist, 'GET', `/stock/ledger?itemId=${item.id}`);
     const types = ledger.json().items.map((e: { txnType: string; qtyChange: number }) => `${e.txnType}:${e.qtyChange}`);
     expect(types).toEqual(expect.arrayContaining(['sale:-4', 'sale:-2', 'opening:10', 'opening:4', 'opening:50']));
+
+    const stock = await call(pharmacist, 'GET', `/stock?storeId=${storeId}&q=${encodeURIComponent(item.code)}`);
+    expect(stock.statusCode, stock.body).toBe(200);
+    expect(stock.json().items[0]).toMatchObject({ itemId: item.id, qty: 8, expiredQty: 50, nearestExpiry: daysFromNow(400) });
+    const low = await call(pharmacist, 'GET', `/stock?storeId=${storeId}&lowOnly=true&pageSize=200`);
+    expect(low.statusCode, low.body).toBe(200);
+    const sales = await call(pharmacist, 'GET', `/sales?q=${s.number.toLowerCase()}`);
+    expect(sales.json().items.map((x: { id: string }) => x.id)).toEqual([s.id]);
+    const today = await call(pharmacist, 'GET', `/sales?type=otc&from=${daysFromNow(-1)}&to=${daysFromNow(1)}`);
+    expect(today.json().total).toBeGreaterThan(0);
   });
 
   it('never goes negative and refuses expired batches', async () => {
@@ -171,6 +181,7 @@ describe('stock, FEFO sales and returns', () => {
     expect(grn.json().number).toMatch(/^GRN\d{6}$/);
     expect(grn.json().totalAmount).toBe(126); // 10 x 12 + 5% GST; free units cost nothing
     expect(await stockOf(item.id)).toBe(12);
+    expect((await call(pharmacist, 'GET', '/grns')).json().items[0].id).toBe(grn.json().id);
     const detail = await call(pharmacist, 'GET', `/grns/${grn.json().id}`);
     expect(detail.json().lines[0]).toMatchObject({ batchNo: 'G1', qty: 10, freeQty: 2 });
 
