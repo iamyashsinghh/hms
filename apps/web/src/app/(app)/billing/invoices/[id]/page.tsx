@@ -17,7 +17,8 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ErrorBox, Field, InvoiceStatusBadge, MODE_LABELS, formatDateTime, formatINR } from '@/modules/billing/ui';
+import { SuggestedCredits } from '@/modules/billing/reversals';
+import { ErrorBox, Field, InvoiceStatusBadge, MODE_LABELS, formatDateTime, formatINR, sourceLabel } from '@/modules/billing/ui';
 
 export default function InvoicePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -26,6 +27,14 @@ export default function InvoicePage({ params }: { params: Promise<{ id: string }
   const queryClient = useQueryClient();
   const key = ['billing', 'invoices', id];
   const { data: inv, isPending, error } = useQuery({ queryKey: key, queryFn: () => api.billing.invoices.get(id), enabled: canRead });
+  const departments = useLineDepartments(inv);
+  // Charges on this bill whose order was cancelled afterwards: a credit note is suggested.
+  const { data: account } = useQuery({
+    queryKey: ['billing', 'charges', 'patient', inv?.patientId],
+    queryFn: () => api.billing.charges.forPatient(inv!.patientId),
+    enabled: canRead && inv?.status === 'final',
+  });
+  const reversals = (account?.reversals ?? []).filter((c) => c.invoiceId === id);
 
   const done = (next: B.Invoice) => {
     queryClient.setQueryData(key, next);
@@ -118,8 +127,7 @@ export default function InvoicePage({ params }: { params: Promise<{ id: string }
                     <TableCell>
                       <div className="font-medium">{l.description}</div>
                       <div className="text-xs text-muted-foreground">
-                        {l.serviceCode}
-                        {l.hsnSac && ` · HSN/SAC ${l.hsnSac}`}
+                        {[departments.get(l.lineNo), l.serviceCode, l.hsnSac && `HSN/SAC ${l.hsnSac}`].filter(Boolean).join(' · ')}
                       </div>
                     </TableCell>
                     <TableCell className="text-right tabular-nums">{l.qty}</TableCell>
@@ -134,6 +142,8 @@ export default function InvoicePage({ params }: { params: Promise<{ id: string }
               </TableBody>
             </Table>
           </Card>
+
+          <SuggestedCredits reversals={reversals} showBill={false} onDone={done} />
 
           {(inv.payments.length > 0 || inv.creditNotes.length > 0) && (
             <Card>
@@ -235,6 +245,29 @@ export default function InvoicePage({ params }: { params: Promise<{ id: string }
       </div>
     </div>
   );
+}
+
+/**
+ * Bill line → department that posted its charge (line number → label). Charges carry their bill but
+ * not their line number, so each charge is matched to the first unmatched line with the same
+ * description and quantity.
+ */
+function useLineDepartments(inv: B.Invoice | undefined): Map<number, string> {
+  const { data } = useQuery({
+    queryKey: ['billing', 'charges', { patientId: inv?.patientId, status: 'billed' }],
+    queryFn: () => api.billing.charges.list({ patientId: inv!.patientId, status: 'billed', pageSize: 500 }),
+    enabled: !!inv && inv.status !== 'draft',
+  });
+  return React.useMemo(() => {
+    const out = new Map<number, string>();
+    if (!inv || !data) return out;
+    const charges = data.items.filter((c) => c.invoiceId === inv.id);
+    for (const c of charges) {
+      const line = inv.lines.find((l) => !out.has(l.lineNo) && l.description === c.description && l.qty === c.qty);
+      if (line) out.set(line.lineNo, sourceLabel(c.sourceModule));
+    }
+    return out;
+  }, [inv, data]);
 }
 
 function Row({ label, value }: { label: string; value: number }) {

@@ -12,6 +12,7 @@ import { NoAccess } from '@/components/no-access';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { SettingsTabs } from '@/modules/billing/tabs';
 import { ErrorBox, Field } from '@/modules/billing/ui';
 
 type Form = Record<Exclude<keyof B.BillingSettings, 'roundOff'>, string> & { roundOff: boolean };
@@ -37,6 +38,7 @@ export default function BillingSettingsPage() {
   return (
     <div className="max-w-3xl">
       <PageHeader title="Billing settings" description="What prints on every bill, and the UPI ID used for the pay-by-QR code." />
+      <SettingsTabs />
       {error && <ErrorBox error={errorMessage(error)} />}
       {data && <SettingsForm initial={data} onSaved={(next) => queryClient.setQueryData(['billing', 'settings'], next)} />}
     </div>

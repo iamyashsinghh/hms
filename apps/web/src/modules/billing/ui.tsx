@@ -73,6 +73,26 @@ export const CATEGORY_LABELS: Record<B.ServiceCategory, string> = {
   other: 'Other',
 };
 
+/** Department a charge came from (charge.sourceModule), as the billing desk shows it. */
+export const SOURCE_LABELS: Record<string, string> = {
+  frontoffice: 'Front office',
+  opd: 'OPD',
+  emr: "Doctor's orders",
+  lab: 'Lab',
+  radiology: 'Radiology',
+  pharmacy: 'Pharmacy',
+  ipd: 'IPD',
+  ot: 'OT',
+  inventory: 'Store issue',
+  ops: 'Ambulance',
+  ambulance: 'Ambulance',
+  billing: 'Billing desk',
+  setup: 'Registration',
+};
+export const sourceLabel = (module: string) => SOURCE_LABELS[module] ?? module.charAt(0).toUpperCase() + module.slice(1);
+
+export const ACCOUNT_LABELS: Record<B.ChargeAccount, string> = { opd: 'OPD', ipd: 'IPD', other: 'Other' };
+
 export function InvoiceStatusBadge({ inv }: { inv: Pick<B.InvoiceSummary, 'status' | 'paymentStatus'> }) {
   if (inv.status === 'draft') return <Badge variant="secondary">Draft</Badge>;
   if (inv.status === 'cancelled') return <Badge variant="destructive">Cancelled</Badge>;
