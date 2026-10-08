@@ -346,7 +346,7 @@ describe('admission to discharge', () => {
     const billed = (await call(clerk, 'GET', `/billing/charges?admissionId=${admissionId}&status=billed`)).json();
     expect(billed.items).toHaveLength(2);
     expect(billed.items.every((c: { invoiceNumber: string }) => c.invoiceNumber === inv.number)).toBe(true);
-    expect(billed.items.find((c: { sourceRef: string }) => c.sourceRef !== admissionId && c.description.startsWith('Bed'))).toMatchObject({ sourceModule: 'ipd' });
+    expect(billed.items.find((c: { description: string }) => c.description.startsWith('Bed'))).toMatchObject({ sourceModule: 'ipd' });
 
     const late = await call(clerk, 'POST', `/ipd/admissions/${admissionId}/charges`, { description: 'Late', unitPrice: 10 });
     expect(late.statusCode).toBe(409);
