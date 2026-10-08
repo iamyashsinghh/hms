@@ -92,7 +92,7 @@ export default function QueuePage() {
             {canManage && (
               <div className="w-36">
                 <Label htmlFor="q-room">Room for calls</Label>
-                <Input id="q-room" className="mt-1" placeholder="e.g. Cabin 2" value={room} onChange={(e) => setRoom(e.target.value)} />
+                <Input id="q-room" className="mt-1" placeholder="e.g. Cabin 2" maxLength={40} value={room} onChange={(e) => setRoom(e.target.value)} />
               </div>
             )}
             {s && (

@@ -395,6 +395,41 @@ describe('frontoffice: duplicates, merge and ABHA', () => {
   });
 });
 
+describe('frontoffice: validation messages', () => {
+  const bad = async (method: 'GET' | 'POST', url: string, payload: Record<string, unknown> | undefined, message: string) => {
+    const res = await app.inject({ method, url, headers: h(reception), payload });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toContain(message);
+  };
+
+  it('explains bad ABHA numbers and addresses', async () => {
+    const p = await newPatient();
+    await bad('POST', `/api/v1/frontoffice/patients/${p.id}/abha`, { abhaNumber: '9112345678901' }, 'ABHA number has 14 digits');
+    await bad('POST', `/api/v1/frontoffice/patients/${p.id}/abha`, { abhaNumber: '91123456789012', abhaAddress: 'no at sign' }, 'Enter an ABHA address like name@abdm');
+  });
+
+  it('needs a real reason to merge or cancel, and two different patients', async () => {
+    const a = await newPatient();
+    const b = await newPatient();
+    const merge = (payload: Record<string, unknown>) => app.inject({ method: 'POST', url: '/api/v1/frontoffice/patients/merge', headers: h(admin), payload });
+    let res = await merge({ sourcePatientId: a.id, targetPatientId: b.id, reason: 'ab' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toContain('Reason needs at least 3 characters');
+    res = await merge({ sourcePatientId: a.id, targetPatientId: a.id, reason: 'Registered twice' });
+    expect(res.json().error.message).toContain('Pick two different patients');
+
+    const appt = await bookFree(a.id, 60 * 24 * 14);
+    await bad('POST', `/api/v1/frontoffice/appointments/${appt.id}/cancel`, { reason: '   ' }, 'Give a reason for cancelling');
+  });
+
+  it('checks walk-in, token and list inputs', async () => {
+    await bad('POST', '/api/v1/frontoffice/walk-ins', { doctorId }, 'Pick a patient');
+    const p = await newPatient();
+    await bad('POST', '/api/v1/frontoffice/walk-ins', { patientId: p.id, doctorId, priority: 'vip' }, 'Pick a priority');
+    await bad('GET', '/api/v1/frontoffice/appointments?from=2026-05-10&to=2026-05-01', undefined, 'End date is before start date');
+  });
+});
+
 describe('frontoffice: hospital isolation', () => {
   it("never shows or changes one hospital's appointments and queue from another", async () => {
     const p = await newPatient();

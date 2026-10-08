@@ -261,7 +261,7 @@ export class AccessService {
   private async checkAssignments(tx: Tx, assignments: S.RoleAssignmentInput[]): Promise<string[]> {
     const roleIds = [...new Set(assignments.map((a) => a.roleId))];
     const found = await tx.select({ id: roles.id, key: roles.key }).from(roles).where(inArray(roles.id, roleIds));
-    if (found.length !== roleIds.length) throw badRequest('invalid_role', 'S.Role not found');
+    if (found.length !== roleIds.length) throw badRequest('invalid_role', 'Role not found');
     if (found.some((r) => r.key === ADMIN_ROLE) && !ctx().roles.includes(ADMIN_ROLE)) {
       throw forbidden('Only a hospital admin can give the Hospital Admin role');
     }
@@ -325,7 +325,7 @@ export class AccessService {
 
   private async readRole(tx: Tx, id: string): Promise<S.Role> {
     const [role] = await this.readRoles(tx, id);
-    if (!role) throw notFound('S.Role');
+    if (!role) throw notFound('Role');
     return role;
   }
 
@@ -373,7 +373,7 @@ export class AccessService {
     const found = await tx.select({ key: permissions.key }).from(permissions).where(inArray(permissions.key, keys));
     const known = new Set(found.map((f) => f.key));
     const unknown = keys.filter((k) => !known.has(k));
-    if (unknown.length) throw badRequest('unknown_permission', 'Some permissions do not exist', { unknown });
+    if (unknown.length) throw badRequest('unknown_permission', `These permissions do not exist: ${unknown.join(', ')}`, { unknown });
   }
 
   private async writePermissions(tx: Tx, roleId: string, keys: string[]) {

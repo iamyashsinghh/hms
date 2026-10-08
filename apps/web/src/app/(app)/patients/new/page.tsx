@@ -3,11 +3,11 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useForm } from 'react-hook-form';
+import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Loader2 } from 'lucide-react';
-import { BLOOD_GROUPS, GENDERS, createPatientSchema, type CreatePatient } from '@hms/shared';
+import { BLOOD_GROUPS, GENDERS, createPatientSchema, todayIso, type CreatePatient } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { usePermission } from '@/lib/auth';
 import { genderLabel } from '@/lib/format';
@@ -47,11 +47,13 @@ export default function NewPatientPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
 
-  const { register, handleSubmit, formState } = useForm({
+  const { register, handleSubmit, formState, control } = useForm({
     resolver: zodResolver(createPatientSchema),
     defaultValues: { firstName: '', gender: 'male' },
   });
   const { errors } = formState;
+  // Age is only for an unknown date of birth; the DOB wins when both are given.
+  const dob = useWatch({ control, name: 'dateOfBirth' });
 
   const create = useMutation({
     mutationFn: (body: CreatePatient) => api.patients.create(body),
@@ -65,7 +67,7 @@ export default function NewPatientPage() {
 
   const onSubmit = handleSubmit((values) => {
     const address = values.address && Object.values(values.address).some(Boolean) ? values.address : undefined;
-    create.mutate({ ...values, address });
+    create.mutate({ ...values, ageYears: values.dateOfBirth ? undefined : values.ageYears, address });
   });
 
   return (
@@ -88,10 +90,10 @@ export default function NewPatientPage() {
           </CardHeader>
           <CardContent className="grid gap-5 sm:grid-cols-2">
             <Field id="firstName" label="First name *" error={errors.firstName}>
-              <Input id="firstName" aria-invalid={!!errors.firstName} {...register('firstName')} />
+              <Input id="firstName" maxLength={100} autoComplete="off" aria-invalid={!!errors.firstName} {...register('firstName')} />
             </Field>
             <Field id="lastName" label="Last name" error={errors.lastName}>
-              <Input id="lastName" {...register('lastName', opt)} />
+              <Input id="lastName" maxLength={100} autoComplete="off" aria-invalid={!!errors.lastName} {...register('lastName', opt)} />
             </Field>
             <Field id="gender" label="Gender *" error={errors.gender}>
               <Select id="gender" {...register('gender')}>
@@ -113,16 +115,16 @@ export default function NewPatientPage() {
               </Select>
             </Field>
             <Field id="dateOfBirth" label="Date of birth" error={errors.dateOfBirth}>
-              <Input id="dateOfBirth" type="date" aria-invalid={!!errors.dateOfBirth} {...register('dateOfBirth', opt)} />
+              <Input id="dateOfBirth" type="date" max={todayIso()} min={todayIso(-54_787)} aria-invalid={!!errors.dateOfBirth} {...register('dateOfBirth', opt)} />
             </Field>
             <Field id="ageYears" label="Age (years, if DOB unknown)" error={errors.ageYears}>
-              <Input id="ageYears" type="number" min={0} max={150} aria-invalid={!!errors.ageYears} {...register('ageYears', optNumber)} />
+              <Input id="ageYears" type="number" inputMode="numeric" min={0} max={150} step={1} disabled={!!dob} placeholder={dob ? 'From date of birth' : undefined} aria-invalid={!!errors.ageYears} {...register('ageYears', optNumber)} />
             </Field>
             <Field id="abhaNumber" label="ABHA number" error={errors.abhaNumber}>
-              <Input id="abhaNumber" inputMode="numeric" placeholder="14 digits" aria-invalid={!!errors.abhaNumber} {...register('abhaNumber', opt)} />
+              <Input id="abhaNumber" inputMode="numeric" maxLength={17} placeholder="14 digits, e.g. 91-1234-5678-9012" aria-invalid={!!errors.abhaNumber} {...register('abhaNumber', opt)} />
             </Field>
-            <Field id="allergies" label="Allergies" error={errors.allergies}>
-              <Input id="allergies" placeholder="Comma separated, e.g. Penicillin, Peanuts" {...register('allergies', list)} />
+            <Field id="allergies" label="Allergies" error={Array.isArray(errors.allergies) ? errors.allergies.find(Boolean) : errors.allergies}>
+              <Input id="allergies" placeholder="Comma separated, e.g. Penicillin, Peanuts" aria-invalid={!!errors.allergies} {...register('allergies', list)} />
             </Field>
           </CardContent>
         </Card>
@@ -133,22 +135,22 @@ export default function NewPatientPage() {
           </CardHeader>
           <CardContent className="grid gap-5 sm:grid-cols-2">
             <Field id="mobile" label="Mobile" error={errors.mobile}>
-              <Input id="mobile" type="tel" inputMode="numeric" placeholder="10-digit mobile" aria-invalid={!!errors.mobile} {...register('mobile', opt)} />
+              <Input id="mobile" type="tel" inputMode="numeric" maxLength={14} placeholder="10-digit mobile" aria-invalid={!!errors.mobile} {...register('mobile', opt)} />
             </Field>
             <Field id="email" label="Email" error={errors.email}>
-              <Input id="email" type="email" aria-invalid={!!errors.email} {...register('email', opt)} />
+              <Input id="email" type="email" maxLength={254} aria-invalid={!!errors.email} {...register('email', opt)} />
             </Field>
             <Field id="line1" label="Address" error={errors.address?.line1} className="sm:col-span-2">
-              <Input id="line1" {...register('address.line1', opt)} />
+              <Input id="line1" maxLength={200} {...register('address.line1', opt)} />
             </Field>
             <Field id="city" label="City" error={errors.address?.city}>
-              <Input id="city" {...register('address.city', opt)} />
+              <Input id="city" maxLength={100} {...register('address.city', opt)} />
             </Field>
             <Field id="state" label="State" error={errors.address?.state}>
-              <Input id="state" {...register('address.state', opt)} />
+              <Input id="state" maxLength={100} {...register('address.state', opt)} />
             </Field>
             <Field id="pincode" label="PIN code" error={errors.address?.pincode}>
-              <Input id="pincode" inputMode="numeric" aria-invalid={!!errors.address?.pincode} {...register('address.pincode', opt)} />
+              <Input id="pincode" inputMode="numeric" maxLength={6} aria-invalid={!!errors.address?.pincode} {...register('address.pincode', opt)} />
             </Field>
           </CardContent>
         </Card>
