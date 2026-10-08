@@ -144,6 +144,21 @@ export class BillingService {
     return tx ? run(tx) : this.db.tx(run);
   }
 
+  /** Full invoice inside the caller's transaction (used by ChargesService after billing). */
+  invoiceInTx(tx: Tx, id: string): Promise<Invoice> {
+    return this.invoiceTx(tx, id);
+  }
+
+  /** Outbox publish for sibling billing services (tenant from the transaction). */
+  publishEvent(tx: Tx, topic: string, payload: Record<string, unknown>): Promise<void> {
+    return this.publish(tx, topic, payload);
+  }
+
+  /** Facility for a new record (explicit, checked against the user's access, or the request's facility). */
+  facilityFor(explicit?: string): string {
+    return this.resolveFacility(explicit);
+  }
+
   // =====================================================================
   // Settings
   // =====================================================================

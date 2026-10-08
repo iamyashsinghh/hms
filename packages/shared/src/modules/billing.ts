@@ -24,17 +24,21 @@ export const billingModule = defineModule({
     { key: 'billing.creditnote.create', description: 'Issue credit notes against final invoices' },
     { key: 'billing.shift.manage', description: 'Open and close own cash shift' },
     { key: 'billing.shift.read', description: "View every cashier's shifts and collections" },
+    { key: 'billing.discount.override', description: 'Give discounts above the billing rules limit' },
+    { key: 'billing.price.override', description: 'Change the price on a charge or bill line' },
   ],
   grants: {
     hospital_admin: [
       'billing.service.read', 'billing.service.manage', 'billing.settings.manage', 'billing.invoice.read',
       'billing.invoice.create', 'billing.invoice.finalize', 'billing.invoice.cancel', 'billing.payment.collect',
       'billing.payment.refund', 'billing.creditnote.create', 'billing.shift.manage', 'billing.shift.read',
+      'billing.discount.override', 'billing.price.override',
     ],
     owner: ['billing.service.read', 'billing.invoice.read', 'billing.shift.read'],
     accountant: [
       'billing.service.read', 'billing.service.manage', 'billing.invoice.read', 'billing.invoice.cancel',
-      'billing.payment.refund', 'billing.creditnote.create', 'billing.shift.read',
+      'billing.payment.refund', 'billing.creditnote.create', 'billing.shift.read', 'billing.discount.override',
+      'billing.price.override',
     ],
     billing_clerk: [
       'billing.service.read', 'billing.invoice.read', 'billing.invoice.create', 'billing.invoice.finalize',
@@ -571,3 +575,309 @@ export interface InvoiceCancelledEvent {
   number: string;
   patientId: string;
 }
+
+// =====================================================================
+// Charges (patient account) and billing rules
+// =====================================================================
+//
+// Every department posts what a patient owes as a *charge* (BillingService.postCharge, inside the
+// caller's transaction). Charges stay pending on the patient's account until the billing desk (or a
+// "Collect now" button) turns them into one invoice with BillingService.billCharges. Each hospital
+// decides how charges are posted through its billing rules.
+
+export const CHARGE_STATUSES = ['pending', 'billed', 'cancelled'] as const;
+export type ChargeStatus = (typeof CHARGE_STATUSES)[number];
+/** What the charge belongs to, so the bill groups itself. */
+export const CHARGE_ACCOUNTS = ['opd', 'ipd', 'other'] as const;
+export type ChargeAccount = (typeof CHARGE_ACCOUNTS)[number];
+
+/** Where a charge came from. (module, refId, line) is unique: posting the same source twice returns the first charge. */
+export const chargeSourceSchema = z.object({
+  module: z.string().trim().min(1).max(40),
+  refId: z.string().trim().min(1).max(100),
+  /** Distinguishes several charges from one source (e.g. one per test on a lab order). */
+  line: z.string().trim().max(100).default(''),
+});
+export type ChargeSource = z.input<typeof chargeSourceSchema>;
+
+/** BillingService.postCharge (cross-module, inside the caller's transaction). */
+export const postChargeSchema = z
+  .object({
+    patientId: z.uuid(),
+    /** Defaults to the facility in the request (X-Facility-Id). */
+    facilityId: z.uuid().optional(),
+    /** OPD visit (clinical.opd_visits id) the charge belongs to. */
+    visitId: z.uuid().optional(),
+    /** IPD admission the charge belongs to. */
+    admissionId: z.uuid().optional(),
+    source: chargeSourceSchema,
+    /** Priced from the service master / payer price list when unitPrice or taxRate is omitted. */
+    serviceCode: z.string().trim().toUpperCase().max(40).optional(),
+    /** Pharmacy / inventory item id. */
+    itemId: z.uuid().optional(),
+    description: z.string().trim().min(1).max(300, 'Description can be at most 300 characters').optional(),
+    hsnSac: blankToUndefined(hsnCode.optional()),
+    qty: z.coerce.number({ error: 'Enter a quantity' }).positive('Quantity must be more than 0').max(100000).default(1),
+    unitPrice: money.optional(),
+    taxRate: taxRate.optional(),
+    priceIncludesTax: z.boolean().optional(),
+    discount: money.optional(),
+    doctorId: z.uuid().optional(),
+    /** Business date of the service; defaults to today (India time). */
+    chargeDate: isoDate.optional(),
+    notes: optionalText(300),
+  })
+  .refine((c) => c.serviceCode || (c.description && c.unitPrice !== undefined), {
+    message: 'Give a service code, or a description and a price',
+  });
+export type PostChargeInput = z.input<typeof postChargeSchema>;
+
+/** POST /billing/charges: a manual charge added to a patient's account from the billing desk or IPD. */
+export const manualChargeSchema = z
+  .object({
+    patientId: z.uuid(),
+    visitId: z.uuid().optional(),
+    admissionId: z.uuid().optional(),
+    serviceCode: z.string().trim().toUpperCase().max(40).optional(),
+    description: z.string().trim().min(1).max(300).optional(),
+    qty: z.coerce.number().positive('Quantity must be more than 0').max(100000).default(1),
+    unitPrice: money.optional(),
+    taxRate: taxRate.optional(),
+    discount: money.optional(),
+    doctorId: z.uuid().optional(),
+    chargeDate: isoDate.optional(),
+    notes: optionalText(300),
+  })
+  .refine((c) => c.serviceCode || (c.description && c.unitPrice !== undefined), {
+    message: 'Pick a service, or give a description and a price',
+  });
+export type ManualChargeInput = z.input<typeof manualChargeSchema>;
+
+export const cancelChargeSchema = z.object({ reason: reasonText('the reason for cancelling') });
+export type CancelChargeInput = z.input<typeof cancelChargeSchema>;
+
+export interface Charge {
+  id: string;
+  patientId: string;
+  facilityId: string;
+  account: ChargeAccount;
+  visitId: string | null;
+  admissionId: string | null;
+  sourceModule: string;
+  sourceRef: string;
+  sourceLine: string;
+  serviceId: string | null;
+  serviceCode: string | null;
+  itemId: string | null;
+  description: string;
+  hsnSac: string | null;
+  qty: number;
+  unitPrice: number;
+  priceIncludesTax: boolean;
+  taxRate: number;
+  discount: number;
+  /** qty × price − discount, plus GST unless the price already includes it. */
+  amount: number;
+  doctorId: string | null;
+  chargeDate: string;
+  status: ChargeStatus;
+  invoiceId: string | null;
+  invoiceNumber: string | null;
+  /** Set when the source was cancelled after the charge was billed: a credit note is suggested. */
+  reversalRequestedAt: string | null;
+  reversalReason: string | null;
+  cancelReason: string | null;
+  notes: string | null;
+  createdAt: string;
+}
+
+export const chargeQuerySchema = z.object({
+  patientId: z.uuid().optional(),
+  visitId: z.uuid().optional(),
+  admissionId: z.uuid().optional(),
+  status: z.enum(CHARGE_STATUSES).optional(),
+  sourceModule: z.string().max(40).optional(),
+  /** Only billed charges whose source was cancelled afterwards (credit note suggested). */
+  reversal: z.enum(['true', 'false']).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(500).default(200),
+});
+export type ChargeQuery = Partial<Omit<z.input<typeof chargeQuerySchema>, 'reversal'>> & { reversal?: 'true' | 'false' };
+
+/** POST /billing/charges/bill (and BillingService.billCharges): pending charges → one final invoice. */
+export const billChargesSchema = z.object({
+  patientId: z.uuid(),
+  facilityId: z.uuid().optional(),
+  /** Pending charges to bill; all must belong to the patient. */
+  chargeIds: z.array(z.uuid()).max(500).default([]),
+  /** Extra lines typed at the desk (become charges from module 'billing' first, so every line has a charge). */
+  extraLines: z.array(invoiceLineInputSchema).max(100).default([]),
+  /** Bill-level discount in rupees, spread over the lines largest first. */
+  discount: money.optional(),
+  payerId: z.uuid().optional(),
+  doctorId: z.uuid().optional(),
+  supplyType: z.enum(['intra', 'inter']).default('intra'),
+  buyerGstin: gstin.optional(),
+  notes: optionalText(1000),
+  /** Use the patient's advance first (up to the bill total). */
+  useDeposit: z.boolean().default(false),
+  /** Money taken now, after any advance. */
+  payNow: payNowSchema.optional(),
+  /** Invoice source, e.g. { module: 'ipd', refId: admissionId }; default { module: 'billing' }. */
+  source: z.object({ module: z.string().min(1).max(40), refId: z.string().max(100).optional() }).optional(),
+}).refine((b) => b.chargeIds.length + b.extraLines.length > 0, { message: 'Pick at least one charge to bill', path: ['chargeIds'] });
+export type BillChargesInput = z.input<typeof billChargesSchema>;
+
+/** One group on the billing desk: an OPD visit, an IPD admission, or other charges. */
+export interface ChargeGroup {
+  account: ChargeAccount;
+  visitId: string | null;
+  admissionId: string | null;
+  /** e.g. "OPD visit · Dr. Mehta · 08 Oct 2026" or "IPD IP-000123". */
+  label: string;
+  charges: Charge[];
+  total: number;
+}
+
+/** GET /billing/patients/:patientId/charges: everything the billing desk needs for one patient. */
+export interface PatientCharges {
+  patientId: string;
+  patientName: string;
+  uhid: string;
+  mobile: string | null;
+  groups: ChargeGroup[];
+  pendingTotal: number;
+  depositBalance: number;
+  outstanding: number;
+  /** Payer (insurance / corporate) applied to prices, if the patient has one. */
+  payerId: string | null;
+  /** Billed charges whose source was cancelled afterwards. */
+  reversals: Charge[];
+}
+
+/** GET /billing/unbilled: patients with pending charges, oldest first. */
+export interface UnbilledPatient {
+  patientId: string;
+  patientName: string;
+  uhid: string;
+  mobile: string | null;
+  pendingCount: number;
+  pendingTotal: number;
+  oldestChargeAt: string;
+  accounts: ChargeAccount[];
+}
+export const unbilledQuerySchema = z.object({
+  q: z.string().trim().max(100).optional(),
+  account: z.enum(CHARGE_ACCOUNTS).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(50),
+});
+export type UnbilledQuery = Partial<z.input<typeof unbilledQuerySchema>>;
+
+/** Payment state of the charges posted by a source, for "unpaid" flags on queues and worklists. */
+export type SourcePaymentState = 'none' | 'pending' | 'unpaid' | 'paid';
+
+/** Published as `billing.charges.billed` so modules can store the bill number on their own records. */
+export interface ChargesBilledEvent {
+  invoiceId: string;
+  number: string;
+  patientId: string;
+  charges: { chargeId: string; module: string; refId: string; line: string }[];
+}
+
+// ---------- billing rules (each hospital decides; a branch may override) ----------
+
+export const billingRulesSchema = z.object({
+  /** OPD consultation: collect at check-in ('before') or everything at the end of the visit ('after'). */
+  opdPayment: z.enum(['before', 'after']),
+  /** Unpaid OPD patient: only flag in the doctor's queue, or keep out of the queue until paid. */
+  opdUnpaid: z.enum(['flag', 'block']),
+  /** Use each doctor's follow-up fee inside their follow-up days, or always charge the full fee. */
+  followUp: z.enum(['doctor_fee', 'full_fee']),
+  /** Registration fee for new patients (and again once it expires). */
+  registrationFee: z.object({
+    enabled: z.boolean(),
+    amount: money,
+    /** Months a registration stays valid; null = never charged again. */
+    validityMonths: z.coerce.number().int().min(1).max(120).nullable(),
+  }),
+  /** Lab tests: charge when ordered, or when the sample is collected. */
+  labChargeAt: z.enum(['order', 'collection']),
+  /** Radiology: charge when ordered, or when the scan is done. */
+  radiologyChargeAt: z.enum(['order', 'scan_done']),
+  /** OPD lab / radiology: pay before the sample or scan (flagged on worklists), or after. */
+  diagnosticsPayment: z.enum(['before', 'after']),
+  /** Medicines for admitted patients: on the IPD bill, or a separate pharmacy bill per issue. */
+  ipdPharmacy: z.enum(['ipd_bill', 'separate']),
+  /** How a room-rent day is counted. */
+  roomRentDay: z.enum(['midnight', 'admission_time', 'checkout_time']),
+  /** For 'checkout_time': the day turns at this time (HH:MM, India time). */
+  checkoutTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:MM, e.g. 12:00'),
+  /** Consumables issued for a patient: charge the patient, or treat as hospital cost. */
+  consumables: z.enum(['charge', 'hospital_cost']),
+  /** Most discount (% of the bill) a user without billing.discount.override can give. */
+  maxDiscountPct: z.coerce.number().min(0).max(100),
+});
+export type BillingRules = z.infer<typeof billingRulesSchema>;
+
+export const BILLING_RULE_PRESETS = {
+  /** Starting values for a hospital with IPD. */
+  hospital: {
+    opdPayment: 'before',
+    opdUnpaid: 'flag',
+    followUp: 'doctor_fee',
+    registrationFee: { enabled: false, amount: 0, validityMonths: 12 },
+    labChargeAt: 'order',
+    radiologyChargeAt: 'order',
+    diagnosticsPayment: 'before',
+    ipdPharmacy: 'ipd_bill',
+    roomRentDay: 'midnight',
+    checkoutTime: '12:00',
+    consumables: 'charge',
+    maxDiscountPct: 0,
+  },
+  /** OPD-only clinic: pay at check-in, no IPD. */
+  clinic: {
+    opdPayment: 'before',
+    opdUnpaid: 'flag',
+    followUp: 'doctor_fee',
+    registrationFee: { enabled: false, amount: 0, validityMonths: 12 },
+    labChargeAt: 'order',
+    radiologyChargeAt: 'order',
+    diagnosticsPayment: 'before',
+    ipdPharmacy: 'separate',
+    roomRentDay: 'midnight',
+    checkoutTime: '12:00',
+    consumables: 'charge',
+    maxDiscountPct: 0,
+  },
+} as const satisfies Record<string, BillingRules>;
+export type BillingRulePreset = keyof typeof BILLING_RULE_PRESETS;
+export const DEFAULT_BILLING_RULES: BillingRules = BILLING_RULE_PRESETS.hospital;
+
+/** PUT /billing/rules: hospital-wide rules (no facilityId) or a branch override (facilityId). Partial: omitted rules are kept. */
+export const billingRulesInputSchema = z.object({
+  facilityId: z.uuid().optional(),
+  preset: z.enum(['hospital', 'clinic']).optional(),
+  rules: billingRulesSchema.partial().default({}),
+});
+export type BillingRulesInput = z.input<typeof billingRulesInputSchema>;
+
+/** GET /billing/rules?facilityId=: the effective rules plus what the hospital and the branch set. */
+export interface BillingRulesView {
+  facilityId: string | null;
+  effective: BillingRules;
+  hospital: Partial<BillingRules>;
+  /** Only for a branch: the rules this branch overrides. */
+  branch: Partial<BillingRules> | null;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+/** POST /billing/charges/:id/credit: credit a billed charge whose source was cancelled (refund if already paid). */
+export const creditChargeSchema = z.object({
+  reason: reasonText().optional(),
+  /** Needed when the bill was already paid and the money must go back. */
+  refundMode: z.enum(PAYMENT_MODES).optional(),
+});
+export type CreditChargeInput = z.input<typeof creditChargeSchema>;

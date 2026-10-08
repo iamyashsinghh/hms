@@ -39,6 +39,20 @@ export const billingApi = (http: Http) => ({
     refund: (body: B.RefundInput) => http.post<B.Payment>('/billing/refunds', body),
   },
   account: (patientId: string) => http.get<B.PatientAccount>(`/billing/patients/${patientId}/account`),
+  /** Patient account: pending charges posted by every department, billed in one go at the desk. */
+  charges: {
+    list: (q: B.ChargeQuery = {}) => http.get<Paginated<B.Charge>>('/billing/charges', q),
+    forPatient: (patientId: string) => http.get<B.PatientCharges>(`/billing/patients/${patientId}/charges`),
+    unbilled: (q: B.UnbilledQuery = {}) => http.get<Paginated<B.UnbilledPatient>>('/billing/unbilled', q),
+    add: (body: B.ManualChargeInput) => http.post<B.Charge>('/billing/charges', body),
+    cancel: (id: string, body: B.CancelChargeInput) => http.post<B.Charge>(`/billing/charges/${id}/cancel`, body),
+    credit: (id: string, body: B.CreditChargeInput = {}) => http.post<B.Invoice>(`/billing/charges/${id}/credit`, body),
+    bill: (body: B.BillChargesInput) => http.post<B.Invoice>('/billing/charges/bill', body),
+  },
+  rules: {
+    get: (facilityId?: string) => http.get<B.BillingRulesView>('/billing/rules', { facilityId }),
+    save: (body: B.BillingRulesInput) => http.put<B.BillingRulesView>('/billing/rules', body),
+  },
   shifts: {
     current: () => http.get<{ shift: B.CashShift | null }>('/billing/shifts/current'),
     open: (body: B.OpenShift) => http.post<B.CashShift>('/billing/shifts/open', body),
