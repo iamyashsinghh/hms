@@ -525,12 +525,12 @@ export class IpdService {
   recordVitals(admissionId: string, input: I.VitalsInput): Promise<I.Vitals> {
     const d = contracts.vitalsInputSchema.parse(input);
     return this.db.tx(async (tx) => {
-      await this.activeAdmission(tx, admissionId);
+      const adm = await this.activeAdmission(tx, admissionId);
       const { tenantId, userId } = await this.repo.scope(tx);
       const row = await this.repo.insertVitals(tx, {
         tenantId,
         admissionId,
-        recordedAt: this.pastOrNow(d.recordedAt),
+        recordedAt: this.pastOrNow(d.recordedAt, adm),
         temperatureC: d.temperatureC?.toFixed(1) ?? null,
         pulse: d.pulse ?? null,
         respRate: d.respRate ?? null,
@@ -590,7 +590,7 @@ export class IpdService {
   recordIntakeOutput(admissionId: string, input: I.IntakeOutputInput): Promise<I.IntakeOutput> {
     const d = contracts.intakeOutputInputSchema.parse(input);
     return this.db.tx(async (tx) => {
-      await this.activeAdmission(tx, admissionId);
+      const adm = await this.activeAdmission(tx, admissionId);
       const { tenantId, userId } = await this.repo.scope(tx);
       const row = await this.repo.insertIntakeOutput(tx, {
         tenantId,
@@ -598,7 +598,7 @@ export class IpdService {
         direction: d.direction,
         category: d.category,
         volumeMl: d.volumeMl,
-        recordedAt: this.pastOrNow(d.recordedAt),
+        recordedAt: this.pastOrNow(d.recordedAt, adm),
         notes: d.notes ?? null,
         recordedBy: userId,
       });
@@ -617,7 +617,10 @@ export class IpdService {
   orderMedication(admissionId: string, input: I.MedicationOrderInput): Promise<I.MedicationOrder> {
     const d = contracts.medicationOrderInputSchema.parse(input);
     return this.db.tx(async (tx) => {
-      await this.activeAdmission(tx, admissionId);
+      const adm = await this.activeAdmission(tx, admissionId);
+      if (d.startAt && Date.parse(d.startAt) < Date.parse(iso(adm.admittedAt))) {
+        throw badRequest('before_admission', 'Start time cannot be before the admission');
+      }
       const { tenantId, userId } = await this.repo.scope(tx);
       const row = await this.repo.insertMedOrder(tx, {
         tenantId,
@@ -650,7 +653,7 @@ export class IpdService {
   administer(admissionId: string, orderId: string, input: I.AdministerInput): Promise<I.MedicationOrder> {
     const d = contracts.administerSchema.parse(input);
     return this.db.tx(async (tx) => {
-      await this.activeAdmission(tx, admissionId);
+      const adm = await this.activeAdmission(tx, admissionId);
       const order = await this.repo.medOrderById(tx, orderId);
       if (!order || order.admissionId !== admissionId) throw notFound('Medication order');
       if (order.status !== 'active') throw conflict('medication_stopped', 'This medication was stopped');
@@ -660,7 +663,7 @@ export class IpdService {
         orderId,
         admissionId,
         status: d.status,
-        givenAt: this.pastOrNow(d.givenAt),
+        givenAt: this.pastOrNow(d.givenAt, adm),
         notes: d.notes ?? null,
         givenBy: userId,
         givenByName: await this.repo.userName(tx, userId),
@@ -740,14 +743,14 @@ export class IpdService {
   addRound(admissionId: string, input: I.RoundInput): Promise<I.Round> {
     const d = contracts.roundInputSchema.parse(input);
     return this.db.tx(async (tx) => {
-      await this.activeAdmission(tx, admissionId);
+      const adm = await this.activeAdmission(tx, admissionId);
       const { tenantId, userId } = await this.repo.scope(tx);
       const row = await this.repo.insertRound(tx, {
         tenantId,
         admissionId,
         doctorId: userId,
         doctorName: (await this.repo.userName(tx, userId)) ?? 'Doctor',
-        roundAt: this.pastOrNow(d.roundAt),
+        roundAt: this.pastOrNow(d.roundAt, adm),
         subjective: d.subjective ?? null,
         findings: d.findings ?? null,
         plan: d.plan,
@@ -809,6 +812,9 @@ export class IpdService {
       const unitPrice = d.unitPrice ?? price!.price;
       const discount = d.discount ?? 0;
       if (discount > d.qty * unitPrice) throw badRequest('discount_too_high', 'Discount is more than the charge');
+      if (d.chargeDate && d.chargeDate < istDate(row.admittedAt)) {
+        throw badRequest('charge_before_admission', `Charge date cannot be before the admission date (${istDate(row.admittedAt)})`);
+      }
       const c = await this.repo.insertCharge(tx, {
         tenantId,
         admissionId,
@@ -979,6 +985,12 @@ export class IpdService {
       if (row.status === 'cancelled') throw conflict('admission_cancelled', 'This admission was cancelled');
       const existing = await this.repo.summary(tx, admissionId);
       if (existing?.status === 'final') throw conflict('summary_final', 'The discharge summary is signed and cannot change');
+      if (d.followUpDate) {
+        const earliest = row.dischargedAt ? istDate(row.dischargedAt) : istDate(new Date());
+        if (d.followUpDate < earliest) {
+          throw badRequest('follow_up_in_past', row.dischargedAt ? 'Follow-up date cannot be before the discharge date' : 'Follow-up date cannot be in the past');
+        }
+      }
       const { tenantId, userId } = await this.repo.scope(tx);
       const saved = await this.repo.upsertSummary(tx, {
         tenantId,
@@ -1063,10 +1075,14 @@ export class IpdService {
     }
   }
 
-  private pastOrNow(at?: string): string {
+  /** A chart time: now when omitted; never in the future and, given an admission, not before it was admitted. */
+  private pastOrNow(at?: string, admission?: { admittedAt: string }): string {
     if (!at) return nowIso();
     const t = Date.parse(at);
     if (t > Date.now() + 5 * 60_000) throw badRequest('time_in_future', 'Time cannot be in the future');
+    if (admission && t < Date.parse(iso(admission.admittedAt))) {
+      throw badRequest('before_admission', 'Time cannot be before the patient was admitted');
+    }
     return new Date(t).toISOString();
   }
 }

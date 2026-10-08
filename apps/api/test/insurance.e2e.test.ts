@@ -414,3 +414,67 @@ describe('permissions and isolation', () => {
     ).rejects.toThrow();
   });
 });
+
+describe('insurance validation', () => {
+  const msg = (r: { json: () => { error: { message: string } } }) => r.json().error.message;
+  const shift = (days: number) => new Date(Date.now() + days * 86_400_000).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
+  it('checks payer fields and keeps unsent fields on a partial update', async () => {
+    const bad = await call(admin, 'POST', '/insurance/payers', { code: `BAD-${tag}`, name: 'Bad payer', type: 'insurer', gstin: '123', email: 'abc', phone: 'x', creditDays: 400 });
+    expect(bad.statusCode).toBe(400);
+    for (const m of ['Enter a valid 15-character GSTIN', 'Enter a valid email address', 'Enter a valid phone number']) expect(msg(bad)).toContain(m);
+    const days = await call(admin, 'POST', '/insurance/payers', { code: `BAD-${tag}`, name: 'Bad payer', type: 'insurer', creditDays: 400 });
+    expect(msg(days)).toContain('Credit days cannot be more than 365');
+    const upd = await call(admin, 'PATCH', `/insurance/payers/${tpaId}`, { notes: 'Checked' });
+    expect(upd.statusCode, upd.body).toBe(200);
+    expect(upd.json()).toMatchObject({ notes: 'Checked', creditDays: 45, isActive: true });
+  });
+
+  it('checks policy dates and limits', async () => {
+    const dates = await call(reception, 'POST', '/insurance/policies', { patientId, payerId: insurerId, policyNumber: `D-${tag}`, validFrom: '2026-12-01', validTo: '2026-01-01' });
+    expect(dates.statusCode).toBe(400);
+    expect(msg(dates)).toContain('End date is before start date');
+    const room = await call(reception, 'POST', '/insurance/policies', { patientId, payerId: insurerId, policyNumber: `R-${tag}`, sumInsured: 1000, roomRentLimit: 5000 });
+    expect(msg(room)).toContain('Room rent limit cannot be more than the sum insured');
+    const upd = await call(reception, 'PATCH', `/insurance/policies/${policyId}`, { validTo: '2000-01-01' });
+    expect(upd.statusCode).toBe(400);
+  });
+
+  it('checks pre-auth and claim dates', async () => {
+    const far = await call(clerk, 'POST', '/insurance/preauths', { policyId, diagnosis: 'Fracture', estimatedAmount: 1000, expectedAdmission: shift(800) });
+    expect(far.statusCode).toBe(400);
+    expect(msg(far)).toContain('Expected admission is too far in the future');
+    const icd = await call(clerk, 'POST', '/insurance/preauths', { policyId, diagnosis: 'A', icdCodes: ['123'], estimatedAmount: 1000 });
+    expect(msg(icd)).toContain('ICD-10 code like K35.8');
+    expect(msg(icd)).toContain('Diagnosis needs at least 2 characters');
+    const pastValid = await call(clerk, 'POST', `/insurance/preauths/${preauthId}/approve`, { approvedAmount: 100, validUntil: shift(-2) });
+    expect(pastValid.statusCode).toBe(400);
+    expect(msg(pastValid)).toContain('cannot be in the past');
+
+    const inv = await bill(1000);
+    const order = await call(clerk, 'POST', '/insurance/claims', { policyId, invoices: [{ invoiceId: inv }], admissionDate: shift(-2), dischargeDate: shift(-5) });
+    expect(order.statusCode).toBe(400);
+    expect(msg(order)).toContain('Discharge date is before admission date');
+    const future = await call(clerk, 'POST', '/insurance/claims', { policyId, invoices: [{ invoiceId: inv }], admissionDate: shift(3) });
+    expect(msg(future)).toContain('Admission date cannot be in the future');
+  });
+
+  it('refuses a settlement dated in the future or before the claim was submitted', async () => {
+    const inv = await bill(1000);
+    const created = await call(clerk, 'POST', '/insurance/claims', { policyId, invoices: [{ invoiceId: inv }], admissionDate: shift(-3), dischargeDate: shift(-1) });
+    expect(created.statusCode, created.body).toBe(201);
+    const id = created.json().id;
+    for (const d of created.json().documents.filter((x: { required: boolean }) => x.required)) {
+      await call(clerk, 'PATCH', `/insurance/claims/${id}/documents/${d.id}`, { received: true });
+    }
+    expect((await call(clerk, 'POST', `/insurance/claims/${id}/submit`, {})).statusCode).toBe(200);
+    const ahead = await call(admin, 'POST', `/insurance/claims/${id}/settlements`, { settledOn: shift(2), reference: 'UTRF', amountPaid: 10 });
+    expect(ahead.statusCode).toBe(400);
+    expect(msg(ahead)).toContain('Settlement date cannot be in the future');
+    const early = await call(admin, 'POST', `/insurance/claims/${id}/settlements`, { settledOn: shift(-1), reference: 'UTRE', amountPaid: 10 });
+    expect(early.statusCode).toBe(400);
+    expect(early.json().error.code).toBe('settled_before_submit');
+    const ok = await call(admin, 'POST', `/insurance/claims/${id}/settlements`, { settledOn: shift(0), reference: 'UTRO', amountPaid: 10 });
+    expect(ok.statusCode, ok.body).toBe(201);
+  });
+});

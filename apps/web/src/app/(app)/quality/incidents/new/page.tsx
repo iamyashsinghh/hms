@@ -6,6 +6,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { quality as Q } from '@hms/shared';
 import { api } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -29,21 +30,10 @@ export default function ReportIncidentPage() {
   const [immediateAction, setImmediateAction] = React.useState('');
   const [anonymous, setAnonymous] = React.useState(false);
   const [done, setDone] = React.useState<Q.Incident | null>(null);
+  const [errors, setErrors] = React.useState<FieldErrors>({});
 
   const report = useMutation({
-    mutationFn: () =>
-      api.quality.incidents.report({
-        kind: kind as Q.IncidentKind,
-        category: category as Q.IncidentCategory,
-        severity: severity as Q.IncidentSeverity,
-        occurredAt: new Date(occurredAt).toISOString(),
-        location: location || undefined,
-        department: department || undefined,
-        patientId: patient?.id,
-        description,
-        immediateAction: immediateAction || undefined,
-        anonymous,
-      }),
+    mutationFn: (body: Q.ReportIncident) => api.quality.incidents.report(body),
     onSuccess: (inc) => {
       queryClient.invalidateQueries({ queryKey: ['quality'] });
       if (anonymous) setDone(inc);
@@ -73,35 +63,50 @@ export default function ReportIncidentPage() {
         className="space-y-6"
         onSubmit={(e) => {
           e.preventDefault();
-          report.mutate();
+          const when = occurredAt ? new Date(occurredAt) : null;
+          const body: Q.ReportIncident = {
+            kind: kind as Q.IncidentKind,
+            category: category as Q.IncidentCategory,
+            severity: severity as Q.IncidentSeverity,
+            occurredAt: when && !Number.isNaN(when.getTime()) ? when.toISOString() : '',
+            location: location || undefined,
+            department: department || undefined,
+            patientId: patient?.id,
+            description,
+            immediateAction: immediateAction || undefined,
+            anonymous,
+          };
+          const { errors: found } = validate(Q.reportIncidentSchema, body);
+          setErrors(found ?? {});
+          if (!found) report.mutate(body);
         }}
       >
-        <ErrorBox error={report.error} />
+        <ErrorBox error={Object.keys(errors).length ? 'Please correct the highlighted fields' : report.error} />
         <Card>
           <CardContent className="grid gap-5 pt-6 sm:grid-cols-2">
             <Field id="kind" label="Type *">
               <EnumSelect id="kind" value={kind} onChange={setKind} options={Q.INCIDENT_KINDS} labels={KIND_LABELS} />
             </Field>
-            <Field id="category" label="Category *">
+            <Field id="category" label="Category *" error={errors.category}>
               <EnumSelect id="category" value={category} onChange={setCategory} options={Q.INCIDENT_CATEGORIES} labels={CATEGORY_LABELS} placeholder="Choose…" />
             </Field>
             <Field id="severity" label="Harm to patient / staff *">
               <EnumSelect id="severity" value={severity} onChange={setSeverity} options={Q.INCIDENT_SEVERITIES} />
             </Field>
-            <Field id="occurredAt" label="When did it happen? *">
+            <Field id="occurredAt" label="When did it happen? *" error={errors.occurredAt}>
               <Input id="occurredAt" type="datetime-local" required max={localDateTime()} value={occurredAt} onChange={(e) => setOccurredAt(e.target.value)} />
             </Field>
-            <Field id="location" label="Where">
-              <Input id="location" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="e.g. Ward 3, bed 12" />
+            <Field id="location" label="Where" error={errors.location}>
+              <Input id="location" maxLength={200} value={location} onChange={(e) => setLocation(e.target.value)} placeholder="e.g. Ward 3, bed 12" />
             </Field>
             <Field id="department" label="Department">
-              <Input id="department" value={department} onChange={(e) => setDepartment(e.target.value)} />
+              <Input id="department" maxLength={120} value={department} onChange={(e) => setDepartment(e.target.value)} />
             </Field>
             <Field id="patient" label="Patient involved (optional)" className="sm:col-span-2">
               <PatientPicker value={patient} onChange={setPatient} />
             </Field>
-            <Field id="description" label="What happened? *" className="sm:col-span-2">
-              <Textarea id="description" required rows={5} value={description} onChange={(e) => setDescription(e.target.value)} />
+            <Field id="description" label="What happened? *" className="sm:col-span-2" error={errors.description}>
+              <Textarea id="description" required rows={5} maxLength={5000} value={description} onChange={(e) => setDescription(e.target.value)} />
             </Field>
             <Field id="immediateAction" label="Immediate action taken" className="sm:col-span-2">
               <Textarea id="immediateAction" value={immediateAction} onChange={(e) => setImmediateAction(e.target.value)} />

@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { ipd as I } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { BulkImportButton } from '@/components/bulk-import';
 import { PageHeader } from '@/components/page-header';
@@ -131,7 +132,7 @@ function WardForm({ initial, onDone, onCancel }: { initial?: I.Ward; onDone: () 
     defaultDailyRate: initial ? String(initial.defaultDailyRate) : '',
   };
   const [form, setForm] = React.useState(empty);
-  const [errors, setErrors] = React.useState<Record<string, string>>({});
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const save = useMutation({
     mutationFn: () => {
       const common = {
@@ -352,6 +353,7 @@ function AddBeds({ ward, onDone }: { ward: I.Ward; onDone: () => void }) {
     dailyRate: '',
     chargeServiceCode: '',
   });
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const create = useMutation({
     mutationFn: (body: I.BulkBeds) => api.ipd.beds.createMany(body),
     onSuccess: onDone,
@@ -359,17 +361,19 @@ function AddBeds({ ward, onDone }: { ward: I.Ward; onDone: () => void }) {
   const count = Math.max(0, Number(form.to) - Number(form.from) + 1);
   const [formError, setFormError] = React.useState<string | null>(null);
   const submit = () => {
+    // Strings go to the schema as typed, so a blank "From" is an error instead of 0.
     const body: I.BulkBeds = {
       wardId: ward.id,
       prefix: form.prefix,
-      from: Number(form.from),
-      to: Number(form.to),
-      dailyRate: form.dailyRate === '' ? undefined : Number(form.dailyRate),
+      from: form.from,
+      to: form.to,
+      dailyRate: form.dailyRate === '' ? undefined : form.dailyRate,
       chargeServiceCode: form.chargeServiceCode || undefined,
     };
-    const parsed = I.bulkBedsSchema.safeParse(body);
-    setFormError(parsed.success ? null : (parsed.error.issues[0]?.message ?? 'Check the form'));
-    if (parsed.success) create.mutate(body);
+    const { errors: found } = validate(I.bulkBedsSchema, body);
+    setErrors(found ?? {});
+    setFormError(found ? (found._form ?? 'Please correct the highlighted fields') : null);
+    if (!found) create.mutate(body);
   };
   return (
     <Card>
@@ -378,20 +382,20 @@ function AddBeds({ ward, onDone }: { ward: I.Ward; onDone: () => void }) {
       </CardHeader>
       <CardContent className="grid gap-3">
         <div className="grid grid-cols-3 gap-3">
-          <Field id="b-prefix" label="Prefix">
+          <Field id="b-prefix" label="Prefix" error={errors.prefix}>
             <Input id="b-prefix" value={form.prefix} onChange={(e) => setForm({ ...form, prefix: e.target.value })} maxLength={10} />
           </Field>
-          <Field id="b-from" label="From">
-            <Input id="b-from" type="number" min={0} value={form.from} onChange={(e) => setForm({ ...form, from: e.target.value })} />
+          <Field id="b-from" label="From" error={errors.from}>
+            <Input id="b-from" type="number" min={0} max={9999} step={1} value={form.from} onChange={(e) => setForm({ ...form, from: e.target.value })} />
           </Field>
-          <Field id="b-to" label="To">
-            <Input id="b-to" type="number" min={0} value={form.to} onChange={(e) => setForm({ ...form, to: e.target.value })} />
+          <Field id="b-to" label="To" error={errors.to}>
+            <Input id="b-to" type="number" min={0} max={9999} step={1} value={form.to} onChange={(e) => setForm({ ...form, to: e.target.value })} />
           </Field>
         </div>
-        <Field id="b-rate" label={`Rate / day (blank = ward rate ${formatINR(ward.defaultDailyRate)})`}>
+        <Field id="b-rate" label={`Rate / day (blank = ward rate ${formatINR(ward.defaultDailyRate)})`} error={errors.dailyRate}>
           <Input id="b-rate" type="number" min={0} step="0.01" value={form.dailyRate} onChange={(e) => setForm({ ...form, dailyRate: e.target.value })} />
         </Field>
-        <Field id="b-svc" label="Billing service code for room rent (optional)">
+        <Field id="b-svc" label="Billing service code for room rent (optional)" error={errors.chargeServiceCode}>
           <Input
             id="b-svc"
             value={form.chargeServiceCode}

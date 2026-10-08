@@ -148,6 +148,14 @@ export class PharmacySalesService {
       const item = items.get(id);
       if (!item) throw notFound('Item');
       if (!item.isActive) throw badRequest('item_inactive', `${item.name} is inactive`);
+      // Items saved before GST slabs were enforced may carry a rate Billing refuses (e.g. 7%). Stop before any
+      // stock moves, with a message that says how to fix it, instead of failing inside the invoice.
+      if (req.patientId && !pharmacy.isGstSlab(num(item.gstRate))) {
+        throw badRequest(
+          'gst_rate_not_slab',
+          `${item.name} has GST ${num(item.gstRate)}%, which Billing cannot bill. Edit the drug and pick a GST slab (${pharmacy.GST_SLAB_MESSAGE.replace('Use a GST slab: ', '')}).`,
+        );
+      }
     }
 
     const number = formatSeries('PH', await nextCounter(tx, 'pharmacy.sale'));

@@ -2,8 +2,9 @@
 
 import * as React from 'react';
 import { Download, Loader2, TrendingDown, TrendingUp } from 'lucide-react';
-import type { reports } from '@hms/shared';
+import { reports } from '@hms/shared';
 import { errorMessage } from '@/lib/api';
+import { firstError, validate } from '@/lib/validate';
 import { useAuth, usePermission } from '@/lib/auth';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -95,40 +96,48 @@ export function RangeFilters({
   busy?: boolean;
 }) {
   const today = localToday();
+  const rangeError = firstError(validate(reports.reportRangeQuerySchema, { from: value.from, to: value.to }).errors);
   return (
-    <div className="mb-6 flex flex-wrap items-end gap-3">
-      <div className="flex gap-1 rounded-lg border bg-card p-1">
-        {PRESETS.map((p) => {
-          const from = addDays(today, -(p.days - 1));
-          const active = value.from === from && value.to === today;
-          return (
-            <button
-              key={p.label}
-              type="button"
-              onClick={() => onChange({ ...value, from, to: today })}
-              className={cn('rounded-md px-3 py-1.5 text-xs font-medium', active ? 'bg-primary text-primary-foreground' : 'hover:bg-muted')}
-            >
-              {p.label}
-            </button>
-          );
-        })}
+    <div className="mb-6">
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="flex gap-1 rounded-lg border bg-card p-1">
+          {PRESETS.map((p) => {
+            const from = addDays(today, -(p.days - 1));
+            const active = value.from === from && value.to === today;
+            return (
+              <button
+                key={p.label}
+                type="button"
+                onClick={() => onChange({ ...value, from, to: today })}
+                className={cn('rounded-md px-3 py-1.5 text-xs font-medium', active ? 'bg-primary text-primary-foreground' : 'hover:bg-muted')}
+              >
+                {p.label}
+              </button>
+            );
+          })}
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="from">From</Label>
+          <Input id="from" type="date" value={value.from} max={value.to} onChange={(e) => e.target.value && onChange({ ...value, from: e.target.value })} className="w-40" />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="to">To</Label>
+          <Input id="to" type="date" value={value.to} min={value.from} max={today} onChange={(e) => e.target.value && onChange({ ...value, to: e.target.value })} className="w-40" />
+        </div>
+        <FacilitySelect value={value.facilityId} onChange={(facilityId) => onChange({ ...value, facilityId })} />
+        {extra}
+        {busy && <Loader2 className="mb-2.5 size-4 animate-spin text-muted-foreground" />}
+        <div className="ml-auto flex flex-wrap gap-2">
+          {exports.map((e) => (
+            <ExportButton key={e.report} label={e.label} query={{ report: e.report, from: value.from, to: value.to, facilityId: value.facilityId }} />
+          ))}
+        </div>
       </div>
-      <div className="space-y-1.5">
-        <Label htmlFor="from">From</Label>
-        <Input id="from" type="date" value={value.from} max={value.to} onChange={(e) => e.target.value && onChange({ ...value, from: e.target.value })} className="w-40" />
-      </div>
-      <div className="space-y-1.5">
-        <Label htmlFor="to">To</Label>
-        <Input id="to" type="date" value={value.to} min={value.from} onChange={(e) => e.target.value && onChange({ ...value, to: e.target.value })} className="w-40" />
-      </div>
-      <FacilitySelect value={value.facilityId} onChange={(facilityId) => onChange({ ...value, facilityId })} />
-      {extra}
-      {busy && <Loader2 className="mb-2.5 size-4 animate-spin text-muted-foreground" />}
-      <div className="ml-auto flex flex-wrap gap-2">
-        {exports.map((e) => (
-          <ExportButton key={e.report} label={e.label} query={{ report: e.report, from: value.from, to: value.to, facilityId: value.facilityId }} />
-        ))}
-      </div>
+      {rangeError && (
+        <p role="alert" className="mt-2 text-sm text-destructive">
+          {rangeError}
+        </p>
+      )}
     </div>
   );
 }

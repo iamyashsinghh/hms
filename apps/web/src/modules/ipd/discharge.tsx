@@ -5,8 +5,9 @@ import * as React from 'react';
 import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Plus, Printer, Trash2 } from 'lucide-react';
-import { ipd as I } from '@hms/shared';
+import { ipd as I, todayIso } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -86,6 +87,22 @@ export function DischargeTab({ admission }: { admission: I.Admission }) {
     return { ...out, finalDiagnosis: f.finalDiagnosis, medications: f.medications.filter((m) => m.drugName.trim()) };
   };
 
+  const [errors, setErrors] = React.useState<FieldErrors>({});
+  // Follow-up cannot be before the discharge day (or today while the patient is still in).
+  const earliestFollowUp = admission.dischargedAt ? new Date(admission.dischargedAt).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) : todayIso();
+  /** Checks the form like the API does; returns the body to send, or null after showing the errors. */
+  const checked = (f: Form): I.DischargeSummaryInput | null => {
+    const body = clean(f);
+    const { errors: found } = validate(I.dischargeSummaryInputSchema, body);
+    const all: FieldErrors = { ...(found ?? {}) };
+    if (body.followUpDate && body.followUpDate < earliestFollowUp) {
+      all.followUpDate = admission.dischargedAt ? 'Follow-up date cannot be before the discharge date' : 'Follow-up date cannot be in the past';
+    }
+    setErrors(all);
+    return Object.keys(all).length ? null : body;
+  };
+  const firstFieldError = Object.values(errors)[0] ?? null;
+
   const err = save.error ?? sign.error ?? error;
 
   return (
@@ -103,12 +120,12 @@ export function DischargeTab({ admission }: { admission: I.Admission }) {
             </span>
           </CardHeader>
           <CardContent className="space-y-4">
-            <ErrorBox error={err ? errorMessage(err) : null} />
+            <ErrorBox error={firstFieldError ?? (err ? errorMessage(err) : null)} />
             {!form ? (
               <p className="text-sm text-muted-foreground">{canWrite ? 'Loading…' : 'No summary yet.'}</p>
             ) : (
               <fieldset disabled={!editable} className="space-y-4">
-                <Field id="s-dx" label="Final diagnosis">
+                <Field id="s-dx" label="Final diagnosis" error={errors.finalDiagnosis}>
                   <Textarea id="s-dx" rows={2} value={form.finalDiagnosis} onChange={(e) => setForm({ ...form, finalDiagnosis: e.target.value })} maxLength={2000} />
                 </Field>
                 {TEXT_FIELDS.map(([k, label, rows]) => (
@@ -132,6 +149,7 @@ export function DischargeTab({ admission }: { admission: I.Admission }) {
                             aria-label="Days"
                             type="number"
                             min={0}
+                            max={365}
                             placeholder="Days"
                             value={m.days ?? ''}
                             onChange={(e) => setMed({ days: e.target.value === '' ? undefined : Number(e.target.value) })}
@@ -158,8 +176,8 @@ export function DischargeTab({ admission }: { admission: I.Admission }) {
                   </div>
                 </div>
                 <div className="grid gap-4 sm:grid-cols-3">
-                  <Field id="s-fu" label="Follow-up date">
-                    <Input id="s-fu" type="date" value={form.followUpDate ?? ''} onChange={(e) => setForm({ ...form, followUpDate: e.target.value })} />
+                  <Field id="s-fu" label="Follow-up date" error={errors.followUpDate}>
+                    <Input id="s-fu" type="date" min={earliestFollowUp} value={form.followUpDate ?? ''} onChange={(e) => setForm({ ...form, followUpDate: e.target.value })} />
                   </Field>
                   <Field id="s-fun" label="Follow-up notes" className="sm:col-span-2">
                     <Input id="s-fun" value={form.followUpNotes ?? ''} onChange={(e) => setForm({ ...form, followUpNotes: e.target.value })} maxLength={500} />
@@ -169,14 +187,20 @@ export function DischargeTab({ admission }: { admission: I.Admission }) {
             )}
             <div className="flex flex-wrap gap-2">
               {editable && form && (
-                <Button variant="outline" disabled={save.isPending} onClick={() => save.mutate(clean(form))}>
+                <Button variant="outline" disabled={save.isPending} onClick={() => {
+                    const body = checked(form);
+                    if (body) save.mutate(body);
+                  }}>
                   {save.isPending && <Loader2 className="animate-spin" />} Save draft
                 </Button>
               )}
               {editable && canSign && form && (
                 <Button
                   disabled={sign.isPending || form.finalDiagnosis.trim().length < 2}
-                  onClick={() => window.confirm('Sign the discharge summary? It cannot be edited after signing.') && sign.mutate(clean(form))}
+                  onClick={() => {
+                    const body = checked(form);
+                    if (body && window.confirm('Sign the discharge summary? It cannot be edited after signing.')) sign.mutate(body);
+                  }}
                 >
                   {sign.isPending && <Loader2 className="animate-spin" />} Sign summary
                 </Button>

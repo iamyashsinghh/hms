@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { iso, type Tx } from '@hms/db';
-import type { CreatePatient, Paginated, Patient, UpdatePatient } from '@hms/shared';
+import { todayIso, type CreatePatient, type Paginated, type Patient, type UpdatePatient } from '@hms/shared';
 import { DbService } from '../../common/db/db.service';
 import { AuditService } from '../../common/db/audit.service';
 import { OutboxService } from '../../common/events/outbox.service';
@@ -8,6 +8,12 @@ import { currentContext } from '../../common/context/request-context';
 import { conflict, notFound } from '../../common/errors/errors';
 import { SetupService } from '../setup/setup.service';
 import { PatientsRepository, type NewPatientRow, type PatientRow } from './patients.repository';
+
+/** Options for registrations and edits made from the patient screens. */
+export interface PatientWriteOptions {
+  /** Refuse an ABHA number that another active patient already holds. */
+  uniqueAbha?: boolean;
+}
 
 @Injectable()
 export class PatientsService {
@@ -35,9 +41,10 @@ export class PatientsService {
     });
   }
 
-  create(input: CreatePatient): Promise<Patient> {
+  create(input: CreatePatient, opts: PatientWriteOptions = {}): Promise<Patient> {
     const ctx = currentContext()!;
     return this.db.tx(async (tx) => {
+      if (opts.uniqueAbha && input.abhaNumber) await this.assertAbhaFree(tx, input.abhaNumber);
       // Prefix and width come from the hospital's number-series settings (Setup).
       const uhid = await this.setup.nextNumber(tx, 'uhid', { prefix: 'UH' });
       const row = await this.repo.insert(tx, {
@@ -55,19 +62,23 @@ export class PatientsService {
     });
   }
 
-  update(id: string, input: UpdatePatient): Promise<Patient> {
+  update(id: string, input: UpdatePatient, opts: PatientWriteOptions = {}): Promise<Patient> {
     const ctx = currentContext()!;
     return this.db.tx(async (tx) => {
       const existing = await this.repo.findById(tx, id);
       if (!existing) throw notFound('Patient');
       if (!existing.isActive || existing.mergedIntoId) throw conflict('patient_merged', `${existing.uhid} was merged into another record and cannot be edited`);
-      if (input.abhaNumber) {
-        const dup = await this.repo.findActiveByAbha(tx, input.abhaNumber, id);
-        if (dup) throw conflict('duplicate_abha', `ABHA number ${input.abhaNumber} is already used by ${dup.uhid}`);
+      if (opts.uniqueAbha && input.abhaNumber) {
+        await this.assertAbhaFree(tx, input.abhaNumber, id);
       }
       const row = await this.repo.update(tx, id, { ...toColumns(input), updatedBy: ctx.userId });
       return toDto(row!);
     });
+  }
+
+  private async assertAbhaFree(tx: Tx, abhaNumber: string, excludeId?: string) {
+    const clash = await this.repo.findActiveByAbha(tx, abhaNumber, excludeId);
+    if (clash) throw conflict('abha_in_use', `This ABHA number is already linked to ${clash.uhid}; merge the records instead`);
   }
 
   /**
@@ -98,9 +109,9 @@ function toColumns(input: UpdatePatient): Partial<NewPatientRow> {
   if (input.gender !== undefined) out.gender = input.gender;
   if (input.dateOfBirth) out.dateOfBirth = input.dateOfBirth;
   else if (input.ageYears !== undefined) {
-    const d = new Date();
-    d.setFullYear(d.getFullYear() - input.ageYears);
-    out.dateOfBirth = d.toISOString().slice(0, 10);
+    // Approximate DOB: today's date (India time) that many years ago.
+    const today = todayIso();
+    out.dateOfBirth = `${String(Number(today.slice(0, 4)) - input.ageYears).padStart(4, '0')}${today.slice(4)}`.replace(/-02-29$/, '-02-28');
   } else if (input.dateOfBirth === null) out.dateOfBirth = null;
   if (input.mobile !== undefined) out.mobile = input.mobile;
   if (input.email !== undefined) out.email = input.email;

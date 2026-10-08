@@ -3,10 +3,11 @@
 import * as React from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { KeyRound, Loader2, Plus, RotateCw, Send, TriangleAlert, Webhook } from 'lucide-react';
-import { integrations as I } from '@hms/shared';
+import { integrations as I, todayIso } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
+import { type FieldErrors, validate } from '@/lib/validate';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
 import { Badge } from '@/components/ui/badge';
@@ -40,17 +41,18 @@ function ApiKeys() {
   const queryClient = useQueryClient();
   const [form, setForm] = React.useState<{ name: string; scopes: I.ApiScope[]; expires: string } | null>(null);
   const [created, setCreated] = React.useState<I.CreatedApiKey | null>(null);
+  const [keyErrors, setKeyErrors] = React.useState<FieldErrors>({});
   const [now] = React.useState(() => Date.now());
   const [origin] = React.useState(() => (typeof window === 'undefined' ? '' : window.location.origin));
 
   const { data, isPending, error } = useQuery({ queryKey: ['integrations', 'api-keys'], queryFn: () => api.integrations.apiKeys.list() });
+  const keyBody = (f: NonNullable<typeof form>): I.CreateApiKey => ({
+    name: f.name.trim(),
+    scopes: f.scopes,
+    expiresAt: f.expires ? (/^\d{4}-\d{2}-\d{2}$/.test(f.expires) ? new Date(`${f.expires}T23:59:59+05:30`).toISOString() : f.expires) : undefined,
+  });
   const create = useMutation({
-    mutationFn: (f: NonNullable<typeof form>) =>
-      api.integrations.apiKeys.create({
-        name: f.name.trim(),
-        scopes: f.scopes,
-        expiresAt: f.expires ? new Date(`${f.expires}T23:59:59+05:30`).toISOString() : undefined,
-      }),
+    mutationFn: (f: NonNullable<typeof form>) => api.integrations.apiKeys.create(keyBody(f)),
     onSuccess: (k) => {
       setCreated(k);
       setForm(null);
@@ -96,19 +98,21 @@ function ApiKeys() {
             className="grid gap-4 rounded-lg border p-4 sm:grid-cols-2"
             onSubmit={(e) => {
               e.preventDefault();
-              create.mutate(form);
+              const v = validate(I.createApiKeySchema, keyBody(form));
+              setKeyErrors(v.errors ?? {});
+              if (v.data) create.mutate(form);
             }}
           >
             <div className="sm:col-span-2">
               <ErrorBox error={create.error ? errorMessage(create.error) : null} />
             </div>
-            <Field id="key-name" label="Name *">
-              <Input id="key-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Sysmex analyser" required minLength={2} />
+            <Field id="key-name" label="Name *" error={keyErrors.name}>
+              <Input id="key-name" maxLength={100} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Sysmex analyser" required minLength={2} />
             </Field>
-            <Field id="key-expires" label="Expires on" hint="Leave blank for no expiry.">
-              <Input id="key-expires" type="date" value={form.expires} onChange={(e) => setForm({ ...form, expires: e.target.value })} />
+            <Field id="key-expires" label="Expires on" hint="Leave blank for no expiry." error={keyErrors.expiresAt}>
+              <Input id="key-expires" type="date" min={todayIso()} max={todayIso(5 * 365)} value={form.expires} onChange={(e) => setForm({ ...form, expires: e.target.value })} />
             </Field>
-            <Field label="Scopes *" className="sm:col-span-2">
+            <Field label="Scopes *" className="sm:col-span-2" error={keyErrors.scopes}>
               <CheckboxGroup options={I.API_SCOPES} value={form.scopes} onChange={(scopes) => setForm({ ...form, scopes })} labels={I.API_SCOPE_LABELS} className="grid gap-2" />
             </Field>
             <div className="flex justify-end gap-2 sm:col-span-2">
@@ -215,6 +219,7 @@ function Webhooks() {
   const [status, setStatus] = React.useState<I.WebhookDeliveryStatus | 'all'>('all');
   const [page, setPage] = React.useState(1);
   const [viewing, setViewing] = React.useState<I.WebhookDelivery | null>(null);
+  const [hookErrors, setHookErrors] = React.useState<FieldErrors>({});
 
   const endpoints = useQuery({ queryKey: ['integrations', 'webhooks', 'endpoints'], queryFn: () => api.integrations.webhooks.list() });
   const dq: I.WebhookDeliveryQuery = { endpointId: endpointFilter || undefined, status, page, pageSize: PAGE_SIZE };
@@ -225,9 +230,10 @@ function Webhooks() {
   });
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['integrations', 'webhooks'] });
 
+  const hookBody = (f: EndpointForm): I.WebhookEndpointInput => ({ url: f.url.trim(), description: f.description.trim() || undefined, events: f.events, isActive: f.isActive });
   const save = useMutation({
     mutationFn: (f: EndpointForm) => {
-      const body: I.WebhookEndpointInput = { url: f.url.trim(), description: f.description.trim() || undefined, events: f.events, isActive: f.isActive };
+      const body = hookBody(f);
       return f.id ? api.integrations.webhooks.update(f.id, body) : api.integrations.webhooks.create(body);
     },
     onSuccess: (ep) => {
@@ -290,19 +296,21 @@ function Webhooks() {
               className="grid gap-4 rounded-lg border p-4 sm:grid-cols-2"
               onSubmit={(e) => {
                 e.preventDefault();
-                save.mutate(form);
+                const v = validate(I.webhookEndpointInputSchema, hookBody(form));
+                setHookErrors(v.errors ?? {});
+                if (v.data) save.mutate(form);
               }}
             >
               <div className="sm:col-span-2">
                 <ErrorBox error={save.error ? errorMessage(save.error) : null} />
               </div>
-              <Field id="wh-url" label="URL *" hint="Must use https (http allowed only for localhost).">
-                <Input id="wh-url" type="url" value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} placeholder="https://example.com/hms-webhook" required />
+              <Field id="wh-url" label="URL *" hint="Must use https (http allowed only for localhost)." error={hookErrors.url}>
+                <Input id="wh-url" type="url" maxLength={500} value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} placeholder="https://example.com/hms-webhook" required />
               </Field>
-              <Field id="wh-desc" label="Description">
-                <Input id="wh-desc" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+              <Field id="wh-desc" label="Description" error={hookErrors.description}>
+                <Input id="wh-desc" maxLength={200} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
               </Field>
-              <Field label="Events *" className="sm:col-span-2">
+              <Field label="Events *" className="sm:col-span-2" error={hookErrors.events}>
                 <CheckboxGroup options={I.WEBHOOK_EVENTS} value={form.events} onChange={(events) => setForm({ ...form, events })} className="grid gap-2 font-mono text-xs sm:grid-cols-2" />
               </Field>
               <label className="flex items-center gap-2 text-sm">

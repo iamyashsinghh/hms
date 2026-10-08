@@ -404,3 +404,102 @@ describe('pharmacy access control', () => {
     await expect(db.asTenant({ tenantId: randomUUID() }, (tx) => pharmacy.getStore(storeId, tx))).rejects.toThrow();
   });
 });
+
+describe('pharmacy validation', () => {
+  const msg = (res: { json: () => { error: { message: string } } }) => res.json().error.message;
+
+  it('only accepts GST slabs on drugs and GRN lines (PHA-41)', async () => {
+    const bad = await call(pharmacist, 'POST', '/items', { code: `GST${run}`, name: 'Seven percent drug', gstRate: 7 });
+    expect(bad.statusCode).toBe(400);
+    expect(msg(bad)).toContain('Use a GST slab: 0, 0.1, 0.25, 3, 5, 12, 18, 28 or 40');
+    const ok = await newItem({ gstRate: 12 });
+    const upd = await call(pharmacist, 'PATCH', `/items/${ok.id}`, { gstRate: 7 });
+    expect(upd.statusCode).toBe(400);
+    const grn = await call(pharmacist, 'POST', '/grns', {
+      storeId,
+      supplierName: 'Slab Pharma',
+      lines: [{ itemId: ok.id, batchNo: 'S1', expiryDate: daysFromNow(300), mrp: 10, qty: 1, gstRate: 7 }],
+    });
+    expect(grn.statusCode).toBe(400);
+    expect(msg(grn)).toContain('Use a GST slab');
+  });
+
+  it('refuses a patient sale of a legacy non-slab item with a clear message, before any stock moves', async () => {
+    const item = await newItem();
+    await stockUp(item.id, [{ batchNo: 'L7', expiryDate: daysFromNow(200), mrp: 10, qty: 5 }]);
+    await app.get(DbService).asTenant({ tenantId }, (tx) => tx.execute(sql`update inventory.items set gst_rate = 7 where id = ${item.id}`));
+    const sale = await call(pharmacist, 'POST', '/sales', { storeId, patientId, lines: [{ itemId: item.id, qty: 1 }] });
+    expect(sale.statusCode).toBe(400);
+    expect(sale.json().error.code).toBe('gst_rate_not_slab');
+    expect(msg(sale)).toMatch(/GST 7%.*pick a GST slab/);
+    expect(await stockOf(item.id)).toBe(5);
+    const walkIn = await call(pharmacist, 'POST', '/sales', { storeId, lines: [{ itemId: item.id, qty: 1 }] });
+    expect(walkIn.statusCode, walkIn.body).toBe(201);
+  });
+
+  it('keeps fields that a partial update does not send', async () => {
+    const item = await newItem({ gstRate: 12, schedule: 'H', unit: 'strip', packSize: 10, reorderLevel: 7 });
+    const off = await call(pharmacist, 'PATCH', `/items/${item.id}`, { isActive: false });
+    expect(off.statusCode, off.body).toBe(200);
+    expect(off.json()).toMatchObject({ isActive: false, gstRate: 12, schedule: 'H', unit: 'strip', packSize: 10, reorderLevel: 7 });
+  });
+
+  it('checks batch expiry, invoice date and MRP when receiving stock', async () => {
+    const item = await newItem();
+    const line = { itemId: item.id, batchNo: 'E1', mrp: 10, qty: 5 };
+    const expired = await call(pharmacist, 'POST', '/grns', { storeId, supplierName: 'Exp Pharma', lines: [{ ...line, expiryDate: daysFromNow(-3) }] });
+    expect(expired.statusCode).toBe(400);
+    expect(msg(expired)).toContain('already expired');
+    const future = await call(pharmacist, 'POST', '/grns', {
+      storeId,
+      supplierName: 'Exp Pharma',
+      invoiceDate: daysFromNow(5),
+      lines: [{ ...line, expiryDate: daysFromNow(300) }],
+    });
+    expect(future.statusCode).toBe(400);
+    expect(msg(future)).toContain('Invoice date cannot be in the future');
+    const zeroMrp = await call(pharmacist, 'POST', '/stock/opening', { storeId, lines: [{ ...line, mrp: 0, expiryDate: daysFromNow(300) }] });
+    expect(zeroMrp.statusCode).toBe(400);
+    expect(msg(zeroMrp)).toContain('MRP must be more than 0');
+    const aboveMrp = await call(pharmacist, 'POST', '/stock/opening', { storeId, lines: [{ ...line, saleRate: 11, expiryDate: daysFromNow(300) }] });
+    expect(aboveMrp.statusCode).toBe(400);
+    expect(msg(aboveMrp)).toContain('Sale rate cannot be more than MRP');
+    const badDate = await call(pharmacist, 'POST', '/stock/opening', { storeId, lines: [{ ...line, expiryDate: '2026-02-30' }] });
+    expect(badDate.statusCode).toBe(400);
+    // Opening stock may still record already-expired units (to write them off).
+    const oldStock = await call(pharmacist, 'POST', '/stock/opening', { storeId, lines: [{ ...line, expiryDate: daysFromNow(-3) }] });
+    expect(oldStock.statusCode, oldStock.body).toBe(201);
+    const good = await call(pharmacist, 'POST', '/grns', {
+      storeId,
+      supplierName: 'Exp Pharma',
+      supplierGstin: '',
+      invoiceDate: daysFromNow(-1),
+      lines: [{ ...line, expiryDate: daysFromNow(300) }],
+    });
+    expect(good.statusCode, good.body).toBe(201);
+  });
+
+  it('checks walk-in mobile, credit sales and expiry write-off sign', async () => {
+    const item = await newItem();
+    await stockUp(item.id, [{ batchNo: 'W1', expiryDate: daysFromNow(200), mrp: 10, qty: 5 }]);
+    const bad = await call(pharmacist, 'POST', '/sales', { storeId, customerMobile: '12345', lines: [{ itemId: item.id, qty: 1 }] });
+    expect(bad.statusCode).toBe(400);
+    expect(msg(bad)).toContain('Enter a 10-digit Indian mobile number');
+    const credit = await call(pharmacist, 'POST', '/sales', { storeId, paymentMode: 'credit', lines: [{ itemId: item.id, qty: 1 }] });
+    expect(credit.statusCode).toBe(400);
+    expect(msg(credit)).toContain('Credit sales need a registered patient');
+    const ok = await call(pharmacist, 'POST', '/sales', { storeId, customerMobile: '+91 98100-12345', lines: [{ itemId: item.id, qty: 1, discountPct: 10 }] });
+    expect(ok.statusCode, ok.body).toBe(201);
+    expect(ok.json().customerMobile).toBe('9810012345');
+    const badDisc = await call(pharmacist, 'POST', '/sales', { storeId, lines: [{ itemId: item.id, qty: 1, discountPct: 120 }] });
+    expect(badDisc.statusCode).toBe(400);
+
+    const batch = (await call(pharmacist, 'GET', `/stores/${storeId}/items/${item.id}/batches`)).json()[0];
+    const plus = await call(pharmacist, 'POST', '/stock/adjustments', { storeId, batchId: batch.batchId, qtyChange: 5, type: 'expiry_writeoff', reason: 'Expired' });
+    expect(plus.statusCode).toBe(400);
+    expect(msg(plus)).toContain('use a negative quantity');
+    const range = await call(pharmacist, 'GET', `/sales?from=${daysFromNow(1)}&to=${daysFromNow(-1)}`);
+    expect(range.statusCode).toBe(400);
+    expect(msg(range)).toContain('End date is before start date');
+  });
+});

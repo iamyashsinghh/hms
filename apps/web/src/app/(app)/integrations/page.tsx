@@ -7,6 +7,7 @@ import { ArrowRight, CodeXml, CreditCard, FileLock, FingerprintPattern, Loader2,
 import { integrations as I } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { usePermission } from '@/lib/auth';
+import { type FieldErrors, validate } from '@/lib/validate';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
 import { Badge } from '@/components/ui/badge';
@@ -68,15 +69,16 @@ export default function IntegrationsPage() {
       ? { abdmMode: data.abdmMode, hfrId: data.hfrId ?? '', hipName: data.hipName ?? '', paymentProvider: data.paymentProvider, paymentKeyId: data.paymentKeyId ?? '' }
       : null);
 
+  const [errors, setErrors] = React.useState<FieldErrors>({});
+  const settingsBody = (f: Form): I.SettingsInput => ({
+    abdmMode: f.abdmMode,
+    hfrId: f.hfrId.trim() || null,
+    hipName: f.hipName.trim() || null,
+    paymentProvider: f.paymentProvider,
+    paymentKeyId: f.paymentKeyId.trim() || null,
+  });
   const save = useMutation({
-    mutationFn: (f: Form) =>
-      api.integrations.settings.update({
-        abdmMode: f.abdmMode,
-        hfrId: f.hfrId.trim() || null,
-        hipName: f.hipName.trim() || null,
-        paymentProvider: f.paymentProvider,
-        paymentKeyId: f.paymentKeyId.trim() || null,
-      }),
+    mutationFn: (f: Form) => api.integrations.settings.update(settingsBody(f)),
     onSuccess: (s) => {
       queryClient.setQueryData(['integrations', 'settings'], s);
       setForm(null);
@@ -134,7 +136,10 @@ export default function IntegrationsPage() {
                 className="grid gap-5 sm:grid-cols-2"
                 onSubmit={(e) => {
                   e.preventDefault();
-                  if (canManage) save.mutate(current);
+                  if (!canManage) return;
+                  const v = validate(I.settingsInputSchema, settingsBody(current));
+                  setErrors(v.errors ?? {});
+                  if (v.data) save.mutate(current);
                 }}
               >
                 <div className="sm:col-span-2">
@@ -155,11 +160,11 @@ export default function IntegrationsPage() {
                     The server does not have ABDM sandbox credentials. Set them in the API environment before using sandbox mode, or calls will fail.
                   </Notice>
                 )}
-                <Field id="hfrId" label="HFR id (HIP id)" hint="Health Facility Registry id of this hospital.">
-                  <Input id="hfrId" disabled={!canManage} value={current.hfrId} onChange={(e) => set({ hfrId: e.target.value })} placeholder="e.g. IN2710001234" />
+                <Field id="hfrId" label="HFR id (HIP id)" hint="Health Facility Registry id of this hospital." error={errors.hfrId}>
+                  <Input id="hfrId" maxLength={50} disabled={!canManage} value={current.hfrId} onChange={(e) => set({ hfrId: e.target.value })} placeholder="e.g. IN2710001234" />
                 </Field>
                 <Field id="hipName" label="HIP name" hint="Name shown to patients in the ABHA app.">
-                  <Input id="hipName" disabled={!canManage} value={current.hipName} onChange={(e) => set({ hipName: e.target.value })} />
+                  <Input id="hipName" maxLength={200} disabled={!canManage} value={current.hipName} onChange={(e) => set({ hipName: e.target.value })} />
                 </Field>
 
                 <h3 className="pt-2 text-sm font-semibold sm:col-span-2">Online payments</h3>
@@ -170,9 +175,10 @@ export default function IntegrationsPage() {
                     <option value="razorpay">Razorpay</option>
                   </Select>
                 </Field>
-                <Field id="paymentKeyId" label="Payment key id" hint="Public key id only, e.g. rzp_test_…">
+                <Field id="paymentKeyId" label="Payment key id" hint="Public key id only, e.g. rzp_test_…" error={errors.paymentKeyId}>
                   <Input
                     id="paymentKeyId"
+                    maxLength={100}
                     disabled={!canManage || current.paymentProvider === 'none'}
                     value={current.paymentKeyId}
                     onChange={(e) => set({ paymentKeyId: e.target.value })}

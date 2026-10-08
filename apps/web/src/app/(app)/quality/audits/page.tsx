@@ -7,6 +7,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { ListChecks, Loader2, Plus } from 'lucide-react';
 import { quality as Q } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -120,8 +121,9 @@ function Schedule({ onDone }: { onDone: (id?: string) => void }) {
   const [checklistId, setChecklistId] = React.useState('');
   const [scheduledOn, setScheduledOn] = React.useState(todayIST());
   const [department, setDepartment] = React.useState('');
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const create = useMutation({
-    mutationFn: () => api.quality.audits.schedule({ checklistId, scheduledOn, department: department || undefined }),
+    mutationFn: (body: Q.ScheduleAudit) => api.quality.audits.schedule(body),
     onSuccess: (a) => {
       queryClient.invalidateQueries({ queryKey: ['quality'] });
       onDone(a.id);
@@ -147,11 +149,14 @@ function Schedule({ onDone }: { onDone: (id?: string) => void }) {
             className="grid gap-4 sm:grid-cols-4"
             onSubmit={(e) => {
               e.preventDefault();
-              create.mutate();
+              const body: Q.ScheduleAudit = { checklistId, scheduledOn, department: department || undefined };
+              const { errors: found } = validate(Q.scheduleAuditSchema, body);
+              setErrors(found ?? {});
+              if (!found) create.mutate(body);
             }}
           >
             <div className="sm:col-span-4">
-              <ErrorBox error={create.error} />
+              <ErrorBox error={Object.keys(errors).length ? 'Please correct the highlighted fields' : create.error} />
             </div>
             <Field id="a-checklist" label="Checklist *" className="sm:col-span-2">
               <Select id="a-checklist" required value={checklistId} onChange={(e) => setChecklistId(e.target.value)}>
@@ -163,11 +168,11 @@ function Schedule({ onDone }: { onDone: (id?: string) => void }) {
                 ))}
               </Select>
             </Field>
-            <Field id="a-date" label="Date *">
-              <Input id="a-date" type="date" required value={scheduledOn} onChange={(e) => setScheduledOn(e.target.value)} />
+            <Field id="a-date" label="Date *" error={errors.scheduledOn}>
+              <Input id="a-date" type="date" required min={todayIST()} value={scheduledOn} onChange={(e) => setScheduledOn(e.target.value)} />
             </Field>
             <Field id="a-dept" label="Department / ward">
-              <Input id="a-dept" value={department} onChange={(e) => setDepartment(e.target.value)} />
+              <Input id="a-dept" maxLength={120} value={department} onChange={(e) => setDepartment(e.target.value)} />
             </Field>
             <div className="flex gap-2 sm:col-span-4">
               <Button type="submit" disabled={create.isPending || !checklistId}>

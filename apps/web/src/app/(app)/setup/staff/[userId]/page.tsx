@@ -7,7 +7,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CalendarClock, Loader2 } from 'lucide-react';
-import type { setup } from '@hms/shared';
+import { todayIso, type setup } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
@@ -114,7 +114,7 @@ export default function StaffProfilePage({ params }: { params: Promise<{ userId:
                 </Select>
               </Field>
               <Field id="dateOfJoining" label="Date of joining" error={errors.dateOfJoining}>
-                <Input id="dateOfJoining" type="date" {...register('dateOfJoining', opt)} />
+                <Input id="dateOfJoining" type="date" min="1950-01-01" max={todayIso(366)} {...register('dateOfJoining', opt)} />
               </Field>
             </CardContent>
           </Card>
@@ -158,13 +158,13 @@ export default function StaffProfilePage({ params }: { params: Promise<{ userId:
               </CardHeader>
               <CardContent className="grid gap-5 sm:grid-cols-3">
                 <Field id="consultationFee" label="Consultation fee (₹)" error={errors.consultationFee}>
-                  <Input id="consultationFee" type="number" min={0} step="0.01" {...register('consultationFee', optNumber)} />
+                  <Input id="consultationFee" type="number" inputMode="decimal" min={0} max={10_000_000} step="0.01" {...register('consultationFee', optNumber)} />
                 </Field>
                 <Field id="followUpFee" label="Follow-up fee (₹)" error={errors.followUpFee}>
-                  <Input id="followUpFee" type="number" min={0} step="0.01" {...register('followUpFee', optNumber)} />
+                  <Input id="followUpFee" type="number" inputMode="decimal" min={0} max={10_000_000} step="0.01" {...register('followUpFee', optNumber)} />
                 </Field>
                 <Field id="followUpDays" label="Follow-up valid for (days)" error={errors.followUpDays}>
-                  <Input id="followUpDays" type="number" min={0} max={365} {...register('followUpDays', optNumber)} />
+                  <Input id="followUpDays" type="number" inputMode="numeric" min={0} max={365} step={1} {...register('followUpDays', optNumber)} />
                 </Field>
               </CardContent>
             </Card>

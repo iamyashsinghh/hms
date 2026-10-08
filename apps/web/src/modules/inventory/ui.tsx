@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Trash2 } from 'lucide-react';
 import type { pharmacy } from '@hms/shared';
 import { api } from '@/lib/api';
+import type { FieldErrors } from '@/lib/validate';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input, Select } from '@/components/ui/input';
@@ -104,7 +105,11 @@ export function LinesEditor({ lines, setLines, withRate = false }: { lines: QtyL
   const set = (key: number, patch: Partial<QtyLine>) => setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
   return (
     <div className="space-y-4">
-      <ItemPicker placeholder="Search item by name or code…" onPick={(item) => setLines((ls) => [...ls, newLine(item, '', withRate ? '' : undefined)])} />
+      <ItemPicker
+        placeholder="Search item by name or code…"
+        // The same item twice is refused by the server; picking it again just keeps the existing line.
+        onPick={(item) => setLines((ls) => (ls.some((l) => l.itemId === item.id) ? ls : [...ls, newLine(item, '', withRate ? '' : undefined)]))}
+      />
       {lines.length > 0 && (
         <Table>
           <TableHeader>
@@ -125,11 +130,11 @@ export function LinesEditor({ lines, setLines, withRate = false }: { lines: QtyL
                   <div className="text-xs text-muted-foreground">per {l.unit}</div>
                 </TableCell>
                 <TableCell>
-                  <Input className="w-24" type="number" min={1} aria-label={`Qty of ${l.name}`} value={l.qty} onChange={(e) => set(l.key, { qty: e.target.value })} />
+                  <Input className="w-24" type="number" min={1} max={1000000} step={1} inputMode="numeric" aria-label={`Qty of ${l.name}`} value={l.qty} onChange={(e) => set(l.key, { qty: e.target.value })} />
                 </TableCell>
                 {withRate && (
                   <TableCell>
-                    <Input className="w-28" type="number" min={0} step="0.01" aria-label={`Rate of ${l.name}`} value={l.rate ?? ''} onChange={(e) => set(l.key, { rate: e.target.value })} />
+                    <Input className="w-28" type="number" min={0} max={10000000} step="0.01" aria-label={`Rate of ${l.name}`} value={l.rate ?? ''} onChange={(e) => set(l.key, { rate: e.target.value })} />
                   </TableCell>
                 )}
                 {withRate && (
@@ -160,6 +165,17 @@ export function lineTotal(l: QtyLine): number {
 
 export const linesValid = (lines: QtyLine[], withRate = false) =>
   lines.length > 0 && lines.every((l) => Number(l.qty) > 0 && Number.isInteger(Number(l.qty)) && (!withRate || l.rate !== ''));
+
+/** The first validation error, naming the item when it is about a line ("lines.2.qty"). */
+export function formErrorMessage(errors: FieldErrors | null, lines?: { name?: string; itemName?: string }[]): string | null {
+  const first = errors && Object.entries(errors)[0];
+  if (!first) return null;
+  const [path, message] = first;
+  const m = /^lines\.(\d+)\./.exec(path);
+  const line = m ? lines?.[Number(m[1])] : undefined;
+  const name = line?.name ?? line?.itemName;
+  return name ? `${name}: ${message}` : message;
+}
 
 export function Notice({ children, tone = 'ok' }: { children: React.ReactNode; tone?: 'ok' | 'error' }) {
   return (

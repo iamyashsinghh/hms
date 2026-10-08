@@ -65,6 +65,7 @@ export default function TicketPage() {
           <ErrorBox error={send.error ?? resolve.error} />
           <textarea
             rows={4}
+            maxLength={10000}
             value={reply}
             onChange={(e) => setReply(e.target.value)}
             placeholder="Write a reply…"

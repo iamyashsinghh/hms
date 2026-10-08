@@ -67,8 +67,8 @@ export default function SalesPage() {
             <option value="otc">OTC</option>
             <option value="rx">Rx</option>
           </Select>
-          <Input aria-label="From" type="date" className="w-40" value={from} onChange={(e) => { setFrom(e.target.value); setPage(1); }} />
-          <Input aria-label="To" type="date" className="w-40" value={to} onChange={(e) => { setTo(e.target.value); setPage(1); }} />
+          <Input aria-label="From" type="date" className="w-40" max={to || undefined} value={from} onChange={(e) => { setFrom(e.target.value); setPage(1); }} />
+          <Input aria-label="To" type="date" className="w-40" min={from || undefined} value={to} onChange={(e) => { setTo(e.target.value); setPage(1); }} />
           {isFetching && <Loader2 className="size-4 animate-spin text-muted-foreground" />}
         </div>
         {error ? (

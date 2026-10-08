@@ -83,7 +83,8 @@ function PlanEditor({ plan }: { plan: platform.Plan }) {
       description: f.description,
       priceMonthly: f.priceMonthly === '' ? null : f.priceMonthly,
       priceYearly: f.priceYearly === '' ? null : f.priceYearly,
-      trialDays: Number(f.trialDays),
+      // Blank is reported as missing, not saved as 0.
+      trialDays: f.trialDays.trim() === '' ? Number.NaN : Number(f.trialDays),
       limits: { facilities: num(f.facilities), users: num(f.users), beds: num(f.beds) },
       sortOrder: Number(f.sortOrder || 0),
       modules: f.modules as platform.UpdatePlan['modules'],

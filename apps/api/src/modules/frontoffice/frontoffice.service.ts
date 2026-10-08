@@ -521,6 +521,9 @@ export class FrontofficeService implements OnModuleInit {
   ): Promise<{ start: string; end: string }> {
     const start = new Date(requestedStart).toISOString();
     if (new Date(start).getTime() < Date.now() - 5 * 60_000) throw badRequest('slot_in_past', 'That time has already passed');
+    if (new Date(start).getTime() > Date.now() + fo.MAX_BOOKING_DAYS_AHEAD * 86_400_000) {
+      throw badRequest('slot_too_far', `Appointments can be booked up to ${fo.MAX_BOOKING_DAYS_AHEAD} days ahead`);
+    }
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${'frontoffice.doctor.' + doctorId}))`);
 
     const date = istDate(start);

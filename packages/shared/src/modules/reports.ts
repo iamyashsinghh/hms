@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { isoDate } from '../validation';
 
 /**
  * Reports & MIS: permissions and API contracts (Zod schemas + types).
@@ -33,7 +34,6 @@ export const reportsModule = defineModule({
 
 // ---------- Queries ----------
 
-const isoDate = z.iso.date();
 /** Longest range a report may cover. */
 export const MAX_REPORT_DAYS = 366;
 

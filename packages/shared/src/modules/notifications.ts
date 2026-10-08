@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { emailAddress, indianMobile, money, positiveMoney, requiredText } from '../validation';
 
 /**
  * Notifications: permissions and API contracts (Zod schemas + types).
@@ -64,7 +65,7 @@ export type LedgerEntryType = (typeof LEDGER_ENTRY_TYPES)[number];
 export const DEVICE_PLATFORMS = ['ios', 'android', 'web'] as const;
 export const APP_VARIANTS = ['doctor', 'staff', 'owner', 'patient'] as const;
 
-const mobile = z.string().regex(/^[6-9]\d{9}$/, 'Enter a 10-digit Indian mobile number');
+const mobile = indianMobile;
 const templateKey = z.string().regex(/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/, 'Use dotted lowercase keys, e.g. appointment.booked');
 
 // ---------- Built-in templates and events ----------
@@ -356,17 +357,17 @@ export const recipientSchema = z
     patientId: z.uuid().optional(),
     userId: z.uuid().optional(),
     mobile: mobile.optional(),
-    email: z.email().optional(),
+    email: emailAddress.optional(),
   })
-  .refine((r) => r.patientId || r.userId || r.mobile || r.email, 'Give a patient, user, mobile or email');
+  .refine((r) => r.patientId || r.userId || r.mobile || r.email, 'Pick a patient or enter a mobile number or email');
 export type Recipient = z.infer<typeof recipientSchema>;
 
 export const sendRequestSchema = z.object({
   to: recipientSchema,
   template: templateKey,
-  data: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).default({}),
+  data: z.record(z.string().max(50), z.union([z.string().max(1000, 'Each value can be at most 1000 characters'), z.number(), z.boolean(), z.null()])).default({}),
   /** Defaults to the hospital's default channels. */
-  channels: z.array(z.enum(CHANNELS)).min(1).max(4).optional(),
+  channels: z.array(z.enum(CHANNELS)).min(1, 'Pick at least one channel').max(4).optional(),
 });
 export type SendRequest = z.input<typeof sendRequestSchema>;
 
@@ -451,18 +452,24 @@ export interface Template {
 }
 
 export const upsertTemplateSchema = z.object({
-  subject: z.string().trim().max(200).nullish(),
-  body: z.string().trim().min(1).max(2000),
-  dltTemplateId: z.string().trim().max(50).nullish(),
-  providerTemplateName: z.string().trim().max(100).nullish(),
+  subject: z.string().trim().max(200, 'Subject can be at most 200 characters').nullish(),
+  body: requiredText('the message text', 2000),
+  /** DLT / MSG91 template id: letters and digits only. */
+  dltTemplateId: z.string().trim().max(50, 'Template id can be at most 50 characters').regex(/^[A-Za-z0-9]*$/, 'Template id can only have letters and digits').nullish(),
+  providerTemplateName: z
+    .string()
+    .trim()
+    .max(100, 'Template name can be at most 100 characters')
+    .regex(/^[A-Za-z0-9_.-]*$/, 'Template name can only have letters, digits and _ . -')
+    .nullish(),
   isActive: z.boolean().default(true),
 });
 export type UpsertTemplate = z.input<typeof upsertTemplateSchema>;
 
 export const previewTemplateSchema = z.object({
   channel: z.enum(CHANNELS),
-  subject: z.string().max(200).nullish(),
-  body: z.string().min(1).max(2000),
+  subject: z.string().max(200, 'Subject can be at most 200 characters').nullish(),
+  body: requiredText('the message text', 2000),
   data: z.record(z.string(), z.union([z.string(), z.number()])).default({}),
 });
 export type PreviewTemplate = z.input<typeof previewTemplateSchema>;
@@ -500,11 +507,19 @@ export type UpdateRule = z.input<typeof updateRuleSchema>;
 export const createOptOutSchema = z
   .object({
     channel: z.enum([...CHANNELS, 'all']),
-    address: z.string().trim().min(3).max(254),
-    reason: z.string().trim().max(200).optional(),
+    address: requiredText('the mobile number or email', 254),
+    reason: z.string().trim().max(200, 'Reason can be at most 200 characters').optional(),
   })
-  .refine((o) => (o.channel === 'email' || o.channel === 'push' || o.channel === 'all' ? true : /^[6-9]\d{9}$/.test(o.address.replace(/\D/g, '').slice(-10))), {
+  .refine((o) => (o.channel === 'email' || o.channel === 'push' || o.channel === 'all' ? true : indianMobile.safeParse(o.address).success), {
     message: 'Enter a 10-digit Indian mobile number',
+    path: ['address'],
+  })
+  .refine((o) => (o.channel === 'email' ? emailAddress.safeParse(o.address).success : true), {
+    message: 'Enter a valid email address',
+    path: ['address'],
+  })
+  .refine((o) => (o.channel === 'all' ? indianMobile.safeParse(o.address).success || emailAddress.safeParse(o.address).success : true), {
+    message: 'Enter a 10-digit Indian mobile number or an email address',
     path: ['address'],
   });
 export type CreateOptOut = z.input<typeof createOptOutSchema>;
@@ -544,10 +559,10 @@ export interface CreditSummary {
 }
 
 export const topupSchema = z.object({
-  amount: z.number().positive().max(1_000_000),
-  note: z.string().trim().max(200).optional(),
+  amount: positiveMoney(1_000_000),
+  note: z.string().trim().max(200, 'Note can be at most 200 characters').optional(),
 });
-export type Topup = z.input<typeof topupSchema>;
+export type Topup = z.output<typeof topupSchema>;
 
 export const ledgerQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -566,12 +581,12 @@ export const settingsSchema = z.object({
   /** 6-letter DLT sender id (header) for SMS. */
   smsSenderId: z.string().trim().regex(/^[A-Z]{6}$/, 'Six capital letters, e.g. HMSHSP').nullish(),
   emailFromName: z.string().trim().max(100).nullish(),
-  emailReplyTo: z.email().nullish(),
-  lowBalanceThreshold: z.number().min(0).max(100_000),
+  emailReplyTo: emailAddress.nullish(),
+  lowBalanceThreshold: money(100_000),
 });
 export type Settings = z.infer<typeof settingsSchema>;
 export const updateSettingsSchema = settingsSchema.partial();
-export type UpdateSettings = z.input<typeof updateSettingsSchema>;
+export type UpdateSettings = z.output<typeof updateSettingsSchema>;
 
 // ---------- Push devices ----------
 

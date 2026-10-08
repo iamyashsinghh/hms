@@ -14,7 +14,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { DIET_LABELS, ErrorBox, Field, MEAL_LABELS, MessageRow, Pager, PatientPicker, Tabs, formatDay, humanize, opt, todayIST } from '@/modules/ops/ui';
+import { DIET_LABELS, ErrorBox, Field, MEAL_LABELS, MessageRow, Pager, PatientPicker, Tabs, formatDay, humanize, opt, todayIST, checked } from '@/modules/ops/ui';
 
 function defaultMeal(): O.Meal {
   const h = Number(new Date().toLocaleString('en-GB', { hour: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' }));
@@ -50,15 +50,15 @@ function OrderForm({ onDone }: { onDone: () => void }) {
   const [f, setF] = React.useState({ location: '', dietType: 'normal' as O.DietType, vegetarian: true, instructions: '', startDate: todayIST(), endDate: '' });
   const save = useMutation({
     mutationFn: () =>
-      api.ops.diet.order({
-        patientId: patient!.id,
+      api.ops.diet.order(checked(O.dietOrderInputSchema, {
+        patientId: patient?.id ?? '',
         location: f.location.trim(),
         dietType: f.dietType,
         vegetarian: f.vegetarian,
         instructions: opt(f.instructions),
         startDate: opt(f.startDate),
         endDate: opt(f.endDate),
-      }),
+      })),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['ops'] });
       onDone();
@@ -102,10 +102,10 @@ function OrderForm({ onDone }: { onDone: () => void }) {
             </Select>
           </Field>
           <Field id="d-start" label="From">
-            <Input id="d-start" type="date" value={f.startDate} onChange={(e) => setF({ ...f, startDate: e.target.value })} />
+            <Input id="d-start" type="date" min={todayIST()} value={f.startDate} onChange={(e) => setF({ ...f, startDate: e.target.value })} />
           </Field>
           <Field id="d-end" label="Until (optional)">
-            <Input id="d-end" type="date" value={f.endDate} onChange={(e) => setF({ ...f, endDate: e.target.value })} />
+            <Input id="d-end" type="date" min={f.startDate || todayIST()} value={f.endDate} onChange={(e) => setF({ ...f, endDate: e.target.value })} />
           </Field>
           <Field id="d-instr" label="Instructions" className="sm:col-span-4">
             <Input id="d-instr" value={f.instructions} onChange={(e) => setF({ ...f, instructions: e.target.value })} placeholder="e.g. 1500 kcal, no sugar, Ryle's tube feed 200 ml 2-hourly" />
@@ -238,7 +238,7 @@ function KitchenSheetTab() {
   const key = ['ops', 'diet', 'kitchen-sheet', date, meal];
   const { data, isPending, error, isFetching } = useQuery({ queryKey: key, queryFn: () => api.ops.diet.kitchenSheet({ date, meal }) });
   const mark = useMutation({
-    mutationFn: (v: { orderId: string; status: O.MealStatus }) => api.ops.diet.markMeal({ orderId: v.orderId, date, meal, status: v.status }),
+    mutationFn: (v: { orderId: string; status: O.MealStatus }) => api.ops.diet.markMeal(checked(O.markMealSchema, { orderId: v.orderId, date, meal, status: v.status })),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: key }),
   });
 
@@ -254,7 +254,7 @@ function KitchenSheetTab() {
       }`}</style>
       <div className="mb-4 flex flex-wrap items-end gap-3 print:hidden">
         <Field id="ks-date" label="Date">
-          <Input id="ks-date" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          <Input id="ks-date" type="date" max={todayIST()} value={date} onChange={(e) => setDate(e.target.value)} />
         </Field>
         <Field id="ks-meal" label="Meal">
           <Select id="ks-meal" value={meal} onChange={(e) => setMeal(e.target.value as O.Meal)}>

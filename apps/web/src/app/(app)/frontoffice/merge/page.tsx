@@ -90,7 +90,12 @@ export default function MergePage() {
         <CardContent className="flex flex-wrap items-end gap-3 pt-6">
           <div className="min-w-64 flex-1">
             <Label htmlFor="reason">Reason</Label>
-            <Input id="reason" className="mt-1" placeholder="e.g. Same person registered twice at the desk" value={reason} onChange={(e) => setReason(e.target.value)} />
+            <Input id="reason" className="mt-1" placeholder="e.g. Same person registered twice at the desk" maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
+            {source && target && source.id === target.id ? (
+              <p className="mt-1 text-xs text-destructive">Pick two different patients</p>
+            ) : reason.trim().length > 0 && reason.trim().length < 3 ? (
+              <p className="mt-1 text-xs text-destructive">Reason needs at least 3 characters</p>
+            ) : null}
           </div>
           <Button
             variant="destructive"

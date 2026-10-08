@@ -103,10 +103,10 @@ export function SignupForm() {
 
       <div className="grid gap-5 sm:grid-cols-2">
         <Field id="hospitalName" label="Hospital or clinic name" error={errors.hospitalName} className="sm:col-span-2">
-          <Input id="hospitalName" aria-invalid={!!errors.hospitalName} {...register('hospitalName')} />
+          <Input id="hospitalName" maxLength={120} aria-invalid={!!errors.hospitalName} {...register('hospitalName')} />
         </Field>
         <Field id="code" label="Hospital code" error={errors.code} hint={codeHint}>
-          <Input id="code" className="font-mono" aria-invalid={!!errors.code} {...register('code')} />
+          <Input id="code" className="font-mono" maxLength={31} autoCapitalize="none" aria-invalid={!!errors.code} {...register('code')} />
         </Field>
         <Field id="facilityType" label="Type">
           <Select id="facilityType" {...register('facilityType')}>
@@ -117,22 +117,22 @@ export function SignupForm() {
           </Select>
         </Field>
         <Field id="city" label="City" error={errors.city}>
-          <Input id="city" {...register('city', { setValueAs: (v: string) => v || undefined })} />
+          <Input id="city" maxLength={80} {...register('city', { setValueAs: (v: string) => v || undefined })} />
         </Field>
         <Field id="state" label="State" error={errors.state}>
-          <Input id="state" {...register('state', { setValueAs: (v: string) => v || undefined })} />
+          <Input id="state" maxLength={80} {...register('state', { setValueAs: (v: string) => v || undefined })} />
         </Field>
         <Field id="adminName" label="Your name" error={errors.adminName}>
-          <Input id="adminName" autoComplete="name" aria-invalid={!!errors.adminName} {...register('adminName')} />
+          <Input id="adminName" maxLength={100} autoComplete="name" aria-invalid={!!errors.adminName} {...register('adminName')} />
         </Field>
         <Field id="mobile" label="Mobile" error={errors.mobile}>
-          <Input id="mobile" type="tel" inputMode="numeric" autoComplete="tel" aria-invalid={!!errors.mobile} {...register('mobile')} />
+          <Input id="mobile" type="tel" inputMode="numeric" maxLength={14} autoComplete="tel" aria-invalid={!!errors.mobile} {...register('mobile')} />
         </Field>
         <Field id="email" label="Email" error={errors.email}>
-          <Input id="email" type="email" autoComplete="email" aria-invalid={!!errors.email} {...register('email')} />
+          <Input id="email" type="email" maxLength={254} autoComplete="email" aria-invalid={!!errors.email} {...register('email')} />
         </Field>
         <Field id="password" label="Password" error={errors.password} hint="At least 8 characters with a letter and a number">
-          <Input id="password" type="password" autoComplete="new-password" aria-invalid={!!errors.password} {...register('password')} />
+          <Input id="password" type="password" autoComplete="new-password" maxLength={200} aria-invalid={!!errors.password} {...register('password')} />
         </Field>
         <Field id="planCode" label="Plan" error={errors.planCode} className="sm:col-span-2">
           <Select id="planCode" {...register('planCode')}>

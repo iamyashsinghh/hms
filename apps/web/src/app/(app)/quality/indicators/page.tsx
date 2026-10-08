@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { quality as Q } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { cn } from '@/lib/utils';
 import { PageHeader } from '@/components/page-header';
@@ -132,8 +133,9 @@ function ManualEntry({ r, period }: { r: Q.IndicatorResult; period: string }) {
   const [num, setNum] = React.useState(r.numerator?.toString() ?? '');
   const [den, setDen] = React.useState(r.denominator?.toString() ?? '');
   const [note, setNote] = React.useState(r.note ?? '');
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const save = useMutation({
-    mutationFn: () => api.quality.indicators.saveValue(r.code, { period, numerator: Number(num), denominator: den ? Number(den) : undefined, note: note || undefined }),
+    mutationFn: (body: Q.IndicatorValueInput) => api.quality.indicators.saveValue(r.code, body),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['quality'] }),
   });
   return (
@@ -146,20 +148,27 @@ function ManualEntry({ r, period }: { r: Q.IndicatorResult; period: string }) {
           className="space-y-3"
           onSubmit={(e) => {
             e.preventDefault();
-            save.mutate();
+            const body: Q.IndicatorValueInput = { period, numerator: num, denominator: den.trim() === '' ? undefined : den, note: note || undefined };
+            const { errors: found } = validate(Q.indicatorValueInputSchema, body);
+            const all: FieldErrors = { ...(found ?? {}) };
+            if (!found && r.unit === 'percent' && den.trim() !== '' && Number(num) > Number(den)) {
+              all.numerator = `${r.numeratorLabel} cannot be more than ${r.denominatorLabel?.toLowerCase() ?? 'the denominator'}`;
+            }
+            setErrors(all);
+            if (!Object.keys(all).length) save.mutate(body);
           }}
         >
           <ErrorBox error={save.error} />
-          <Field id="num" label={r.numeratorLabel}>
+          <Field id="num" label={r.numeratorLabel} error={errors.numerator}>
             <Input id="num" type="number" min={0} step="any" required value={num} onChange={(e) => setNum(e.target.value)} />
           </Field>
           {r.denominatorLabel && (
-            <Field id="den" label={r.denominatorLabel}>
+            <Field id="den" label={r.denominatorLabel} error={errors.denominator}>
               <Input id="den" type="number" min={0} step="any" required value={den} onChange={(e) => setDen(e.target.value)} />
             </Field>
           )}
-          <Field id="note" label="Note / source">
-            <Input id="note" value={note} onChange={(e) => setNote(e.target.value)} />
+          <Field id="note" label="Note / source" error={errors.note}>
+            <Input id="note" maxLength={500} value={note} onChange={(e) => setNote(e.target.value)} />
           </Field>
           <Button type="submit" disabled={save.isPending}>
             {save.isPending && <Loader2 className="animate-spin" />} Save

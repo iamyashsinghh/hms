@@ -6,11 +6,12 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { inventory } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate } from '@/lib/validate';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { LinesEditor, linesValid, newLine, StoreSelect, useStores, type QtyLine } from '@/modules/inventory/ui';
+import { formErrorMessage, LinesEditor, linesValid, newLine, StoreSelect, useStores, type QtyLine } from '@/modules/inventory/ui';
 
 /**
  * New indent, or edit of one that is still waiting for a decision (`indent` given). The stores are
@@ -49,8 +50,11 @@ export function IndentForm({ indent }: { indent?: inventory.Indent }) {
     if (!indent && toStoreId === supplier) return setFormError('The asking store and the supplying store must differ');
     if (!lines.length) return setFormError('Add at least one item');
     if (!linesValid(lines)) return setFormError('Each quantity must be a whole number of 1 or more');
-    const parsed = inventory.updateIndentSchema.safeParse(body());
-    if (!parsed.success) return setFormError(parsed.error.issues[0]?.message ?? 'Check the indent');
+    const r = indent
+      ? validate(inventory.updateIndentSchema, body())
+      : validate(inventory.createIndentSchema, { ...body(), toStoreId, fromStoreId: supplier, notes: notes.trim() || undefined });
+    const problem = formErrorMessage(r.errors, lines);
+    if (problem) return setFormError(problem);
     save.mutate();
   };
 

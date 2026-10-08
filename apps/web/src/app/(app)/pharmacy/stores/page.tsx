@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Plus } from 'lucide-react';
 import { pharmacy } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { useAuth, usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -25,9 +26,11 @@ export default function StoresPage() {
   const [editing, setEditing] = React.useState<pharmacy.Store | null>(null);
   const [formError, setFormError] = React.useState<string | null>(null);
   const facilityId = form.facilityId || facility?.id || user?.facilities[0]?.id || '';
+  const [errors, setErrors] = React.useState<FieldErrors>({});
 
   const create = useMutation({
-    mutationFn: () => (editing ? api.pharmacy.stores.update(editing.id, { name: form.name.trim(), type: form.type }) : api.pharmacy.stores.create({ ...form, facilityId })),
+    mutationFn: (body: pharmacy.CreateStore | pharmacy.UpdateStore) =>
+      editing ? api.pharmacy.stores.update(editing.id, body as pharmacy.UpdateStore) : api.pharmacy.stores.create(body as pharmacy.CreateStore),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pharmacy', 'stores'] });
       setEditing(null);
@@ -37,12 +40,14 @@ export default function StoresPage() {
   const startEdit = (s: pharmacy.Store) => {
     create.reset();
     setFormError(null);
+    setErrors({});
     setEditing(s);
     setForm({ facilityId: s.facilityId, code: s.code, name: s.name, type: s.type });
   };
   const cancelEdit = () => {
     create.reset();
     setFormError(null);
+    setErrors({});
     setEditing(null);
     setForm({ facilityId: '', code: '', name: '', type: 'pharmacy' });
   };
@@ -119,14 +124,17 @@ export default function StoresPage() {
               onSubmit={(e) => {
                 e.preventDefault();
                 setFormError(null);
-                const parsed = editing
-                  ? pharmacy.updateStoreSchema.safeParse({ name: form.name, type: form.type })
-                  : pharmacy.createStoreSchema.safeParse({ ...form, facilityId });
-                if (!parsed.success) {
-                  const issue = parsed.error.issues[0];
-                  return setFormError(issue ? `${issue.path.join('.') || 'Store'}: ${issue.path[0] === 'code' ? 'Letters, digits, - and _ only (max 20)' : issue.message}` : 'Check the store');
+                const r = editing
+                  ? validate(pharmacy.updateStoreSchema, { name: form.name, type: form.type })
+                  : validate(pharmacy.createStoreSchema, { ...form, facilityId });
+                setErrors(r.errors ?? {});
+                if (r.errors) {
+                  // Errors without a field of their own (facility) go in the line under the form.
+                  const other = Object.entries(r.errors).find(([k]) => k !== 'code' && k !== 'name');
+                  if (other) setFormError(other[1]);
+                  return;
                 }
-                create.mutate();
+                create.mutate(r.data);
               }}
             >
               <div>
@@ -141,11 +149,13 @@ export default function StoresPage() {
               </div>
               <div>
                 <Label htmlFor="code">Code</Label>
-                <Input id="code" className="mt-2" disabled={!!editing} placeholder="MAINPH" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} required />
+                <Input id="code" className="mt-2" disabled={!!editing} placeholder="MAINPH" maxLength={20} value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} required />
+                {errors.code && <p className="mt-1 text-xs text-destructive">{errors.code}</p>}
               </div>
               <div>
                 <Label htmlFor="name">Name</Label>
-                <Input id="name" className="mt-2" placeholder="Main Pharmacy" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+                <Input id="name" className="mt-2" placeholder="Main Pharmacy" maxLength={100} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+                {errors.name && <p className="mt-1 text-xs text-destructive">{errors.name}</p>}
               </div>
               <div>
                 <Label htmlFor="type">Type</Label>

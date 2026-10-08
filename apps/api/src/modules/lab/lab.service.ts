@@ -558,7 +558,7 @@ export class LabService {
         continue;
       }
       const value = e.value.trim();
-      if (value && r.resultType === 'numeric' && !Number.isFinite(Number(value.replace(/^[<>]=?\s*/, '')))) {
+      if (value && r.resultType === 'numeric' && !lab.isNumericResult(value)) {
         fail(badRequest('invalid_value', `${r.name}: enter a number`));
         continue;
       }

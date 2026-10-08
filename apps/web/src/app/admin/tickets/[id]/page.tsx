@@ -79,6 +79,7 @@ export default function ConsoleTicketPage() {
         <ErrorBox error={reply.error} />
         <textarea
           rows={4}
+          maxLength={10000}
           value={body}
           onChange={(e) => setBody(e.target.value)}
           placeholder="Reply to the hospital…"

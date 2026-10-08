@@ -9,7 +9,7 @@ import { api, errorMessage } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
-import { ASSET_CATEGORY_LABELS, ErrorBox, Field, Textarea, humanize, num, opt } from './ui';
+import { ASSET_CATEGORY_LABELS, ErrorBox, Field, Textarea, checked, humanize, num, opt, todayIST } from './ui';
 
 export interface AssetFormState {
   id?: string;
@@ -104,7 +104,9 @@ export function AssetForm({ initial, onDone }: { initial: AssetFormState; onDone
         calibrationDue: opt(f.calibrationDue),
         notes: opt(f.notes),
       };
-      return f.id ? api.ops.assets.update(f.id, { ...body, status: f.status || undefined }) : api.ops.assets.create(body);
+      return f.id
+        ? api.ops.assets.update(f.id, checked(O.updateAssetSchema, { ...body, status: f.status || undefined }))
+        : api.ops.assets.create(checked(O.assetInputSchema, body));
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['ops'] });
@@ -112,9 +114,9 @@ export function AssetForm({ initial, onDone }: { initial: AssetFormState; onDone
     },
   });
 
-  const date = (key: keyof AssetFormState, label: string) => (
+  const date = (key: keyof AssetFormState, label: string, limits: { min?: string; max?: string } = {}) => (
     <Field id={`a-${key}`} label={label}>
-      <Input id={`a-${key}`} type="date" value={form[key] ?? ''} onChange={(e) => set({ [key]: e.target.value } as Partial<AssetFormState>)} />
+      <Input id={`a-${key}`} type="date" {...limits} value={form[key] ?? ''} onChange={(e) => set({ [key]: e.target.value } as Partial<AssetFormState>)} />
     </Field>
   );
   const text = (key: keyof AssetFormState, label: string, className?: string) => (
@@ -164,14 +166,14 @@ export function AssetForm({ initial, onDone }: { initial: AssetFormState; onDone
           {text('model', 'Model')}
           {text('serialNo', 'Serial no.')}
           {text('location', 'Location')}
-          {date('purchaseDate', 'Purchase date')}
+          {date('purchaseDate', 'Purchase date', { max: todayIST() })}
           <Field id="a-cost" label="Purchase cost (₹)">
             <Input id="a-cost" type="number" min={0} step="0.01" value={form.purchaseCost} onChange={(e) => set({ purchaseCost: e.target.value })} />
           </Field>
           {text('vendor', 'Vendor')}
-          {date('warrantyUntil', 'Warranty until')}
+          {date('warrantyUntil', 'Warranty until', { min: form.purchaseDate || undefined })}
           {text('amcVendor', 'AMC / CMC vendor')}
-          {date('amcUntil', 'AMC until')}
+          {date('amcUntil', 'AMC until', { min: form.purchaseDate || undefined })}
           <Field id="a-pm" label="PM every (days)">
             <Input id="a-pm" type="number" min={0} max={3650} value={form.pmIntervalDays} onChange={(e) => set({ pmIntervalDays: e.target.value })} placeholder="e.g. 180" />
           </Field>
@@ -210,7 +212,7 @@ export function BreakdownForm({ asset, onDone }: { asset: O.Asset; onDone: () =>
   const [problem, setProblem] = React.useState('');
   const [priority, setPriority] = React.useState<'low' | 'normal' | 'urgent'>(asset.criticality === 'high' ? 'urgent' : 'normal');
   const report = useMutation({
-    mutationFn: () => api.ops.workOrders.create({ assetId: asset.id, type: 'breakdown', problem: problem.trim(), priority }),
+    mutationFn: () => api.ops.workOrders.create(checked(O.createWorkOrderSchema, { assetId: asset.id, type: 'breakdown', problem: problem.trim(), priority })),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['ops'] });
       onDone();

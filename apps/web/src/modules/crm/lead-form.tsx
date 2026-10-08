@@ -19,6 +19,7 @@ import {
   firstIssue,
   fromLocalInput,
   toLocalInput,
+  todayIST,
 } from './ui';
 
 const LABELS: Record<string, string> = {
@@ -103,7 +104,7 @@ export function LeadForm({
             <Input id="ld-mobile" inputMode="numeric" maxLength={10} value={f.mobile} onChange={(e) => set({ mobile: e.target.value.replace(/\D/g, '') })} />
           </Field>
           <Field id="ld-email" label="Email">
-            <Input id="ld-email" type="email" value={f.email} onChange={(e) => set({ email: e.target.value })} />
+            <Input id="ld-email" type="email" maxLength={254} value={f.email} onChange={(e) => set({ email: e.target.value })} />
           </Field>
           <Field id="ld-gender" label="Gender">
             <Select id="ld-gender" value={f.gender} onChange={(e) => set({ gender: e.target.value as typeof f.gender })}>
@@ -132,7 +133,7 @@ export function LeadForm({
             <Input id="ld-interest" maxLength={200} placeholder="e.g. Cataract surgery, Cardiology OPD" value={f.interest} onChange={(e) => set({ interest: e.target.value })} />
           </Field>
           <Field id="ld-next" label="Next call">
-            <Input id="ld-next" type="datetime-local" value={f.nextFollowUpAt} onChange={(e) => set({ nextFollowUpAt: e.target.value })} />
+            <Input id="ld-next" type="datetime-local" min={initial ? undefined : `${todayIST()}T00:00`} value={f.nextFollowUpAt} onChange={(e) => set({ nextFollowUpAt: e.target.value })} />
           </Field>
           <Field id="ld-assigned" label="Assigned to">
             <StaffSelect id="ld-assigned" value={f.assignedTo} onChange={(assignedTo) => set({ assignedTo })} />

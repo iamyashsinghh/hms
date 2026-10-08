@@ -51,6 +51,7 @@ function DailySheet() {
   const queryClient = useQueryClient();
   const [date, setDate] = React.useState(todayIST());
   const [edits, setEdits] = React.useState<Record<string, Row>>({});
+  const [timeError, setTimeError] = React.useState<string | null>(null);
   const { data, isPending, error } = useQuery({ queryKey: ['hr', 'attendance', date], queryFn: () => api.hr.attendance.sheet({ date }) });
 
   const rowOf = (r: H.AttendanceSheetRow): Row =>
@@ -107,15 +108,21 @@ function DailySheet() {
             <Button variant="outline" size="sm" onClick={fillDefaults}>
               Fill from roster
             </Button>
-            <Button size="sm" className="ml-auto" onClick={() => save.mutate()} disabled={!pendingCount || save.isPending}>
+            <Button size="sm" className="ml-auto" onClick={() => {
+                // In and out times on today's sheet cannot be later than now.
+                const now = hhmm(new Date(Date.now() + 5 * 60_000).toISOString());
+                const ahead = date === todayIST() && Object.values(edits).some((r) => (r.checkIn && r.checkIn > now) || (r.checkOut && (r.checkOut > now || (!!r.checkIn && r.checkOut <= r.checkIn))));
+                setTimeError(ahead ? 'In and out times cannot be later than the current time' : null);
+                if (!ahead) save.mutate();
+              }} disabled={!pendingCount || save.isPending}>
               {save.isPending ? <Loader2 className="animate-spin" /> : <Save />} Save {pendingCount ? `(${pendingCount})` : ''}
             </Button>
           </>
         )}
       </div>
-      {save.error && (
+      {(save.error || timeError) && (
         <div className="p-4">
-          <ErrorBox error={errorMessage(save.error)} />
+          <ErrorBox error={timeError ?? errorMessage(save.error)} />
         </div>
       )}
       {error ? (

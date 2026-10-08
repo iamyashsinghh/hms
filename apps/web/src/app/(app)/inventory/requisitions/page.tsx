@@ -4,8 +4,9 @@ import * as React from 'react';
 import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight, Loader2, Plus } from 'lucide-react';
-import { inventory } from '@hms/shared';
+import { inventory, todayIso } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
 import { PageHeader } from '@/components/page-header';
@@ -15,7 +16,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { LinesEditor, linesValid, newLine, Notice, StatusBadge, statusLabel, StoreSelect, useStores, type QtyLine } from '@/modules/inventory/ui';
+import { formErrorMessage, LinesEditor, linesValid, newLine, Notice, StatusBadge, statusLabel, StoreSelect, useStores, type QtyLine } from '@/modules/inventory/ui';
 
 export default function RequisitionsPage() {
   const canRead = usePermission('inventory.purchase.read');
@@ -85,8 +86,12 @@ export default function RequisitionsPage() {
     if (!linesValid(lines)) return setFormError('Each quantity must be a whole number of 1 or more');
     const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
     if (neededBy && neededBy < today && neededBy !== editing?.neededBy) return setFormError('Needed-by date cannot be in the past');
-    const parsed = inventory.updateRequisitionSchema.safeParse({ neededBy: neededBy || null, notes, lines: lines.map((l) => ({ itemId: l.itemId, qty: Number(l.qty) })) });
-    if (!parsed.success) return setFormError(parsed.error.issues[0]?.message ?? 'Check the requisition');
+    const reqLines = lines.map((l) => ({ itemId: l.itemId, qty: Number(l.qty) }));
+    const r = editing
+      ? validate(inventory.updateRequisitionSchema, { neededBy: neededBy || null, notes, lines: reqLines })
+      : validate(inventory.createRequisitionSchema, { storeId, neededBy: neededBy || undefined, notes: notes.trim() || undefined, lines: reqLines });
+    const problem = formErrorMessage(r.errors, lines);
+    if (problem) return setFormError(problem);
     create.mutate();
   };
   const act = useMutation({
@@ -132,7 +137,7 @@ export default function RequisitionsPage() {
               </div>
               <div>
                 <Label htmlFor="req-needed">Needed by</Label>
-                <Input id="req-needed" type="date" className="mt-2" value={neededBy} onChange={(e) => setNeededBy(e.target.value)} />
+                <Input id="req-needed" type="date" className="mt-2" min={todayIso()} max={todayIso(366)} value={neededBy} onChange={(e) => setNeededBy(e.target.value)} />
               </div>
               <div>
                 <Label htmlFor="req-notes">Notes</Label>

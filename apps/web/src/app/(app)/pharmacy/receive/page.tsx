@@ -3,8 +3,9 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Trash2 } from 'lucide-react';
-import type { pharmacy } from '@hms/shared';
+import { pharmacy, todayIso } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
 import { PageHeader } from '@/components/page-header';
@@ -40,6 +41,7 @@ export default function ReceiveStockPage() {
   const [supplier, setSupplier] = React.useState({ supplierName: '', supplierGstin: '', invoiceNo: '', invoiceDate: '' });
   const [lines, setLines] = React.useState<Line[]>([]);
   const [done, setDone] = React.useState<string | null>(null);
+  const [errors, setErrors] = React.useState<FieldErrors>({});
 
   const grns = useQuery({ queryKey: ['pharmacy', 'grns'], queryFn: () => api.pharmacy.grns.list({ pageSize: 10 }), enabled: canReceive });
 
@@ -54,19 +56,12 @@ export default function ReceiveStockPage() {
   });
 
   const save = useMutation({
-    mutationFn: async () => {
-      if (mode === 'opening') {
-        const r = await api.pharmacy.stock.opening({ storeId: storeId!, lines: lines.map(toLine) });
+    mutationFn: async (body: { mode: 'opening'; data: pharmacy.OpeningStock } | { mode: 'grn'; data: pharmacy.CreateGrn }) => {
+      if (body.mode === 'opening') {
+        const r = await api.pharmacy.stock.opening(body.data);
         return `Opening stock saved: ${r.units} units in ${r.lines} lines.`;
       }
-      const g = await api.pharmacy.grns.create({
-        storeId: storeId!,
-        supplierName: supplier.supplierName,
-        supplierGstin: supplier.supplierGstin || undefined,
-        invoiceNo: supplier.invoiceNo || undefined,
-        invoiceDate: supplier.invoiceDate || undefined,
-        lines: lines.map((l) => ({ ...toLine(l), freeQty: Number(l.freeQty || 0) })),
-      });
+      const g = await api.pharmacy.grns.create(body.data);
       return `${g.number} posted for ${inr(g.totalAmount)}.`;
     },
     onSuccess: (msg) => {
@@ -76,6 +71,29 @@ export default function ReceiveStockPage() {
       setSupplier({ supplierName: '', supplierGstin: '', invoiceNo: '', invoiceDate: '' });
     },
   });
+
+  /** Checks the form against the shared schema (same rules as the server) and posts it. */
+  const submit = () => {
+    setDone(null);
+    if (mode === 'opening') {
+      const r = validate(pharmacy.openingStockSchema, { storeId, lines: lines.map(toLine) });
+      setErrors(r.errors ?? {});
+      if (r.data) save.mutate({ mode, data: r.data });
+      return;
+    }
+    const r = validate(pharmacy.createGrnSchema, {
+      storeId,
+      supplierName: supplier.supplierName,
+      supplierGstin: supplier.supplierGstin || undefined,
+      invoiceNo: supplier.invoiceNo || undefined,
+      invoiceDate: supplier.invoiceDate || undefined,
+      lines: lines.map((l) => ({ ...toLine(l), freeQty: Number(l.freeQty || 0) })),
+    });
+    setErrors(r.errors ?? {});
+    if (r.data) save.mutate({ mode, data: r.data });
+  };
+  const err = (path: string) => (errors[path] ? <p className="mt-1 max-w-40 text-xs text-destructive">{errors[path]}</p> : null);
+  const lineErr = (i: number, field: string) => err(`lines.${i}.${field}`);
 
   if (!canReceive) return <NoAccess />;
   const valid =
@@ -98,7 +116,10 @@ export default function ReceiveStockPage() {
             key={m}
             type="button"
             className={`rounded px-3 py-1.5 ${mode === m ? 'bg-primary text-primary-foreground' : ''}`}
-            onClick={() => setMode(m)}
+            onClick={() => {
+              setMode(m);
+              setErrors({});
+            }}
           >
             {m === 'grn' ? 'Supplier GRN' : 'Opening stock'}
           </button>
@@ -110,8 +131,7 @@ export default function ReceiveStockPage() {
         className="space-y-6"
         onSubmit={(e) => {
           e.preventDefault();
-          setDone(null);
-          save.mutate();
+          submit();
         }}
       >
         {mode === 'grn' && (
@@ -122,19 +142,23 @@ export default function ReceiveStockPage() {
             <CardContent className="grid gap-4 sm:grid-cols-4">
               <div className="sm:col-span-2">
                 <Label htmlFor="supplier">Supplier *</Label>
-                <Input id="supplier" className="mt-2" value={supplier.supplierName} onChange={(e) => setSupplier({ ...supplier, supplierName: e.target.value })} />
+                <Input id="supplier" className="mt-2" maxLength={200} value={supplier.supplierName} onChange={(e) => setSupplier({ ...supplier, supplierName: e.target.value })} />
+                {err('supplierName')}
               </div>
               <div>
                 <Label htmlFor="gstin">Supplier GSTIN</Label>
-                <Input id="gstin" className="mt-2" value={supplier.supplierGstin} onChange={(e) => setSupplier({ ...supplier, supplierGstin: e.target.value.toUpperCase() })} />
+                <Input id="gstin" className="mt-2" value={supplier.supplierGstin} maxLength={15} onChange={(e) => setSupplier({ ...supplier, supplierGstin: e.target.value.toUpperCase() })} />
+                {err('supplierGstin')}
               </div>
               <div>
                 <Label htmlFor="inv">Invoice no.</Label>
-                <Input id="inv" className="mt-2" value={supplier.invoiceNo} onChange={(e) => setSupplier({ ...supplier, invoiceNo: e.target.value })} />
+                <Input id="inv" className="mt-2" maxLength={60} value={supplier.invoiceNo} onChange={(e) => setSupplier({ ...supplier, invoiceNo: e.target.value })} />
+                {err('invoiceNo')}
               </div>
               <div>
                 <Label htmlFor="invDate">Invoice date</Label>
-                <Input id="invDate" type="date" className="mt-2" value={supplier.invoiceDate} onChange={(e) => setSupplier({ ...supplier, invoiceDate: e.target.value })} />
+                <Input id="invDate" type="date" className="mt-2" max={todayIso()} value={supplier.invoiceDate} onChange={(e) => setSupplier({ ...supplier, invoiceDate: e.target.value })} />
+                {err('invoiceDate')}
               </div>
             </CardContent>
           </Card>
@@ -165,7 +189,7 @@ export default function ReceiveStockPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {lines.map((l) => (
+                  {lines.map((l, i) => (
                     <TableRow key={l.key}>
                       <TableCell>
                         <div className="font-medium">{l.item.name}</div>
@@ -174,24 +198,37 @@ export default function ReceiveStockPage() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <Input className="w-28" value={l.batchNo} onChange={(e) => set(l.key, { batchNo: e.target.value })} />
+                        <Input className="w-28" maxLength={40} value={l.batchNo} onChange={(e) => set(l.key, { batchNo: e.target.value })} />
+                        {lineErr(i, 'batchNo')}
                       </TableCell>
                       <TableCell>
-                        <Input className="w-36" type="date" value={l.expiryDate} onChange={(e) => set(l.key, { expiryDate: e.target.value })} />
+                        <Input
+                          className="w-36"
+                          type="date"
+                          min={mode === 'grn' ? todayIso(1) : undefined}
+                          value={l.expiryDate}
+                          onChange={(e) => set(l.key, { expiryDate: e.target.value })}
+                        />
+                        {lineErr(i, 'expiryDate')}
                       </TableCell>
                       <TableCell>
-                        <Input className="w-20" type="number" min={1} value={l.qty} onChange={(e) => set(l.key, { qty: e.target.value })} />
+                        <Input className="w-20" type="number" min={1} step={1} value={l.qty} onChange={(e) => set(l.key, { qty: e.target.value })} />
+                        {lineErr(i, 'qty')}
                       </TableCell>
                       {mode === 'grn' && (
                         <TableCell>
-                          <Input className="w-16" type="number" min={0} value={l.freeQty} onChange={(e) => set(l.key, { freeQty: e.target.value })} />
+                          <Input className="w-16" type="number" min={0} step={1} value={l.freeQty} onChange={(e) => set(l.key, { freeQty: e.target.value })} />
+                          {lineErr(i, 'freeQty')}
                         </TableCell>
                       )}
                       <TableCell>
                         <Input className="w-24" type="number" min={0} step="0.01" value={l.purchaseRate} onChange={(e) => set(l.key, { purchaseRate: e.target.value })} />
+                        {lineErr(i, 'purchaseRate')}
                       </TableCell>
                       <TableCell>
                         <Input className="w-24" type="number" min={0} step="0.01" value={l.mrp} onChange={(e) => set(l.key, { mrp: e.target.value })} />
+                        {lineErr(i, 'mrp')}
+                        {lineErr(i, 'saleRate')}
                       </TableCell>
                       <TableCell>
                         <Button type="button" variant="ghost" size="icon" aria-label="Remove" onClick={() => setLines((ls) => ls.filter((x) => x.key !== l.key))}>
@@ -206,6 +243,8 @@ export default function ReceiveStockPage() {
           </CardContent>
         </Card>
 
+        {errors.lines && <p className="text-sm text-destructive">{errors.lines}</p>}
+        {errors.storeId && <p className="text-sm text-destructive">{errors.storeId}</p>}
         {save.error && <p className="text-sm text-destructive">{errorMessage(save.error)}</p>}
         <div className="flex items-center justify-end gap-4">
           {mode === 'grn' && lines.length > 0 && <span className="text-sm text-muted-foreground">Invoice value ≈ {inr(total)}</span>}

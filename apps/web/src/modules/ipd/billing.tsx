@@ -7,6 +7,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { ipd as I } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { firstError, validate, type FieldErrors } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -30,6 +31,7 @@ export function BillTab({ admission }: { admission: I.Admission }) {
 
   const emptyCharge = { serviceCode: '', description: '', qty: '1', unitPrice: '' };
   const [charge, setCharge] = React.useState(emptyCharge);
+  const [chargeErrors, setChargeErrors] = React.useState<FieldErrors>({});
   const addCharge = useMutation({
     mutationFn: (body: I.ChargeInput) => api.ipd.bill.addCharge(id, body),
     onSuccess: () => {
@@ -42,6 +44,7 @@ export function BillTab({ admission }: { admission: I.Admission }) {
     onSuccess: refresh,
   });
   const [adv, setAdv] = React.useState({ amount: '', mode: 'cash' as I.AdvanceMode, reference: '' });
+  const [advanceError, setAdvanceError] = React.useState<string | null>(null);
   const advance = useMutation({
     mutationFn: (body: I.AdvanceInput) => api.ipd.bill.advance(id, body),
     onSuccess: () => {
@@ -152,24 +155,27 @@ export function BillTab({ admission }: { admission: I.Admission }) {
                 className="grid gap-3 sm:grid-cols-6"
                 onSubmit={(e) => {
                   e.preventDefault();
-                  addCharge.mutate({
+                  const body: I.ChargeInput = {
                     serviceCode: charge.serviceCode || undefined,
                     description: charge.description || undefined,
-                    qty: Number(charge.qty) || 1,
-                    unitPrice: charge.unitPrice === '' ? undefined : Number(charge.unitPrice),
-                  });
+                    qty: String(charge.qty).trim() === '' ? 1 : charge.qty,
+                    unitPrice: charge.unitPrice === '' ? undefined : charge.unitPrice,
+                  };
+                  const { errors: found } = validate(I.chargeInputSchema, body);
+                  setChargeErrors(found ?? {});
+                  if (!found) addCharge.mutate(body);
                 }}
               >
                 <Field id="c-code" label="Service code">
                   <Input id="c-code" value={charge.serviceCode} onChange={(e) => setCharge({ ...charge, serviceCode: e.target.value })} placeholder="Optional" maxLength={40} />
                 </Field>
-                <Field id="c-desc" label="Description" className="sm:col-span-2">
+                <Field id="c-desc" label="Description" className="sm:col-span-2" error={chargeErrors.description}>
                   <Input id="c-desc" value={charge.description} onChange={(e) => setCharge({ ...charge, description: e.target.value })} maxLength={300} />
                 </Field>
-                <Field id="c-qty" label="Qty">
-                  <Input id="c-qty" type="number" min={0} step="any" value={charge.qty} onChange={(e) => setCharge({ ...charge, qty: e.target.value })} />
+                <Field id="c-qty" label="Qty" error={chargeErrors.qty}>
+                  <Input id="c-qty" type="number" min={0.01} max={10000} step="any" value={charge.qty} onChange={(e) => setCharge({ ...charge, qty: e.target.value })} />
                 </Field>
-                <Field id="c-price" label="Rate (₹)">
+                <Field id="c-price" label="Rate (₹)" error={chargeErrors.unitPrice}>
                   <Input id="c-price" type="number" min={0} step="0.01" value={charge.unitPrice} onChange={(e) => setCharge({ ...charge, unitPrice: e.target.value })} />
                 </Field>
                 <div className="flex items-end">
@@ -178,6 +184,7 @@ export function BillTab({ admission }: { admission: I.Admission }) {
                   </Button>
                 </div>
               </form>
+              {chargeErrors._form && <p className="mt-2 text-xs text-destructive">{chargeErrors._form}</p>}
               <p className="mt-2 text-xs text-muted-foreground">With a service code, the rate and GST come from the price list unless you type a rate.</p>
             </CardContent>
           </Card>
@@ -208,7 +215,7 @@ export function BillTab({ admission }: { admission: I.Admission }) {
               <CardTitle>Take advance</CardTitle>
             </CardHeader>
             <CardContent className="grid gap-3">
-              <Field id="a-amt" label="Amount (₹)">
+              <Field id="a-amt" label="Amount (₹)" error={advanceError ?? undefined}>
                 <Input id="a-amt" type="number" min={0} step="0.01" value={adv.amount} onChange={(e) => setAdv({ ...adv, amount: e.target.value })} />
               </Field>
               <Field id="a-mode" label="Mode">
@@ -227,7 +234,12 @@ export function BillTab({ admission }: { admission: I.Admission }) {
               )}
               <Button
                 disabled={advance.isPending || !(Number(adv.amount) > 0)}
-                onClick={() => advance.mutate({ amount: Number(adv.amount), mode: adv.mode, reference: adv.reference || undefined })}
+                onClick={() => {
+                  const body: I.AdvanceInput = { amount: adv.amount, mode: adv.mode, reference: adv.reference || undefined };
+                  const { errors: found } = validate(I.advanceInputSchema, body);
+                  setAdvanceError(firstError(found));
+                  if (!found) advance.mutate(body);
+                }}
               >
                 {advance.isPending && <Loader2 className="animate-spin" />} Record advance
               </Button>
