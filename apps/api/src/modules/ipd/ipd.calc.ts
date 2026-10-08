@@ -1,10 +1,15 @@
 /**
  * Pure IPD money and day rules (unit-tested in ipd.calc.test.ts).
  *
- * Bed rent is charged per calendar day in India time (midnight census): every date from the admission
- * date up to, but not including, the discharge date, with at least one day. Each charged date goes to
- * the bed the patient was in at the end of that day, so a transfer in the afternoon bills the new bed.
- * A running bill uses "now" as the discharge time, i.e. what the patient would pay if discharged now.
+ * Bed rent follows the hospital's billing rule `roomRentDay` (India time), always at least one day:
+ *  - 'midnight' (default): every calendar date from the admission date up to, but not including, the
+ *    discharge date.
+ *  - 'admission_time': one day per started 24 hours from the admission time.
+ *  - 'checkout_time': hotel style. The first day runs until the check-out time (e.g. 12:00) on the day
+ *    after admission; each check-out time passed after that adds a day.
+ * Each charged day goes to the bed the patient was in at the end of that day, so a transfer in the
+ * afternoon bills the new bed. A running bill uses "now" as the discharge time, i.e. what the patient
+ * would pay if discharged now.
  */
 
 const IST_OFFSET_MS = 330 * 60 * 1000;
@@ -57,12 +62,44 @@ export interface BedDays {
   dates: string[];
 }
 
-/** Assign each chargeable date of the admission to one stay. Stays must be ordered by fromAt. */
-export function bedDays(stays: StayForBilling[], admittedAt: string, until: string): BedDays[] {
+export type RoomRentDay = 'midnight' | 'admission_time' | 'checkout_time';
+export interface RoomRentRule {
+  roomRentDay: RoomRentDay;
+  /** HH:MM India time, for 'checkout_time'. */
+  checkoutTime?: string;
+}
+const MIDNIGHT: RoomRentRule = { roomRentDay: 'midnight' };
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** The charged days of a stay under a rule: a label date (IST) and the instant the day ends (epoch ms). */
+export function rentDays(admittedAt: string, until: string, rule: RoomRentRule = MIDNIGHT): { date: string; endsAt: number }[] {
+  const from = Date.parse(admittedAt);
+  const to = Math.max(Date.parse(until), from);
+  if (rule.roomRentDay === 'admission_time') {
+    const n = Math.max(1, Math.ceil((to - from) / DAY_MS));
+    return Array.from({ length: n }, (_, k) => ({ date: istDate(new Date(from + k * DAY_MS)), endsAt: from + (k + 1) * DAY_MS - 1 }));
+  }
+  if (rule.roomRentDay === 'checkout_time') {
+    const time = rule.checkoutTime ?? '12:00';
+    const checkout = (date: string) => Date.parse(`${date}T${time}:00+05:30`);
+    const out: { date: string; endsAt: number }[] = [];
+    // Day k is labelled admission date + k and ends at the check-out time of the next date.
+    for (let date = istDate(admittedAt); ; date = addDays(date, 1)) {
+      const endsAt = checkout(addDays(date, 1));
+      out.push({ date, endsAt: endsAt - 1 });
+      if (to <= endsAt) break;
+    }
+    return out;
+  }
+  return chargeableDates(admittedAt, until).map((date) => ({ date, endsAt: endOfIstDay(date) }));
+}
+
+/** Assign each charged day of the admission to one stay. Stays must be ordered by fromAt. */
+export function bedDays(stays: StayForBilling[], admittedAt: string, until: string, rule: RoomRentRule = MIDNIGHT): BedDays[] {
   if (!stays.length) return [];
   const byStay = new Map<string, BedDays>();
-  for (const date of chargeableDates(admittedAt, until)) {
-    const eod = Math.min(endOfIstDay(date), Date.parse(until));
+  for (const { date, endsAt } of rentDays(admittedAt, until, rule)) {
+    const eod = Math.min(endsAt, Date.parse(until));
     const active =
       stays.find((s) => Date.parse(s.fromAt) <= eod && (s.toAt === null || Date.parse(s.toAt) > eod)) ??
       [...stays].reverse().find((s) => Date.parse(s.fromAt) <= eod) ??
@@ -82,8 +119,15 @@ export const paise = (v: number | string): number => Math.round(Number(v) * 100)
 /** Integer paise → rupees number. */
 export const rupees = (p: number): number => p / 100;
 
-/** Line amount in paise: qty × price − discount, plus GST on the taxable amount. */
-export function lineAmountPaise(qty: number, unitPrice: number, discount = 0, taxRate = 0): number {
+/** Line amount in paise: qty × price − discount, plus GST on the taxable amount unless the price includes it. */
+export function lineAmountPaise(qty: number, unitPrice: number, discount = 0, taxRate = 0, priceIncludesTax = false): number {
   const taxable = Math.max(0, Math.round(qty * paise(unitPrice)) - paise(discount));
-  return taxable + Math.round((taxable * taxRate) / 100);
+  return priceIncludesTax ? taxable : taxable + Math.round((taxable * taxRate) / 100);
+}
+
+/** Consecutive dates from `from` to `to`, both included. */
+export function dateRange(from: string, to: string): string[] {
+  const out: string[] = [];
+  for (let d = from; d <= to; d = addDays(d, 1)) out.push(d);
+  return out;
 }

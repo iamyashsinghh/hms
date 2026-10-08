@@ -613,31 +613,56 @@ export type ChargeInput = z.input<typeof chargeInputSchema>;
 export const cancelChargeSchema = z.object({ reason: requiredText('the reason for cancelling', 300, 3) });
 export type CancelCharge = z.input<typeof cancelChargeSchema>;
 
+/**
+ * A charge on the admission, read from the patient account (billing.charges). Posted here ("Post a charge")
+ * or by other departments: pharmacy (medicines on the IPD bill), inventory (consumables), lab, radiology...
+ */
 export interface Charge {
   id: string;
   chargeDate: string;
+  /** Department that posted it: 'ipd', 'pharmacy', 'inventory', 'lab', 'billing'... */
+  sourceModule: string;
   serviceCode: string | null;
+  itemId: string | null;
   description: string;
   qty: number;
   unitPrice: number;
+  /** MRP-style price with GST inside (medicines, consumables). */
+  priceIncludesTax: boolean;
   taxRate: number;
   discount: number;
-  /** qty × price − discount + GST. */
+  /** qty × price − discount, plus GST unless the price already includes it. */
   amount: number;
-  status: 'active' | 'cancelled';
+  /** pending = on the running bill; billed = on an invoice (the IPD bill, or a bill made at the desk). */
+  status: 'pending' | 'billed' | 'cancelled';
+  invoiceId: string | null;
+  invoiceNumber: string | null;
   cancelReason: string | null;
   createdAt: string;
 }
 
-/** Bed rent for one stay, one line per bed. */
+/** Bed rent for one stay, one line per bed. Computed from the bed stays until the bill is final. */
 export interface BedChargeLine {
   stayId: string;
   bedLabel: string;
   serviceCode: string | null;
   days: number;
+  /** One label date per charged day (India time), per the hospital's room-rent day rule. */
   dates: string[];
   dailyRate: number;
   amount: number;
+}
+
+/** Approved insurance pre-auth against the running bill ("estimate vs actual"). */
+export interface PreauthEstimate {
+  preauthId: string;
+  number: string;
+  payerName: string;
+  approvedAmount: number;
+  /** Running total (bed + charges) minus the approved amount; positive = bill has passed the approval. */
+  overBy: number;
+  /** Share of the approved amount used so far, in %. */
+  usedPct: number;
 }
 
 export const advanceInputSchema = z.object({
@@ -672,11 +697,32 @@ export interface RunningBill {
   depositBalance: number;
   /** grossTotal − advances taken for this admission (negative = refund due). */
   estimatedDue: number;
+  /** How bed days are counted (the hospital's billing rule). */
+  roomRentDay: 'midnight' | 'admission_time' | 'checkout_time';
+  checkoutTime: string;
+  /** Charges of this stay billed on a separate bill at the desk (not part of the totals above). */
+  billedElsewhereTotal: number;
+  /** The patient's approved pre-auth for this stay, if any. */
+  preauth: PreauthEstimate | null;
+}
+
+/** IpdService.currentAdmission / admissionInTx (cross-module): where a patient's charges go. */
+export interface CurrentAdmission {
+  id: string;
+  ipdNo: string;
+  patientId: string;
+  patientName: string;
+  patientUhid: string;
+  facilityId: string;
+  status: AdmissionStatus;
+  /** The IPD bill is already final: later charges go on a separate bill. */
+  billFinal: boolean;
 }
 
 export const finalizeBillSchema = z.object({
   /** Adjust the patient's advance against the invoice (default true). */
   adjustAdvance: z.boolean().default(true),
+  /** Bill discount in rupees, spread over the lines; above the hospital's limit needs billing.discount.override. */
   discount: money.optional(),
   notes: optionalText(500),
 });

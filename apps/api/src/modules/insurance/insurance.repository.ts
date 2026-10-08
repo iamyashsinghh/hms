@@ -214,6 +214,15 @@ export class InsuranceRepository {
     return row;
   }
 
+  /** A patient's approved pre-auths, newest decision first. */
+  approvedPreauths(tx: Tx, patientId: string): Promise<PreauthRow[]> {
+    return tx
+      .select()
+      .from(insurancePreauths)
+      .where(and(eq(insurancePreauths.patientId, patientId), eq(insurancePreauths.status, 'approved')))
+      .orderBy(desc(insurancePreauths.decidedAt), desc(insurancePreauths.createdAt));
+  }
+
   async insertPreauth(tx: Tx, v: Omit<NewPreauthRow, 'tenantId'>): Promise<PreauthRow> {
     const [row] = await tx.insert(insurancePreauths).values({ ...v, tenantId: CURRENT_TENANT }).returning();
     return row!;

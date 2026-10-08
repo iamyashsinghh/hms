@@ -1,5 +1,5 @@
 import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Put, Query } from '@nestjs/common';
-import { importRequestSchema, ipd as contracts, type ImportResult, type Paginated } from '@hms/shared';
+import { importRequestSchema, ipd as contracts, type billing, type ImportResult, type Paginated } from '@hms/shared';
 import type { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
@@ -251,6 +251,13 @@ export class IpdController {
   @RequirePermissions('ipd.charge.read')
   bill(@Param('id', uuid) id: string): Promise<contracts.RunningBill> {
     return this.ipd.runningBill(id);
+  }
+
+  /** Services for "Post a charge", searched by name or code (nurses need no billing access for this). */
+  @Get('services')
+  @RequirePermissions('ipd.charge.write')
+  services(@Query('q') q?: string): Promise<Paginated<billing.Service>> {
+    return this.ipd.searchServices(q?.slice(0, 100));
   }
 
   @Post('admissions/:id/charges')

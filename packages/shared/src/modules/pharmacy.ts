@@ -471,9 +471,17 @@ export interface Sale {
   taxAmount: number;
   total: number;
   returnedAmount: number;
+  /** Null when the medicines went on the IPD bill (nothing is collected at the counter). */
   paymentMode: (typeof PAYMENT_MODES)[number] | null;
+  /** The sale's own invoice, or (IPD bill) the bill the charges went on once billed. */
   invoiceId: string | null;
   invoiceNumber: string | null;
+  /**
+   * Medicines for an admitted patient go on the IPD bill when the hospital's billing rule says so
+   * (ipdPharmacy = 'ipd_bill'): each line is a charge on the admission and the sale has no invoice of its own.
+   */
+  admissionId: string | null;
+  onIpdBill: boolean;
   createdAt: string;
   lines?: SaleLine[];
 }

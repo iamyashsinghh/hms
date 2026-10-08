@@ -2,6 +2,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sql } from '@hms/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DbService } from '../src/common/db/db.service';
+import { InsuranceService } from '../src/modules/insurance/insurance.service';
 import { bearer, bootApp, login } from './helpers';
 
 let app: NestFastifyApplication;
@@ -166,6 +167,17 @@ describe('pre-authorisation', () => {
   it('keeps the history append-only in the database', async () => {
     const db = app.get(DbService);
     await expect(db.asTenant({ tenantId }, (tx) => tx.execute(sql`update insurance.case_events set note = 'x' where entity_id = ${preauthId}`))).rejects.toThrow();
+  });
+});
+
+describe('pre-auth for an IPD stay', () => {
+  it('finds the approved pre-auth for an admission (by reference, else a recent one without a reference)', async () => {
+    const find = (a: { admissionId: string; ipdNo: string; admittedOn: string }) =>
+      app.get(DbService).asTenant({ tenantId }, (tx) => app.get(InsuranceService).approvedPreauthForAdmission(tx, { patientId, ...a }));
+    const pa = (await call(clerk, 'GET', `/insurance/preauths/${preauthId}`)).json();
+    // The approved pre-auth above has no admission reference: it covers a stay starting from 30 days before it.
+    expect(await find({ admissionId: crypto.randomUUID(), ipdNo: 'IP-NONE', admittedOn: today })).toMatchObject({ preauthId, number: pa.number, approvedAmount: 45000 });
+    expect(await find({ admissionId: crypto.randomUUID(), ipdNo: 'IP-NONE', admittedOn: `${Number(today.slice(0, 4)) + 1}-01-01` })).toBeNull();
   });
 });
 

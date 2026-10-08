@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { iso, type Tx } from '@hms/db';
 import { ipd as contracts, type ImportRequest, type ImportResult, type Paginated } from '@hms/shared';
 import { runImport } from '../../common/imports/bulk-import';
@@ -8,11 +9,13 @@ import { DbService } from '../../common/db/db.service';
 import { AuditService } from '../../common/db/audit.service';
 import { OutboxService } from '../../common/events/outbox.service';
 import { currentContext } from '../../common/context/request-context';
-import { badRequest, conflict, forbidden, notFound } from '../../common/errors/errors';
+import { AppError, badRequest, conflict, forbidden, notFound } from '../../common/errors/errors';
 import { BillingService } from '../billing/billing.service';
+import { ChargesService } from '../billing/charges.service';
+import { InsuranceService } from '../insurance/insurance.service';
 import { PatientsService } from '../patients/patients.service';
 import { SetupService } from '../setup/setup.service';
-import { bedDays, istDate, lengthOfStay, lineAmountPaise, paise, rupees } from './ipd.calc';
+import { bedDays, dateRange, istDate, lengthOfStay, lineAmountPaise, paise, rupees } from './ipd.calc';
 import {
   IpdRepository,
   type AdmissionRow,
@@ -35,19 +38,20 @@ const nowIso = () => new Date().toISOString();
 
 /**
  * IPD rules: wards/beds, admission → transfers → discharge, nursing charts, rounds,
- * the running bill (bed days + posted charges + advances) and the discharge summary.
- * Money goes through BillingService: advances are billing deposits, the final bill is a billing invoice.
+ * the running bill (bed days + the stay's charges on the patient account + advances) and the discharge summary.
+ * Money goes through billing: charges are billing charges (ChargesService), advances are billing deposits,
+ * and the final bill bills the stay's pending charges into one invoice.
  */
 @Injectable()
 export class IpdService {
-  private readonly log = new Logger('IpdService');
-
   constructor(
     private readonly db: DbService,
     private readonly repo: IpdRepository,
     private readonly audit: AuditService,
     private readonly outbox: OutboxService,
     private readonly billing: BillingService,
+    private readonly charges: ChargesService,
+    private readonly insurance: InsuranceService,
     private readonly patients: PatientsService,
     private readonly setup: SetupService,
     private readonly limits: IpdPlanLimits,
@@ -334,6 +338,20 @@ export class IpdService {
     return this.get(admission.id);
   }
 
+  /**
+   * The patient's current admission, for other modules deciding where a charge goes (pharmacy: IPD bill or
+   * a separate bill; inventory: consumables for a patient). Inside the caller's transaction; null if not admitted.
+   */
+  async currentAdmission(tx: Tx, patientId: string): Promise<I.CurrentAdmission | null> {
+    const row = await this.repo.activeAdmissionOf(tx, patientId);
+    return row ? currentAdmissionDto(row) : null;
+  }
+
+  /** An admission by id for another module (inside the caller's transaction); 404 when missing. */
+  async admissionInTx(tx: Tx, id: string): Promise<I.CurrentAdmission> {
+    return currentAdmissionDto(await this.admission(tx, id));
+  }
+
   listAdmissions(query: unknown): Promise<Paginated<I.AdmissionSummary>> {
     const q = contracts.admissionQuerySchema.parse(query);
     return this.db.tx(async (tx) => {
@@ -425,6 +443,10 @@ export class IpdService {
       const at = nowIso();
       await this.repo.closeOpenStay(tx, id, at);
       await this.repo.removeOpenDevices(tx, id, at, userId, 'Admission cancelled');
+      // Charges posted on the IPD screen go with the admission; other departments reverse their own.
+      for (const c of (await this.repo.charges(tx, id)).filter((r) => r.status === 'pending' && r.sourceModule === 'ipd')) {
+        await this.charges.cancelBySource(tx, { module: 'ipd', refId: c.sourceRef, line: c.sourceLine }, `Admission cancelled: ${d.reason}`);
+      }
       await this.repo.updateBed(tx, row.currentBedId!, { status: 'available', currentAdmissionId: null, updatedBy: userId });
       const updated = await this.repo.updateAdmission(tx, id, { status: 'cancelled', currentBedId: null, cancelReason: d.reason, updatedBy: userId });
       await this.outbox.publish(tx, 'ipd.admission.cancelled', { admissionId: id, patientId: row.patientId, facilityId: row.facilityId, reason: d.reason });
@@ -764,84 +786,143 @@ export class IpdService {
   // =====================================================================
 
   async runningBill(admissionId: string): Promise<I.RunningBill> {
-    const bill = await this.db.tx(async (tx) => this.computeBill(tx, await this.admission(tx, admissionId)));
+    const bill = await this.db.tx(async (tx) => this.computeBill(tx, await this.admission(tx, admissionId), true));
     const account = await this.billing.patientAccount(bill.patientId);
     return { ...bill.dto, depositBalance: account.depositBalance };
   }
 
-  private async computeBill(tx: Tx, row: AdmissionRow) {
-    const [stays, charges, advances] = await Promise.all([this.repo.stays(tx, row.id), this.repo.charges(tx, row.id), this.repo.advances(tx, row.id)]);
+  /**
+   * The running bill: bed days (computed from the bed stays under the hospital's room-rent day rule, so it is
+   * always current) plus every charge of the stay on the patient account. Once the bill is final the bed days
+   * are charges too (source ipd/<stay id>) and are shown from there.
+   */
+  private async computeBill(tx: Tx, row: AdmissionRow, withPreauth = false) {
+    const [stays, charges, advances, rules] = await Promise.all([
+      this.repo.stays(tx, row.id),
+      this.repo.charges(tx, row.id),
+      this.repo.advances(tx, row.id),
+      this.charges.rules(tx, row.facilityId),
+    ]);
     const until = row.dischargedAt ?? row.billedAt ?? nowIso();
-    const days = row.status === 'cancelled' ? [] : bedDays(stays.map(stayForBilling), row.admittedAt, until);
-    const bedCharges: I.BedChargeLine[] = days.map((b) => ({
-      stayId: b.stayId,
-      bedLabel: b.bedLabel,
-      serviceCode: b.serviceCode,
-      days: b.dates.length,
-      dates: b.dates,
-      dailyRate: b.dailyRate,
-      amount: rupees(b.dates.length * paise(b.dailyRate)),
-    }));
-    const active = charges.filter((c) => c.status === 'active');
+    const stayById = new Map(stays.map((s) => [s.id, s]));
+    const isBedCharge = (c: ChargeRow) => c.sourceModule === 'ipd' && stayById.has(c.sourceRef);
+    const rule = { roomRentDay: rules.roomRentDay, checkoutTime: rules.checkoutTime };
+    // Bills made before bed days became charges (data moved from inpatient.charges) billed them midnight to midnight.
+    const postedBeds = !!row.invoiceId && charges.some(isBedCharge);
+    const days =
+      row.status === 'cancelled' || postedBeds ? [] : bedDays(stays.map(stayForBilling), row.admittedAt, until, row.invoiceId ? { roomRentDay: 'midnight' } : rule);
+    const bedCharges: I.BedChargeLine[] = postedBeds
+      ? charges
+          .filter((c) => isBedCharge(c) && c.status !== 'cancelled')
+          .map((c) => {
+            const [from, to] = c.sourceLine.split(BED_LINE_SEP);
+            return {
+              stayId: c.sourceRef,
+              bedLabel: stayById.get(c.sourceRef)!.bedLabel,
+              serviceCode: c.serviceCode,
+              days: Number(c.qty),
+              dates: from ? dateRange(from, to ?? from) : [],
+              dailyRate: num(c.unitPrice),
+              amount: rupees(chargeAmountPaise(c)),
+            };
+          })
+      : days.map((b) => ({
+          stayId: b.stayId,
+          bedLabel: b.bedLabel,
+          serviceCode: b.serviceCode,
+          days: b.dates.length,
+          dates: b.dates,
+          dailyRate: b.dailyRate,
+          amount: rupees(b.dates.length * paise(b.dailyRate)),
+        }));
+    const others = charges.filter((c) => !isBedCharge(c));
+    // On this bill: pending charges, and those billed on the IPD bill itself. Charges billed separately at the
+    // desk (e.g. a test paid for at the counter) are listed but not counted again.
+    const onBill = (c: ChargeRow) => c.status === 'pending' || (c.status === 'billed' && !!row.invoiceId && c.invoiceId === row.invoiceId);
+    const elsewhere = (c: ChargeRow) => c.status === 'billed' && c.invoiceId !== row.invoiceId;
     const bedTotal = bedCharges.reduce((s, b) => s + paise(b.amount), 0);
-    const chargesTotal = active.reduce((s, c) => s + chargeAmountPaise(c), 0);
+    const chargesTotal = others.filter(onBill).reduce((s, c) => s + chargeAmountPaise(c), 0);
+    const elsewhereTotal = others.filter(elsewhere).reduce((s, c) => s + chargeAmountPaise(c), 0);
     const advanceTotal = advances.reduce((s, a) => s + paise(a.amount), 0);
+    const gross = bedTotal + chargesTotal;
+
+    let preauth: I.PreauthEstimate | null = null;
+    if (withPreauth && row.status !== 'cancelled') {
+      const p = await this.insurance.approvedPreauthForAdmission(tx, { patientId: row.patientId, admissionId: row.id, ipdNo: row.ipdNo, admittedOn: istDate(row.admittedAt) });
+      if (p) {
+        const approved = paise(p.approvedAmount);
+        preauth = { ...p, overBy: rupees(gross - approved), usedPct: approved > 0 ? Math.round((gross * 100) / approved) : 0 };
+      }
+    }
+
     const dto: Omit<I.RunningBill, 'depositBalance'> = {
       admissionId: row.id,
       status: row.invoiceId ? 'final' : 'running',
       invoiceId: row.invoiceId,
       bedCharges,
-      charges: charges.map(chargeDto),
+      charges: others.map(chargeDto),
       bedTotal: rupees(bedTotal),
       chargesTotal: rupees(chargesTotal),
-      grossTotal: rupees(bedTotal + chargesTotal),
+      grossTotal: rupees(gross),
       advances: advances.map(advanceDto),
       advanceTotal: rupees(advanceTotal),
-      estimatedDue: rupees(bedTotal + chargesTotal - advanceTotal),
+      estimatedDue: rupees(gross - advanceTotal),
+      roomRentDay: rules.roomRentDay,
+      checkoutTime: rules.checkoutTime,
+      billedElsewhereTotal: rupees(elsewhereTotal),
+      preauth,
     };
-    return { dto, patientId: row.patientId, active, days };
+    return { dto, patientId: row.patientId, charges, days };
   }
 
+  /** Services to pick from on "Post a charge" (search by name or code). */
+  searchServices(q: string | undefined) {
+    return this.billing.listServices({ q, active: 'true', pageSize: 20 });
+  }
+
+  /** "Post a charge": a charge on the patient account for this admission (source ipd/<new id>). */
   async addCharge(admissionId: string, input: I.ChargeInput): Promise<I.Charge> {
     const d = contracts.chargeInputSchema.parse(input);
-    const price = d.serviceCode && (d.unitPrice === undefined || d.taxRate === undefined || !d.description) ? await this.billing.getServicePrice(d.serviceCode) : null;
     return this.db.tx(async (tx) => {
-      const row = await this.activeAdmission(tx, admissionId);
+      const row = await this.activeAdmission(tx, admissionId, true);
       if (row.invoiceId) throw conflict('bill_final', 'The IPD bill is final; post further charges as a separate bill in Billing');
-      const { tenantId, userId } = await this.repo.scope(tx);
-      const unitPrice = d.unitPrice ?? price!.price;
-      const discount = d.discount ?? 0;
-      if (discount > d.qty * unitPrice) throw badRequest('discount_too_high', 'Discount is more than the charge');
+      if (d.unitPrice !== undefined && (d.discount ?? 0) > d.qty * d.unitPrice) throw badRequest('discount_too_high', 'Discount is more than the charge');
       if (d.chargeDate && d.chargeDate < istDate(row.admittedAt)) {
         throw badRequest('charge_before_admission', `Charge date cannot be before the admission date (${istDate(row.admittedAt)})`);
       }
-      const c = await this.repo.insertCharge(tx, {
-        tenantId,
-        admissionId,
+      if (d.serviceCode && d.unitPrice !== undefined) await this.requirePriceOverride(tx, d.serviceCode, d.unitPrice);
+      const c = await this.charges.postCharge(tx, {
+        patientId: row.patientId,
+        facilityId: row.facilityId,
+        admissionId: row.id,
+        source: { module: 'ipd', refId: randomUUID() },
+        serviceCode: d.serviceCode,
+        description: d.description,
+        qty: d.qty,
+        unitPrice: d.unitPrice,
+        taxRate: d.taxRate,
+        discount: d.discount,
         chargeDate: d.chargeDate ?? istDate(new Date()),
-        serviceCode: d.serviceCode ?? null,
-        description: d.description ?? price!.name,
-        qty: String(d.qty),
-        unitPrice: money(unitPrice),
-        taxRate: String(d.taxRate ?? price?.taxRate ?? 0),
-        discount: money(discount),
-        createdBy: userId,
-        updatedBy: userId,
       });
-      return chargeDto(c);
+      return chargeDto((await this.repo.charges(tx, row.id)).find((r) => r.id === c.id)!);
     });
   }
 
+  /** Cancels a pending charge posted on the IPD screen. Other departments' charges are reversed at their source. */
   cancelCharge(admissionId: string, chargeId: string, input: I.CancelCharge): Promise<I.Charge> {
     const d = contracts.cancelChargeSchema.parse(input);
     return this.db.tx(async (tx) => {
       const row = await this.admission(tx, admissionId, true);
       if (row.invoiceId) throw conflict('bill_final', 'The IPD bill is final; issue a credit note in Billing instead');
-      const c = await this.repo.chargeById(tx, chargeId);
-      if (!c || c.admissionId !== admissionId) throw notFound('Charge');
+      const c = (await this.repo.charges(tx, admissionId)).find((r) => r.id === chargeId);
+      if (!c) throw notFound('Charge');
       if (c.status === 'cancelled') throw conflict('already_cancelled', 'This charge is already cancelled');
-      const { userId } = await this.repo.scope(tx);
-      return chargeDto(await this.repo.updateCharge(tx, chargeId, { status: 'cancelled', cancelReason: d.reason, updatedBy: userId }));
+      if (c.status === 'billed') throw conflict('charge_billed', `This charge is already on bill ${c.invoiceNumber ?? ''}; issue a credit note in Billing instead`);
+      if (c.sourceModule !== 'ipd') {
+        throw conflict('cancel_at_source', `This charge came from ${c.sourceModule}; cancel or return it there (e.g. a medicine return in Pharmacy)`);
+      }
+      await this.charges.cancelBySource(tx, { module: c.sourceModule, refId: c.sourceRef, line: c.sourceLine }, d.reason);
+      return chargeDto((await this.repo.charges(tx, admissionId)).find((r) => r.id === chargeId)!);
     });
   }
 
@@ -875,77 +956,66 @@ export class IpdService {
   }
 
   /**
-   * Turns the running bill into one final billing invoice (bed days + charges), locks the charges,
-   * then adjusts the patient's advance against it. Discharge needs this first.
+   * Turns the running bill into one final invoice: posts the bed days as charges (source ipd/<stay id>,
+   * line "from–to"), then bills every pending charge of the stay through ChargesService.billCharges with the
+   * bill discount (limited by the hospital's discount rule unless the user has billing.discount.override)
+   * and, by default, the patient's advance. Discharge needs this first.
    */
   async finalizeBill(admissionId: string, input: I.FinalizeBill): Promise<I.FinalizedBill> {
     const d = contracts.finalizeBillSchema.parse(input);
-    const created = await this.db.tx(async (tx) => {
+    const inv = await this.db.tx(async (tx) => {
       const row = await this.activeAdmission(tx, admissionId, true);
       if (row.invoiceId) throw conflict('bill_final', 'The IPD bill is already final');
       const billedAt = nowIso();
-      const { active, days } = await this.computeBill(tx, { ...row, billedAt });
-      const lines: { serviceCode?: string; description: string; qty: number; unitPrice: number; taxRate: number; discount?: number }[] = [
-        ...days.map((b) => ({
+      const { days } = await this.computeBill(tx, { ...row, billedAt });
+      for (const b of days) {
+        const from = b.dates[0]!;
+        const to = b.dates[b.dates.length - 1]!;
+        await this.charges.postCharge(tx, {
+          patientId: row.patientId,
+          facilityId: row.facilityId,
+          admissionId: row.id,
+          source: { module: 'ipd', refId: b.stayId, line: `${from}${BED_LINE_SEP}${to}` },
           ...(b.serviceCode ? { serviceCode: b.serviceCode } : {}),
-          description: `Bed charges: ${b.bedLabel} (${b.dates[0]}${b.dates.length > 1 ? ` to ${b.dates[b.dates.length - 1]}` : ''})`,
+          description: `Bed charges: ${b.bedLabel} (${from}${b.dates.length > 1 ? ` to ${to}` : ''})`,
           qty: b.dates.length,
           unitPrice: b.dailyRate,
           taxRate: 0,
-        })),
-        ...active.map((c) => ({
-          ...(c.serviceCode ? { serviceCode: c.serviceCode } : {}),
-          description: c.description,
-          qty: Number(c.qty),
-          unitPrice: Number(c.unitPrice),
-          taxRate: Number(c.taxRate),
-          discount: num(c.discount) || undefined,
-        })),
-      ];
-      if (d.discount) {
-        // A bill-level discount is spread over the (GST-free) bed lines, largest first.
-        const bedLines = lines.slice(0, days.length).sort((a, b) => b.qty * b.unitPrice - a.qty * a.unitPrice);
-        let left = paise(d.discount);
-        if (left > bedLines.reduce((s, l) => s + Math.round(l.qty * paise(l.unitPrice)), 0)) {
-          throw badRequest('discount_too_high', 'A bill discount can be at most the bed charges');
-        }
-        for (const l of bedLines) {
-          const take = Math.min(left, Math.round(l.qty * paise(l.unitPrice)));
-          if (take) l.discount = rupees(take);
-          left -= take;
-        }
+          chargeDate: from,
+        });
       }
-      if (!lines.length) throw badRequest('nothing_to_bill', 'There is nothing to bill');
-      const inv = await this.billing.createInvoice(tx, {
-        patientId: row.patientId,
-        facilityId: row.facilityId,
-        source: { module: 'ipd', refId: row.id },
-        doctorId: row.doctorId,
-        notes: [`IPD ${row.ipdNo}`, d.notes].filter(Boolean).join(' · '),
-        lines,
-        finalize: true,
-      });
+      const pending = (await this.repo.charges(tx, row.id)).filter((c) => c.status === 'pending');
+      if (!pending.length) throw badRequest('nothing_to_bill', 'There is nothing to bill');
+      const invoice = await this.charges.billCharges(
+        tx,
+        {
+          patientId: row.patientId,
+          facilityId: row.facilityId,
+          chargeIds: pending.map((c) => c.id),
+          discount: d.discount,
+          doctorId: row.doctorId,
+          notes: [`IPD ${row.ipdNo}`, d.notes].filter(Boolean).join(' · '),
+          useDeposit: d.adjustAdvance,
+          source: { module: 'ipd', refId: row.id },
+        },
+        { checkLimits: true },
+      );
       const { userId } = await this.repo.scope(tx);
-      await this.repo.updateAdmission(tx, row.id, { invoiceId: inv.invoiceId, billedAt, updatedBy: userId });
-      return { inv, patientId: row.patientId };
+      await this.repo.updateAdmission(tx, row.id, { invoiceId: invoice.id, billedAt, updatedBy: userId });
+      return invoice;
     });
+    const adjusted = inv.payments.filter((p) => p.mode === 'deposit').reduce((s, p) => s + paise(p.amount), 0);
+    return { invoiceId: inv.id, number: inv.number, total: inv.total, advanceAdjusted: rupees(adjusted), balanceDue: inv.balance };
+  }
 
-    let adjusted = 0;
-    if (d.adjustAdvance) {
-      const account = await this.billing.patientAccount(created.patientId);
-      const amount = Math.min(account.depositBalance, created.inv.total);
-      if (amount > 0) {
-        try {
-          await this.billing.collectPayment(created.inv.invoiceId, { mode: 'deposit', amount });
-          adjusted = amount;
-        } catch (err) {
-          // The invoice stands; staff can adjust the advance from the Billing screen.
-          this.log.warn(`Advance adjustment failed for invoice ${created.inv.invoiceId}: ${(err as Error).message}`);
-        }
-      }
+  /** Typing a price different from the list price for a master service needs billing.price.override. */
+  private async requirePriceOverride(tx: Tx, serviceCode: string, unitPrice: number): Promise<void> {
+    const ctx = currentContext();
+    if (!ctx || ctx.permissions.has('billing.price.override')) return;
+    const listed = await this.billing.getServicePrice(serviceCode, null, tx).catch(() => null);
+    if (listed && paise(listed.price) !== paise(unitPrice)) {
+      throw new AppError(HttpStatus.FORBIDDEN, 'price_override', `You cannot change the price of ${listed.name}`, { missing: ['billing.price.override'] });
     }
-    const inv = await this.billing.getInvoice(created.inv.invoiceId);
-    return { invoiceId: inv.id, number: inv.number, total: inv.total, advanceAdjusted: adjusted, balanceDue: inv.balance };
   }
 
   // =====================================================================
@@ -1091,8 +1161,11 @@ export class IpdService {
 
 const money = (v: number) => (Math.round(v * 100) / 100).toFixed(2);
 
+/** Separates the first and last date in a bed-day charge's source line ("2026-10-07–2026-10-09"). */
+const BED_LINE_SEP = '–';
+
 function chargeAmountPaise(c: ChargeRow): number {
-  return lineAmountPaise(Number(c.qty), Number(c.unitPrice), Number(c.discount), Number(c.taxRate));
+  return lineAmountPaise(Number(c.qty), Number(c.unitPrice), Number(c.discount), Number(c.taxRate), c.priceIncludesTax);
 }
 
 function stayForBilling(s: StayRow) {
@@ -1162,6 +1235,19 @@ function summaryDto(a: AdmissionRow, bed: { bed: string; ward: string } | undefi
     dischargedAt: a.dischargedAt ? iso(a.dischargedAt) : null,
     isMlc: a.isMlc,
     lengthOfStay: lengthOfStay(a.admittedAt, a.dischargedAt ?? nowIso()),
+  };
+}
+
+function currentAdmissionDto(a: AdmissionRow): I.CurrentAdmission {
+  return {
+    id: a.id,
+    ipdNo: a.ipdNo,
+    patientId: a.patientId,
+    patientName: a.patientName,
+    patientUhid: a.patientUhid,
+    facilityId: a.facilityId,
+    status: a.status as I.AdmissionStatus,
+    billFinal: !!a.invoiceId,
   };
 }
 
@@ -1238,14 +1324,19 @@ function chargeDto(c: ChargeRow): I.Charge {
   return {
     id: c.id,
     chargeDate: c.chargeDate,
+    sourceModule: c.sourceModule,
     serviceCode: c.serviceCode,
+    itemId: c.itemId,
     description: c.description,
     qty: Number(c.qty),
     unitPrice: num(c.unitPrice),
+    priceIncludesTax: c.priceIncludesTax,
     taxRate: num(c.taxRate),
     discount: num(c.discount),
     amount: rupees(chargeAmountPaise(c)),
-    status: c.status as 'active' | 'cancelled',
+    status: c.status as I.Charge['status'],
+    invoiceId: c.invoiceId,
+    invoiceNumber: c.invoiceNumber,
     cancelReason: c.cancelReason,
     createdAt: iso(c.createdAt),
   };

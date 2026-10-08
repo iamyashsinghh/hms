@@ -25,12 +25,13 @@ import { DbService } from '../../common/db/db.service';
 import { OutboxService } from '../../common/events/outbox.service';
 import { currentContext } from '../../common/context/request-context';
 import { badRequest, conflict, notFound } from '../../common/errors/errors';
-import { PharmacyBillingGateway, type PharmacyInvoiceInput } from './billing.gateway';
+import { PharmacyBillingGateway, type PharmacyChargeInput, type PharmacyInvoiceInput } from './billing.gateway';
 import { pgCode } from './catalog.service';
 import { lineAmounts, num, refundFor, toPaise, toRupees } from './money';
 import { PharmacyStockService } from './stock.service';
 
 type SaleRow = typeof pharmacySales.$inferSelect;
+type SaleLineRow = typeof pharmacySaleLines.$inferSelect;
 type PaymentMode = (typeof pharmacy.PAYMENT_MODES)[number];
 
 interface SaleLineRequest {
@@ -52,7 +53,11 @@ interface SaleRequest {
   lines: SaleLineRequest[];
 }
 
-/** OTC sales, prescription dispensing and returns. Stock moves FEFO through PharmacyStockService. */
+/**
+ * OTC sales, prescription dispensing and returns. Stock moves FEFO through PharmacyStockService.
+ * A registered patient's sale gets its own invoice, except medicines for an admitted patient when the hospital
+ * bills them on the IPD bill: then each line is a charge on the admission (see PharmacyBillingGateway).
+ */
 @Injectable()
 export class PharmacySalesService {
   constructor(
@@ -138,10 +143,11 @@ export class PharmacySalesService {
     });
   }
 
-  /** Allocates batches, moves stock, prices lines, writes the sale and raises the invoice. */
+  /** Allocates batches, moves stock, prices lines, writes the sale and raises the invoice (or the IPD charges). */
   private async recordSale(tx: Tx, req: SaleRequest): Promise<SaleRow> {
     const ctx = currentContext()!;
     const store = await this.stock.storeForWrite(tx, req.storeId);
+    const ipdBill = await this.billing.ipdBillFor(tx, req.patientId, store.facilityId);
     const itemIds = [...new Set(req.lines.map((l) => l.itemId))];
     const items = new Map((await tx.select().from(pharmacyItems).where(inArray(pharmacyItems.id, itemIds))).map((i) => [i.id, i]));
     for (const id of itemIds) {
@@ -171,11 +177,13 @@ export class PharmacySalesService {
         customerName: req.customerName ?? null,
         customerMobile: req.customerMobile ?? null,
         pharmacyPrescriptionId: req.pharmacyPrescriptionId ?? null,
+        admissionId: ipdBill?.id ?? null,
         subtotal: '0',
         taxableAmount: '0',
         taxAmount: '0',
         total: '0',
-        paymentMode: req.paymentMode,
+        // Nothing is collected at the counter for medicines on the IPD bill.
+        paymentMode: ipdBill ? null : req.paymentMode,
         createdBy: ctx.userId,
         updatedBy: ctx.userId,
       })
@@ -187,13 +195,14 @@ export class PharmacySalesService {
 
     const totals = { gross: 0, discount: 0, taxable: 0, tax: 0, amount: 0 };
     const invoiceLines: PharmacyInvoiceInput['lines'] = [];
+    const chargeLines: PharmacyChargeInput[] = [];
     const removed = new Map<string, number>();
     for (const l of req.lines) {
       const item = items.get(l.itemId)!;
       const gstRate = num(item.gstRate);
       for (const a of await this.stock.allocate(tx, store.id, item.id, l.qty, l.batchId)) {
         const amt = lineAmounts(toPaise(a.batch.saleRate), a.qty, l.discountPct, gstRate);
-        await tx.insert(pharmacySaleLines).values({
+        const [saleLine] = await tx.insert(pharmacySaleLines).values({
           tenantId: ctx.tenantId!,
           saleId: sale!.id,
           itemId: item.id,
@@ -206,7 +215,7 @@ export class PharmacySalesService {
           taxableAmount: toRupees(amt.taxable),
           taxAmount: toRupees(amt.tax),
           amount: toRupees(amt.amount),
-        });
+        }).returning({ id: pharmacySaleLines.id });
         await this.stock.stockOut(tx, {
           storeId: store.id,
           itemId: item.id,
@@ -222,7 +231,7 @@ export class PharmacySalesService {
         totals.taxable += amt.taxable;
         totals.tax += amt.tax;
         totals.amount += amt.amount;
-        invoiceLines.push({
+        const billLine = {
           itemId: item.id,
           description: `${item.name} (batch ${a.batch.batchNo}, exp ${a.batch.expiryDate})`,
           hsnSac: item.hsnCode ?? undefined,
@@ -230,13 +239,18 @@ export class PharmacySalesService {
           unitPrice: num(a.batch.saleRate),
           taxRate: gstRate,
           discount: Number(toRupees(amt.discount)),
-        });
+        };
+        invoiceLines.push(billLine);
+        chargeLines.push({ ...billLine, saleLineId: saleLine!.id });
       }
       removed.set(item.id, (removed.get(item.id) ?? 0) + l.qty);
     }
     for (const [itemId, qty] of removed) await this.stock.checkLow(tx, store.id, itemId, qty);
 
-    const invoice = req.patientId
+    if (ipdBill) {
+      await this.billing.postIpdCharges(tx, { patientId: req.patientId!, facilityId: store.facilityId, admissionId: ipdBill.id, saleId: sale!.id, lines: chargeLines });
+    }
+    const invoice = req.patientId && !ipdBill
       ? await this.billing.createInvoice(tx, {
           patientId: req.patientId,
           facilityId: store.facilityId,
@@ -276,6 +290,11 @@ export class PharmacySalesService {
         .values({ tenantId: ctx.tenantId!, number, saleId: sale.id, refundAmount: '0', refundMode: input.refundMode, reason: input.reason ?? null, createdBy: ctx.userId })
         .returning();
 
+      // Medicines on the IPD bill: a line still pending there is reduced on the bill; a billed line is credited
+      // on the bill it went on. No invoice of the sale's own is involved.
+      const ipdCharges = sale.admissionId ? await this.billing.lineCharges(tx, sale.id) : null;
+      const ipdCredits = new Map<string, number>();
+      const reason = input.reason && input.reason.length >= 3 ? input.reason : `Pharmacy return ${number} against ${sale.number}`;
       let refund = 0;
       for (const r of input.lines) {
         const line = lines.get(r.saleLineId);
@@ -287,6 +306,19 @@ export class PharmacySalesService {
         refund += amount;
         line.returnedQty += r.qty;
         await tx.update(pharmacySaleLines).set({ returnedQty: line.returnedQty }).where(eq(pharmacySaleLines.id, line.id));
+        const charge = ipdCharges?.get(line.id);
+        if (charge?.status === 'pending') {
+          const left = line.qty - line.returnedQty;
+          const rest = lineAmounts(toPaise(line.unitPrice), left, num(line.discountPct), num(line.gstRate));
+          await this.billing.reduceIpdCharge(tx, {
+            saleId: sale.id,
+            saleLineId: line.id,
+            reason,
+            remaining: left > 0 ? await this.chargeLine(tx, sale, line, left, rest.discount) : null,
+          });
+        } else if (charge?.status === 'billed' && charge.invoiceId) {
+          ipdCredits.set(charge.invoiceId, (ipdCredits.get(charge.invoiceId) ?? 0) + amount);
+        }
         await tx.insert(pharmacySaleReturnLines).values({ tenantId: ctx.tenantId!, returnId: ret!.id, saleLineId: line.id, qty: r.qty, amount: toRupees(amount) });
         await this.stock.stockIn(tx, {
           storeId: sale.storeId,
@@ -306,7 +338,22 @@ export class PharmacySalesService {
       // Invoiced sale: credit the return on the invoice (billing refunds the part already paid). On the last
       // return, credit whatever is left so billing's rupee round-off is returned too.
       let billingRefs: Partial<typeof pharmacySaleReturns.$inferInsert> = {};
-      if (sale.invoiceId && refund > 0) {
+      let moneyBack = refund;
+      if (ipdCharges) {
+        // Only the part credited on a bill can mean money back; pending lines just leave the IPD bill.
+        moneyBack = 0;
+        let n = 0;
+        for (const [invoiceId, amount] of ipdCredits) {
+          const res = await this.billing.returnOnInvoice(tx, invoiceId, {
+            amount: Number(toRupees(amount)),
+            reason,
+            refundMode: input.refundMode,
+            reference: n++ ? `${ret!.id}:${invoiceId}` : ret!.id,
+          });
+          moneyBack += amount;
+          billingRefs = { creditNoteId: res.creditNoteId, creditNoteNumber: res.creditNoteNumber, billingRefundNumber: res.refundNumber };
+        }
+      } else if (sale.invoiceId && refund > 0) {
         const amount = status === 'returned' ? toPaise(await this.billing.creditable(sale.invoiceId)) : refund;
         if (amount > 0) {
           const res = await this.billing.returnOnInvoice(tx, sale.invoiceId, {
@@ -325,11 +372,47 @@ export class PharmacySalesService {
         .where(eq(pharmacySales.id, sale.id));
       const [done] = await tx
         .update(pharmacySaleReturns)
-        .set({ refundAmount: toRupees(refund), ...billingRefs })
+        .set({ refundAmount: toRupees(ipdCharges ? moneyBack : refund), ...(ipdCharges && !moneyBack ? { refundMode: null } : {}), ...billingRefs })
         .where(eq(pharmacySaleReturns.id, ret!.id))
         .returning();
       return returnDto(done!);
     });
+  }
+
+  /** The charge for what is left of a sale line on the IPD bill. */
+  private async chargeLine(tx: Tx, sale: SaleRow, line: SaleLineRow, qty: number, discountPaise: number) {
+    const [info] = await tx
+      .select({ name: pharmacyItems.name, hsnCode: pharmacyItems.hsnCode, batchNo: pharmacyBatches.batchNo, expiryDate: pharmacyBatches.expiryDate })
+      .from(pharmacyItems)
+      .innerJoin(pharmacyBatches, and(eq(pharmacyBatches.tenantId, pharmacyItems.tenantId), eq(pharmacyBatches.id, line.batchId)))
+      .where(eq(pharmacyItems.id, line.itemId))
+      .limit(1);
+    return {
+      patientId: sale.patientId!,
+      facilityId: sale.facilityId,
+      admissionId: sale.admissionId!,
+      saleLineId: line.id,
+      itemId: line.itemId,
+      description: `${info!.name} (batch ${info!.batchNo}, exp ${info!.expiryDate})`,
+      hsnSac: info!.hsnCode ?? undefined,
+      qty,
+      unitPrice: num(line.unitPrice),
+      taxRate: num(line.gstRate),
+      discount: Number(toRupees(discountPaise)),
+    };
+  }
+
+  /**
+   * `billing.charges.billed`: medicines on an IPD bill (or billed at the desk) now have a bill; store its number
+   * on the sale. Runs in the worker, at least once (idempotent: only fills an empty invoice).
+   */
+  async onChargesBilled(tx: Tx, e: { invoiceId: string; number: string; charges: { module: string; refId: string }[] }): Promise<void> {
+    const saleIds = [...new Set(e.charges.filter((c) => c.module === 'pharmacy').map((c) => c.refId))];
+    if (!saleIds.length) return;
+    await tx
+      .update(pharmacySales)
+      .set({ invoiceId: e.invoiceId, invoiceNumber: e.number })
+      .where(and(inArray(pharmacySales.id, saleIds), sql`${pharmacySales.admissionId} is not null`, sql`${pharmacySales.invoiceId} is null`));
   }
 
   listSales(q: z.output<typeof pharmacy.saleListQuerySchema>): Promise<{ items: pharmacy.Sale[]; page: number; pageSize: number; total: number }> {
@@ -414,6 +497,8 @@ function saleDto(s: SaleRow): pharmacy.Sale {
     paymentMode: s.paymentMode as pharmacy.Sale['paymentMode'],
     invoiceId: s.invoiceId,
     invoiceNumber: s.invoiceNumber,
+    admissionId: s.admissionId,
+    onIpdBill: !!s.admissionId,
     createdAt: iso(s.createdAt),
   };
 }

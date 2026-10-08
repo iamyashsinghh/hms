@@ -70,8 +70,10 @@ beforeAll(async () => {
   expect(store.statusCode, store.body).toBe(201);
   storeId = store.json().id;
 
-  const patients = await app.inject({ method: 'GET', url: '/api/v1/patients', headers: bearer(pharmacist) });
-  patientId = patients.json().items[0].id;
+  // A patient of our own: an admitted patient's medicines would go on the IPD bill instead.
+  const patient = await app.inject({ method: 'POST', url: '/api/v1/patients', headers: bearer(admin), payload: { firstName: 'Counter', lastName: `Buyer${run}`, gender: 'male', ageYears: 40, mobile: '9876500001' } });
+  expect(patient.statusCode, patient.body).toBe(201);
+  patientId = patient.json().id;
 });
 afterAll(() => app.close());
 
@@ -283,6 +285,94 @@ describe('stock, FEFO sales and returns', () => {
     const db = app.get(DbService);
     await expect(db.asTenant({ tenantId }, (tx) => tx.execute(sql`update inventory.stock_ledger set qty_change = 1`))).rejects.toThrow();
     await expect(db.asTenant({ tenantId }, (tx) => tx.execute(sql`delete from inventory.stock_ledger`))).rejects.toThrow();
+  });
+});
+
+describe('medicines for admitted patients', () => {
+  let inpatient: string;
+  let admissionId: string;
+  let item: { id: string; name: string };
+  const api = (token: string, method: string, url: string, payload?: unknown) =>
+    app.inject({ method, url: `/api/v1${url}`, headers: { ...bearer(token), 'x-facility-id': facilityId }, payload } as Parameters<typeof app.inject>[0]);
+  const ipdBill = async () => (await api(admin, 'GET', `/ipd/admissions/${admissionId}/bill`)).json();
+  const pharmacyCharges = async () =>
+    (await ipdBill()).charges.filter((c: { sourceModule: string }) => c.sourceModule === 'pharmacy') as { id: string; qty: number; amount: number; status: string; invoiceNumber: string | null }[];
+
+  beforeAll(async () => {
+    const ward = await api(admin, 'POST', '/ipd/wards', { code: `PW${run}`.slice(0, 20), name: `Pharm ward ${run}`, wardType: 'general', defaultDailyRate: 1000 });
+    expect(ward.statusCode, ward.body).toBe(201);
+    const [bed] = (await api(admin, 'POST', '/ipd/beds/bulk', { wardId: ward.json().id, prefix: 'P', from: 1, to: 1 })).json();
+    const p = await api(admin, 'POST', '/patients', { firstName: 'Ward', lastName: `Patient${run}`, gender: 'female', ageYears: 60, mobile: '9876500002' });
+    inpatient = p.json().id;
+    const doctorId = (await login(app, 'doctor@demo.hms')).user.id;
+    const adm = await api(admin, 'POST', '/ipd/admissions', { patientId: inpatient, bedId: bed.id, doctorId, reason: 'Pneumonia' });
+    expect(adm.statusCode, adm.body).toBe(201);
+    admissionId = adm.json().id;
+    item = await newItem({ gstRate: 12 });
+    await stockUp(item.id, [{ batchNo: 'IPD1', expiryDate: daysFromNow(300), mrp: 56, qty: 50 }]);
+  });
+  afterAll(() => api(admin, 'PUT', '/billing/rules', { facilityId, replace: true, rules: {} }));
+
+  it('puts the medicines on the IPD bill (no invoice, nothing collected) under the default rule', async () => {
+    const res = await call(pharmacist, 'POST', '/sales', { storeId, patientId: inpatient, paymentMode: 'cash', lines: [{ itemId: item.id, qty: 3, discountPct: 10 }] });
+    expect(res.statusCode, res.body).toBe(201);
+    expect(res.json()).toMatchObject({ onIpdBill: true, admissionId, invoiceId: null, paymentMode: null, total: 151.2 });
+    const charges = await pharmacyCharges();
+    expect(charges).toEqual([expect.objectContaining({ qty: 3, amount: 151.2, status: 'pending', priceIncludesTax: true, taxRate: 12, unitPrice: 56, itemId: item.id })]);
+    // Charges from pharmacy are reversed in pharmacy (a return), not cancelled on the IPD screen.
+    const cancel = await api(admin, 'POST', `/ipd/admissions/${admissionId}/charges/${charges[0]!.id}/cancel`, { reason: 'Not given' });
+    expect(cancel.statusCode).toBe(409);
+    expect(cancel.json().error.code).toBe('cancel_at_source');
+  });
+
+  it('a return of a line still on the running bill reduces the charge; no money moves', async () => {
+    const sale = (await call(pharmacist, 'GET', `/sales?q=${encodeURIComponent('')}`)).json().items.find((s: { admissionId: string | null }) => s.admissionId === admissionId);
+    const detail = (await call(pharmacist, 'GET', `/sales/${sale.id}`)).json();
+    const r = await call(pharmacist, 'POST', `/sales/${sale.id}/returns`, { reason: 'Stopped', lines: [{ saleLineId: detail.lines[0].id, qty: 1 }] });
+    expect(r.statusCode, r.body).toBe(201);
+    expect(r.json()).toMatchObject({ refundAmount: 0, refundMode: null, creditNoteNumber: null });
+    expect(await pharmacyCharges()).toEqual([expect.objectContaining({ qty: 2, amount: 100.8, status: 'pending' })]);
+  });
+
+  it("follows the hospital's rule: a separate pharmacy bill per issue", async () => {
+    expect((await api(admin, 'PUT', '/billing/rules', { facilityId, rules: { ipdPharmacy: 'separate' } })).statusCode).toBe(200);
+    const res = await call(pharmacist, 'POST', '/sales', { storeId, patientId: inpatient, paymentMode: 'credit', lines: [{ itemId: item.id, qty: 1 }] });
+    expect(res.statusCode, res.body).toBe(201);
+    expect(res.json()).toMatchObject({ onIpdBill: false, admissionId: null, paymentMode: 'credit', invoiceId: expect.any(String) });
+    expect(await pharmacyCharges()).toHaveLength(1);
+    await api(admin, 'PUT', '/billing/rules', { facilityId, replace: true, rules: {} });
+  });
+
+  it('the IPD final bill includes the medicines; the sale gets the bill number; later returns are credited on it', async () => {
+    const fin = await api(admin, 'POST', `/ipd/admissions/${admissionId}/bill/finalize`, {});
+    expect(fin.statusCode, fin.body).toBe(201);
+    const inv = (await api(admin, 'GET', `/billing/invoices/${fin.json().invoiceId}`)).json();
+    expect(inv.lines.some((l: { description: string; itemId: string }) => l.itemId === item.id)).toBe(true);
+    expect(await pharmacyCharges()).toEqual([expect.objectContaining({ status: 'billed', invoiceNumber: inv.number })]);
+
+    // The worker hands billing.charges.billed to pharmacy (twice: delivery is at least once).
+    const rows = await app.get(DbService).asTenant({ tenantId }, async (tx) =>
+      (await tx.execute<{ id: string; payload: Record<string, unknown>; created_at: string }>(
+        sql`select id, payload, created_at from audit.outbox where topic = 'billing.charges.billed' and payload->>'invoiceId' = ${inv.id}`,
+      )).rows,
+    );
+    expect(rows).toHaveLength(1);
+    const event = { id: rows[0]!.id, tenantId, topic: 'billing.charges.billed', payload: rows[0]!.payload, createdAt: new Date(rows[0]!.created_at).toISOString() };
+    await app.get(EventBus).dispatch(event);
+    await app.get(EventBus).dispatch(event);
+    const sale = (await call(pharmacist, 'GET', '/sales')).json().items.find((s: { admissionId: string | null }) => s.admissionId === admissionId);
+    expect(sale).toMatchObject({ invoiceId: inv.id, invoiceNumber: inv.number, onIpdBill: true });
+
+    const detail = (await call(pharmacist, 'GET', `/sales/${sale.id}`)).json();
+    const r = await call(pharmacist, 'POST', `/sales/${sale.id}/returns`, { reason: 'Unused at discharge', lines: [{ saleLineId: detail.lines[0].id, qty: 1 }] });
+    expect(r.statusCode, r.body).toBe(201);
+    expect(r.json()).toMatchObject({ refundAmount: 50.4, creditNoteNumber: expect.any(String) });
+    expect((await api(admin, 'GET', `/billing/invoices/${inv.id}`)).json().creditedAmount).toBe(50.4);
+  });
+
+  it('counter sales for patients who are not admitted are unchanged', async () => {
+    const res = await call(pharmacist, 'POST', '/sales', { storeId, patientId, paymentMode: 'cash', lines: [{ itemId: item.id, qty: 1 }] });
+    expect(res.json()).toMatchObject({ onIpdBill: false, admissionId: null, invoiceId: expect.any(String), paymentMode: 'cash' });
   });
 });
 

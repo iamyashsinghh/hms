@@ -4,6 +4,7 @@ import { Client } from 'pg';
 import { DEMO_PASSWORD, provisionTenant, sql } from '@hms/db';
 import { DbService } from '../src/common/db/db.service';
 import { IpdCensusService } from '../src/modules/ipd/ipd.census';
+import { rentDays } from '../src/modules/ipd/ipd.calc';
 import { bearer, bootApp, login } from './helpers';
 
 let app: NestFastifyApplication;
@@ -277,6 +278,14 @@ describe('admission to discharge', () => {
     // Admitted and transferred the same day: the day is billed to the bed held at midnight (B2).
     expect(bill.bedCharges).toEqual([expect.objectContaining({ bedLabel: `General ${tag} · B2`, days: 1, dailyRate: 1500, amount: 1500 })]);
     expect(bill.advances[0]).toMatchObject({ amount: 5000, mode: 'cash' });
+    // The charges live on the patient account: pending on the admission until the IPD bill is made.
+    expect(bill.charges.map((c: { description: string; status: string; sourceModule: string }) => [c.description, c.status, c.sourceModule])).toEqual([
+      ['Nebulization', 'pending', 'ipd'],
+      ['Wrong entry', 'cancelled', 'ipd'],
+    ]);
+    expect(bill).toMatchObject({ roomRentDay: 'midnight', billedElsewhereTotal: 0, preauth: null });
+    const desk = (await call(clerk, 'GET', `/billing/patients/${patientId}/charges`)).json();
+    expect(desk.groups).toEqual([expect.objectContaining({ account: 'ipd', admissionId, total: 500 })]);
   });
 
   it('tracks devices and reports the daily census per ward', async () => {
@@ -331,12 +340,21 @@ describe('admission to discharge', () => {
     const inv = (await call(clerk, 'GET', `/billing/invoices/${res.json().invoiceId}`)).json();
     expect(inv).toMatchObject({ status: 'final', total: 2000, balance: 0, sourceModule: 'ipd', sourceRef: admissionId });
     expect(inv.lines).toHaveLength(2);
+    expect(inv.lines.find((l: { description: string }) => l.description.startsWith('Bed charges'))).toMatchObject({ qty: 1, unitPrice: 1500 });
     expect((await call(clerk, 'GET', `/billing/patients/${patientId}/account`)).json().depositBalance).toBe(3000);
+    // Every line has a charge behind it, now billed on the IPD bill.
+    const billed = (await call(clerk, 'GET', `/billing/charges?admissionId=${admissionId}&status=billed`)).json();
+    expect(billed.items).toHaveLength(2);
+    expect(billed.items.every((c: { invoiceNumber: string }) => c.invoiceNumber === inv.number)).toBe(true);
+    expect(billed.items.find((c: { description: string }) => c.description.startsWith('Bed'))).toMatchObject({ sourceModule: 'ipd' });
 
     const late = await call(clerk, 'POST', `/ipd/admissions/${admissionId}/charges`, { description: 'Late', unitPrice: 10 });
     expect(late.statusCode).toBe(409);
     expect((await call(clerk, 'POST', `/ipd/admissions/${admissionId}/bill/finalize`, {})).statusCode).toBe(409);
-    expect((await call(clerk, 'GET', `/ipd/admissions/${admissionId}/bill`)).json()).toMatchObject({ status: 'final', grossTotal: 2000 });
+    const final = (await call(clerk, 'GET', `/ipd/admissions/${admissionId}/bill`)).json();
+    expect(final).toMatchObject({ status: 'final', grossTotal: 2000, bedTotal: 1500, chargesTotal: 500 });
+    expect(final.bedCharges).toEqual([expect.objectContaining({ bedLabel: `General ${tag} · B2`, days: 1, amount: 1500 })]);
+    expect(final.charges.find((c: { description: string }) => c.description === 'Nebulization')).toMatchObject({ status: 'billed', invoiceNumber: inv.number });
   });
 
   it('signs the discharge summary and discharges', async () => {
@@ -384,6 +402,90 @@ describe('admission to discharge', () => {
     expect(res.json()).toMatchObject({ status: 'cancelled', bedId: null });
     const bed = (await call(admin, 'GET', `/ipd/beds?wardId=${wardId}`)).json().find((b: { id: string }) => b.id === beds[2]!.id);
     expect(bed.status).toBe('available');
+  });
+});
+
+describe('IPD bill on the patient account', () => {
+  let bedIds: string[];
+  let pid: string;
+  let adm: { id: string; ipdNo: string };
+  const admittedAt = new Date(Date.now() - 49 * 3_600_000).toISOString();
+  const rules = (r: Record<string, unknown>) => call(admin, 'PUT', '/billing/rules', { facilityId, rules: r });
+
+  beforeAll(async () => {
+    const ward = await call(admin, 'POST', '/ipd/wards', { code: `R${tag}`.slice(0, 20), name: `Rent ${tag}`, wardType: 'private', defaultDailyRate: 1000 });
+    expect(ward.statusCode, ward.body).toBe(201);
+    bedIds = (await call(admin, 'POST', '/ipd/beds/bulk', { wardId: ward.json().id, prefix: 'R', from: 1, to: 2 })).json().map((b: { id: string }) => b.id);
+    pid = await newPatient('Rentdays');
+    const a = await call(reception, 'POST', '/ipd/admissions', { patientId: pid, bedId: bedIds[0], doctorId, reason: 'Observation', admittedAt });
+    expect(a.statusCode, a.body).toBe(201);
+    adm = a.json();
+  });
+  afterAll(async () => {
+    await call(admin, 'PUT', '/billing/rules', { facilityId, replace: true, rules: {} });
+  });
+
+  it('counts bed days by the hospital room-rent day rule', async () => {
+    const bill = async () => (await call(clerk, 'GET', `/ipd/admissions/${adm.id}/bill`)).json();
+    const midnight = await bill();
+    expect(midnight.roomRentDay).toBe('midnight');
+    expect(midnight.bedCharges[0].days).toBe(rentDays(admittedAt, new Date().toISOString()).length);
+
+    expect((await rules({ roomRentDay: 'admission_time' })).statusCode).toBe(200);
+    // 49 hours = three started 24-hour blocks.
+    expect(await bill()).toMatchObject({ roomRentDay: 'admission_time', bedTotal: 3000, bedCharges: [expect.objectContaining({ days: 3, dailyRate: 1000 })] });
+
+    expect((await rules({ roomRentDay: 'checkout_time', checkoutTime: '12:00' })).statusCode).toBe(200);
+    const noon = await bill();
+    expect(noon).toMatchObject({ roomRentDay: 'checkout_time', checkoutTime: '12:00' });
+    expect(noon.bedCharges[0].days).toBe(rentDays(admittedAt, new Date().toISOString(), { roomRentDay: 'checkout_time', checkoutTime: '12:00' }).length);
+  });
+
+  it('posts charges by service, with the list price unless the user may override it', async () => {
+    const code = `NURS-${tag}`;
+    expect((await call(admin, 'POST', '/billing/services', { code, name: `Nursing care ${tag}`, category: 'procedure', basePrice: 400, taxRate: 0 })).statusCode).toBe(201);
+    const found = (await call(nurse, 'GET', `/ipd/services?q=${encodeURIComponent(`nursing care ${tag}`.toLowerCase())}`)).json();
+    expect(found.items).toEqual([expect.objectContaining({ code, basePrice: 400 })]);
+    const c = await call(nurse, 'POST', `/ipd/admissions/${adm.id}/charges`, { serviceCode: code, qty: 2 });
+    expect(c.statusCode, c.body).toBe(201);
+    expect(c.json()).toMatchObject({ serviceCode: code, description: `Nursing care ${tag}`, unitPrice: 400, amount: 800, status: 'pending' });
+    const changed = await call(nurse, 'POST', `/ipd/admissions/${adm.id}/charges`, { serviceCode: code, unitPrice: 300 });
+    expect(changed.statusCode).toBe(403);
+    expect(changed.json().error.code).toBe('price_override');
+    expect((await call(admin, 'POST', `/ipd/admissions/${adm.id}/charges`, { serviceCode: code, unitPrice: 300 })).statusCode).toBe(201);
+  });
+
+  it('shows the approved pre-auth against the running total', async () => {
+    const payer = await call(admin, 'POST', '/insurance/payers', { code: `IPDINS-${tag}`, name: `Ipd Insurer ${tag}`, type: 'insurer' });
+    expect(payer.statusCode, payer.body).toBe(201);
+    const policy = await call(admin, 'POST', '/insurance/policies', { patientId: pid, payerId: payer.json().id, policyNumber: `IPD-${tag}`, sumInsured: 100000 });
+    expect(policy.statusCode, policy.body).toBe(201);
+    const pa = await call(admin, 'POST', '/insurance/preauths', { policyId: policy.json().id, admissionRef: adm.ipdNo, diagnosis: 'Observation', estimatedAmount: 5000 });
+    expect(pa.statusCode, pa.body).toBe(201);
+    expect((await call(admin, 'GET', `/ipd/admissions/${adm.id}/bill`)).json().preauth).toBeNull(); // not approved yet
+    expect((await call(admin, 'POST', `/insurance/preauths/${pa.json().id}/submit`, {})).statusCode).toBe(200);
+    expect((await call(admin, 'POST', `/insurance/preauths/${pa.json().id}/approve`, { approvedAmount: 2000 })).statusCode).toBe(200);
+
+    const bill = (await call(clerk, 'GET', `/ipd/admissions/${adm.id}/bill`)).json();
+    expect(bill.preauth).toMatchObject({ preauthId: pa.json().id, number: pa.json().number, payerName: `Ipd Insurer ${tag}`, approvedAmount: 2000 });
+    expect(bill.preauth.overBy).toBeCloseTo(bill.grossTotal - 2000, 2);
+    expect(bill.preauth.overBy).toBeGreaterThan(0);
+  });
+
+  it('keeps billing discount limits on the final bill and bills every pending charge of the stay', async () => {
+    const limited = await call(clerk, 'POST', `/ipd/admissions/${adm.id}/bill/finalize`, { discount: 100 });
+    expect(limited.statusCode).toBe(403);
+    expect(limited.json().error.code).toBe('discount_limit');
+
+    const before = (await call(clerk, 'GET', `/ipd/admissions/${adm.id}/bill`)).json();
+    const res = await call(admin, 'POST', `/ipd/admissions/${adm.id}/bill/finalize`, { discount: 100 });
+    expect(res.statusCode, res.body).toBe(201);
+    expect(res.json().total).toBeCloseTo(Math.round(before.grossTotal - 100), 0);
+    const after = (await call(clerk, 'GET', `/ipd/admissions/${adm.id}/bill`)).json();
+    // The bill discount sits on the lines now (largest line first: the bed charges).
+    expect(after).toMatchObject({ status: 'final', invoiceId: res.json().invoiceId, bedTotal: before.bedTotal - 100, chargesTotal: before.chargesTotal, grossTotal: before.grossTotal - 100 });
+    expect(after.charges.every((c: { status: string }) => c.status === 'billed')).toBe(true);
+    expect((await call(clerk, 'GET', `/billing/charges?admissionId=${adm.id}&status=pending`)).json().items).toHaveLength(0);
   });
 });
 

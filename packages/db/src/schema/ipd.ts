@@ -258,6 +258,7 @@ export const ipdRounds = pg.table(
   ],
 );
 
+/** History only: IPD charges live in billing.charges (admission_id) since migration 20261008120000. */
 export const ipdCharges = pg.table(
   'charges',
   {

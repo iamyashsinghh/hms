@@ -24,6 +24,7 @@ import { currentContext } from '../../common/context/request-context';
 import { OutboxService } from '../../common/events/outbox.service';
 import { badRequest, conflict, notFound } from '../../common/errors/errors';
 import { num } from './money';
+import { InventoryPatientGateway, type ConsumableLine } from './patient.gateway';
 import { InventoryStockGateway, assertFacility, visibleFacilities } from './stock.gateway';
 
 type IndentRow = typeof inventoryIndents.$inferSelect;
@@ -40,7 +41,13 @@ export class InventoryIndentsService {
     private readonly db: DbService,
     private readonly stock: InventoryStockGateway,
     private readonly outbox: OutboxService,
+    private readonly patients: InventoryPatientGateway,
   ) {}
+
+  /** Admitted patients to issue consumables for (picker on the issue screen). */
+  admittedPatients(q?: string) {
+    return this.patients.admitted(q);
+  }
 
   list(q: z.output<typeof inventory.indentQuerySchema>): Promise<Paginated<inventory.Indent>> {
     return this.db.tx(async (tx) => {
@@ -216,12 +223,28 @@ export class InventoryIndentsService {
         if (total > pending) throw conflict('over_issue', `${line.itemName}: only ${pending} ${line.unit} pending on ${indent.number}`);
       }
 
+      // Issued for a patient: consumables are charged to them when the hospital's billing rule says so.
+      const patient = await this.patients.resolve(tx, input);
+      const charge = patient ? await this.patients.assertChargeable(tx, input.lines.map((l) => lines.get(l.indentLineId)!.itemId), indent.facilityId) : false;
+
       const number = formatSeries('ISS', await nextCounter(tx, 'inventory.issue'));
       const [issue] = await tx
         .insert(inventoryIssues)
-        .values({ tenantId: ctx.tenantId!, number, indentId: id, fromStoreId: indent.fromStoreId, toStoreId: indent.toStoreId, notes: input.notes ?? null, createdBy: ctx.userId })
+        .values({
+          tenantId: ctx.tenantId!,
+          number,
+          indentId: id,
+          fromStoreId: indent.fromStoreId,
+          toStoreId: indent.toStoreId,
+          notes: input.notes ?? null,
+          patientId: patient?.patientId ?? null,
+          admissionId: patient?.admission?.id ?? null,
+          patientName: patient?.patientName ?? null,
+          createdBy: ctx.userId,
+        })
         .returning();
       const moved: inventory.InventoryIndentIssuedEvent['lines'] = [];
+      const charged: ConsumableLine[] = [];
       for (const l of input.lines) {
         const line = lines.get(l.indentLineId)!;
         const ref = { refType: 'inventory.issue', refId: issue!.id, note: `${number} for ${indent.number}` };
@@ -246,17 +269,21 @@ export class InventoryIndentsService {
             txnType: 'transfer_in',
             ...ref,
           });
-          await tx.insert(inventoryIssueLines).values({
-            tenantId: ctx.tenantId!,
-            issueId: issue!.id,
-            indentLineId: line.id,
-            itemId: line.itemId,
-            batchId: a.batch.id,
-            batchNo: a.batch.batchNo,
-            expiryDate: a.batch.expiryDate,
-            qty: a.qty,
-          });
+          const [issueLine] = await tx
+            .insert(inventoryIssueLines)
+            .values({
+              tenantId: ctx.tenantId!,
+              issueId: issue!.id,
+              indentLineId: line.id,
+              itemId: line.itemId,
+              batchId: a.batch.id,
+              batchNo: a.batch.batchNo,
+              expiryDate: a.batch.expiryDate,
+              qty: a.qty,
+            })
+            .returning({ id: inventoryIssueLines.id });
           moved.push({ itemId: line.itemId, batchId: a.batch.id, qty: a.qty });
+          charged.push({ issueLineId: issueLine!.id, itemId: line.itemId, batchNo: a.batch.batchNo, expiryDate: a.batch.expiryDate, qty: a.qty, saleRate: num(a.batch.saleRate) });
         }
         line.issuedQty += l.qty;
         await tx
@@ -270,7 +297,18 @@ export class InventoryIndentsService {
         .set({ status: complete ? 'issued' : 'partially_issued', updatedBy: ctx.userId })
         .where(eq(inventoryIndents.id, id));
 
-      const event: inventory.InventoryIndentIssuedEvent = { indentId: id, issueId: issue!.id, fromStoreId: indent.fromStoreId, toStoreId: indent.toStoreId, lines: moved };
+      if (patient && charge) await this.patients.charge(tx, { issueId: issue!.id, facilityId: indent.facilityId, patient, lines: charged });
+
+      const event: inventory.InventoryIndentIssuedEvent = {
+        indentId: id,
+        issueId: issue!.id,
+        fromStoreId: indent.fromStoreId,
+        toStoreId: indent.toStoreId,
+        patientId: patient?.patientId ?? null,
+        admissionId: patient?.admission?.id ?? null,
+        chargedToPatient: !!patient && charge,
+        lines: moved,
+      };
       await this.outbox.publish(tx, 'inventory.indent.issued', { ...event });
       return this.full(tx, id);
     });
@@ -349,6 +387,9 @@ function issueDto(r: IssueRow, lines: IssueLineRow[]): inventory.Issue {
     fromStoreId: r.fromStoreId,
     toStoreId: r.toStoreId,
     notes: r.notes,
+    patientId: r.patientId,
+    admissionId: r.admissionId,
+    patientName: r.patientName,
     createdAt: iso(r.createdAt),
     lines: lines.map((l) => ({ id: l.id, indentLineId: l.indentLineId, itemId: l.itemId, batchId: l.batchId, batchNo: l.batchNo, expiryDate: l.expiryDate, qty: l.qty })),
   };
