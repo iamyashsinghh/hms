@@ -23,6 +23,7 @@ import {
   StatusBadge,
   Textarea,
   formatDateTime,
+  checked,
   num,
   opt,
   useDebounced,
@@ -40,7 +41,7 @@ function AddSetForm({ onDone }: { onDone: () => void }) {
   const [f, setF] = React.useState<SetForm>({ name: '', department: '', contents: '', shelfLifeDays: '30' });
   const save = useMutation({
     mutationFn: () =>
-      api.ops.cssd.createSet({
+      api.ops.cssd.createSet(checked(O.cssdSetInputSchema, {
         name: f.name.trim(),
         department: opt(f.department),
         contents: f.contents
@@ -48,7 +49,7 @@ function AddSetForm({ onDone }: { onDone: () => void }) {
           .map((l) => l.trim())
           .filter(Boolean),
         shelfLifeDays: num(f.shelfLifeDays),
-      }),
+      })),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['ops'] });
       onDone();
@@ -105,7 +106,8 @@ function StartCycleForm({ dirty, onDone }: { dirty: O.CssdSet[]; onDone: () => v
   const [temp, setTemp] = React.useState('134');
   const [pressure, setPressure] = React.useState('');
   const start = useMutation({
-    mutationFn: () => api.ops.cssd.startCycle({ sterilizer: sterilizer.trim(), method, setIds, temperatureC: num(temp), pressure: opt(pressure) }),
+    mutationFn: () =>
+      api.ops.cssd.startCycle(checked(O.startCycleSchema, { sterilizer: sterilizer.trim(), method, setIds, temperatureC: num(temp), pressure: opt(pressure) })),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['ops'] });
       onDone();
@@ -237,7 +239,7 @@ function IssueRow({ set, onDone }: { set: O.CssdSet; onDone: () => void }) {
   const [issuedTo, setIssuedTo] = React.useState('');
   const [patient, setPatient] = React.useState<Patient | null>(null);
   const issue = useMutation({
-    mutationFn: () => api.ops.cssd.issue({ setId: set.id, issuedTo: issuedTo.trim(), patientId: patient?.id }),
+    mutationFn: () => api.ops.cssd.issue(checked(O.issueSetSchema, { setId: set.id, issuedTo: issuedTo.trim(), patientId: patient?.id })),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['ops'] });
       onDone();

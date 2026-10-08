@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ErrorBox, Field, HK_KIND_LABELS, HK_STATUS, MessageRow, Pager, PriorityBadge, StatusBadge, formatDateTime, opt } from '@/modules/ops/ui';
+import { ErrorBox, Field, HK_KIND_LABELS, HK_STATUS, MessageRow, Pager, PriorityBadge, StatusBadge, formatDateTime, opt, checked } from '@/modules/ops/ui';
 
 const PAGE_SIZE = 30;
 
@@ -23,14 +23,14 @@ function RequestForm({ onDone }: { onDone: () => void }) {
   const [f, setF] = React.useState({ location: '', kind: 'routine' as O.HkKind, priority: 'normal' as O.HkPriority, description: '', dueAt: '', assignedTo: '' });
   const save = useMutation({
     mutationFn: () =>
-      api.ops.housekeeping.create({
+      api.ops.housekeeping.create(checked(O.createHkTaskSchema, {
         location: f.location.trim(),
         kind: f.kind,
         priority: f.priority,
         description: opt(f.description),
         assignedTo: canManage ? opt(f.assignedTo) : undefined,
         dueAt: f.dueAt ? new Date(f.dueAt).toISOString() : undefined,
-      }),
+      })),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['ops'] });
       onDone();

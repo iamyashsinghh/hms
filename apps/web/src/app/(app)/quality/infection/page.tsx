@@ -5,6 +5,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { Loader2, Plus } from 'lucide-react';
 import { quality as Q } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -136,10 +137,16 @@ function NewCase({ onDone }: { onDone: () => void }) {
   const [f, setF] = React.useState({ infectionType: '' as Q.HaiType | '', ward: '', onsetDate: todayIST(), deviceInsertedOn: '', procedureName: '', organism: '', cultureRef: '', notes: '' });
   const [status, setStatus] = React.useState<Q.HaiStatus | ''>('suspected');
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setF({ ...f, [k]: e.target.value });
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const create = useMutation({
-    mutationFn: () =>
-      api.quality.hai.create({
-        patientId: patient!.id,
+    mutationFn: (body: Q.CreateHai) => api.quality.hai.create(body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['quality'] });
+      onDone();
+    },
+  });
+  const body = (): Q.CreateHai => ({
+        patientId: patient?.id ?? '',
         infectionType: f.infectionType as Q.HaiType,
         ward: f.ward || undefined,
         onsetDate: f.onsetDate,
@@ -149,12 +156,7 @@ function NewCase({ onDone }: { onDone: () => void }) {
         cultureRef: f.cultureRef || undefined,
         notes: f.notes || undefined,
         status: status || 'suspected',
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['quality'] });
-      onDone();
-    },
-  });
+      });
   return (
     <Card>
       <CardHeader>
@@ -165,11 +167,14 @@ function NewCase({ onDone }: { onDone: () => void }) {
           className="grid gap-4 sm:grid-cols-3"
           onSubmit={(e) => {
             e.preventDefault();
-            create.mutate();
+            const b = body();
+            const { errors: found } = validate(Q.createHaiSchema, b);
+            setErrors(found ?? {});
+            if (!found) create.mutate(b);
           }}
         >
           <div className="sm:col-span-3">
-            <ErrorBox error={create.error} />
+            <ErrorBox error={Object.keys(errors).length ? 'Please correct the highlighted fields' : create.error} />
           </div>
           <Field id="hai-patient" label="Patient *" className="sm:col-span-2">
             <PatientPicker value={patient} onChange={setPatient} />
@@ -177,14 +182,14 @@ function NewCase({ onDone }: { onDone: () => void }) {
           <Field id="hai-type" label="Infection *">
             <EnumSelect id="hai-type" value={f.infectionType} onChange={(v) => setF({ ...f, infectionType: v })} options={Q.HAI_TYPES} labels={HAI_LABELS} placeholder="Choose…" />
           </Field>
-          <Field id="hai-onset" label="Onset date *">
+          <Field id="hai-onset" label="Onset date *" error={errors.onsetDate}>
             <Input id="hai-onset" type="date" required max={todayIST()} value={f.onsetDate} onChange={set('onsetDate')} />
           </Field>
-          <Field id="hai-device" label={f.infectionType === 'ssi' ? 'Surgery date' : 'Device inserted on'}>
-            <Input id="hai-device" type="date" max={f.onsetDate} value={f.deviceInsertedOn} onChange={set('deviceInsertedOn')} />
+          <Field id="hai-device" label={f.infectionType === 'ssi' ? 'Surgery date' : 'Device inserted on'} error={errors.deviceInsertedOn}>
+            <Input id="hai-device" type="date" max={f.onsetDate || todayIST()} value={f.deviceInsertedOn} onChange={set('deviceInsertedOn')} />
           </Field>
           <Field id="hai-ward" label="Ward">
-            <Input id="hai-ward" value={f.ward} onChange={set('ward')} />
+            <Input id="hai-ward" maxLength={80} value={f.ward} onChange={set('ward')} />
           </Field>
           {f.infectionType === 'ssi' && (
             <Field id="hai-proc" label="Procedure">
@@ -223,25 +228,26 @@ function Census() {
   const blank = { day: todayIST(), ward: 'All', patientDays: '', catheterDays: '', centralLineDays: '', ventilatorDays: '', surgeries: '' };
   const [f, setF] = React.useState(blank);
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value });
+  const [errors, setErrors] = React.useState<FieldErrors>({});
+  const censusBody = (): Q.CensusInput => ({
+    day: f.day,
+    ward: f.ward || 'All',
+    patientDays: f.patientDays || 0,
+    catheterDays: f.catheterDays || 0,
+    centralLineDays: f.centralLineDays || 0,
+    ventilatorDays: f.ventilatorDays || 0,
+    surgeries: f.surgeries || 0,
+  });
   const save = useMutation({
-    mutationFn: () =>
-      api.quality.census.save({
-        day: f.day,
-        ward: f.ward || 'All',
-        patientDays: Number(f.patientDays || 0),
-        catheterDays: Number(f.catheterDays || 0),
-        centralLineDays: Number(f.centralLineDays || 0),
-        ventilatorDays: Number(f.ventilatorDays || 0),
-        surgeries: Number(f.surgeries || 0),
-      }),
+    mutationFn: (body: Q.CensusInput) => api.quality.census.save(body),
     onSuccess: () => {
       setF({ ...blank, day: f.day });
       queryClient.invalidateQueries({ queryKey: ['quality'] });
     },
   });
   const num = (k: keyof typeof f, label: string) => (
-    <Field id={`c-${k}`} label={label}>
-      <Input id={`c-${k}`} type="number" min={0} value={f[k]} onChange={set(k)} />
+    <Field id={`c-${k}`} label={label} error={errors[k]}>
+      <Input id={`c-${k}`} type="number" min={0} max={100000} step={1} value={f[k]} onChange={set(k)} />
     </Field>
   );
   return (
@@ -258,10 +264,13 @@ function Census() {
           className="grid gap-3 sm:grid-cols-4 lg:grid-cols-8"
           onSubmit={(e) => {
             e.preventDefault();
-            save.mutate();
+            const b = censusBody();
+            const { errors: found } = validate(Q.censusInputSchema, b);
+            setErrors(found ?? {});
+            if (!found) save.mutate(b);
           }}
         >
-          <Field id="c-day" label="Day">
+          <Field id="c-day" label="Day" error={errors.day}>
             <Input id="c-day" type="date" max={todayIST()} value={f.day} onChange={set('day')} />
           </Field>
           <Field id="c-ward" label="Ward">

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { and, count, desc, eq, formatSeries, ilike, iso, nextCounter, opsAssets, opsWorkOrders, or, sql, type Tx } from '@hms/db';
-import type { Paginated, ops as O } from '@hms/shared';
+import { ops as O, type Paginated } from '@hms/shared';
 import type { z } from 'zod';
 import { DbService } from '../../common/db/db.service';
 import { OutboxService } from '../../common/events/outbox.service';
@@ -88,6 +88,12 @@ export class AssetsService {
     return this.db.tx(async (tx) => {
       const asset = await this.lockAsset(tx, id);
       if (asset.status === 'condemned') throw conflict('asset_condemned', 'Condemned equipment cannot be changed');
+      const [dateIssue] = O.assetDateIssues({
+        purchaseDate: input.purchaseDate !== undefined ? input.purchaseDate : asset.purchaseDate,
+        warrantyUntil: input.warrantyUntil !== undefined ? input.warrantyUntil : asset.warrantyUntil,
+        amcUntil: input.amcUntil !== undefined ? input.amcUntil : asset.amcUntil,
+      });
+      if (dateIssue) throw badRequest('bad_dates', dateIssue.message);
       let status: string | undefined;
       if (input.status && input.status !== asset.status) {
         if (asset.status === 'under_maintenance' && input.status === 'in_service') {

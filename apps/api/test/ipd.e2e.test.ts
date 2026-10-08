@@ -259,7 +259,7 @@ describe('admission to discharge', () => {
       ...draft,
       conditionAtDischarge: 'Stable, afebrile',
       medications: [{ drugName: 'Amoxiclav 625', dose: '1 tab', frequency: 'BD', days: 5 }],
-      followUpDate: '2026-12-01',
+      followUpDate: new Date(Date.now() + 30 * 86_400_000).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }),
     });
     expect(saved.statusCode, saved.body).toBe(200);
     expect((await call(nurse, 'POST', `/ipd/admissions/${admissionId}/discharge-summary/finalize`)).statusCode).toBe(403);
@@ -290,6 +290,88 @@ describe('admission to discharge', () => {
     expect(res.json()).toMatchObject({ status: 'cancelled', bedId: null });
     const bed = (await call(admin, 'GET', `/ipd/beds?wardId=${wardId}`)).json().find((b: { id: string }) => b.id === beds[2]!.id);
     expect(bed.status).toBe('available');
+  });
+});
+
+describe('validation', () => {
+  const msg = (res: { json: () => { error: { message: string } } }) => res.json().error.message;
+  const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
+  const istDay = (offset: number) => new Date(Date.now() + offset * 86_400_000).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  let vBedId: string;
+  let vPatient: string;
+  let vAdmission: string;
+
+  beforeAll(async () => {
+    const bed = await call(admin, 'POST', '/ipd/beds', { wardId, code: 'V1' });
+    expect(bed.statusCode, bed.body).toBe(201);
+    vBedId = bed.json().id;
+    vPatient = await newPatient('Valida');
+  });
+
+  it('checks wards and beds', async () => {
+    expect(msg(await call(admin, 'POST', '/ipd/wards', { code: 'G W!', name: 'Bad' }))).toContain('Letters, digits, - or _');
+    expect(msg(await call(admin, 'POST', '/ipd/wards', { code: `N${tag}`.slice(0, 20), name: '  ' }))).toContain('Enter the ward name');
+    expect(msg(await call(admin, 'POST', '/ipd/beds/bulk', { wardId, prefix: 'Z', from: 1, to: 150 }))).toContain('Add between 1 and 100 beds');
+    expect(msg(await call(admin, 'POST', '/ipd/wards', { code: `R${tag}`.slice(0, 20), name: 'Rate', defaultDailyRate: -5 }))).toContain('cannot be negative');
+  });
+
+  it('checks the admit form', async () => {
+    const base = { patientId: vPatient, bedId: vBedId, doctorId, reason: 'Observation' };
+    expect(msg(await call(reception, 'POST', '/ipd/admissions', { ...base, patientId: undefined }))).toContain('Pick the patient to admit');
+    expect(msg(await call(reception, 'POST', '/ipd/admissions', { ...base, reason: 'a' }))).toContain('at least 2 characters');
+    expect(msg(await call(reception, 'POST', '/ipd/admissions', { ...base, attendantMobile: '12345' }))).toContain('10-digit');
+    expect(msg(await call(reception, 'POST', '/ipd/admissions', { ...base, admittedAt: new Date(Date.now() + 86_400_000).toISOString() }))).toContain(
+      'Admission time cannot be in the future',
+    );
+    expect(msg(await call(reception, 'POST', '/ipd/admissions', { ...base, expectedDischargeDate: istDay(-1) }))).toContain('Expected discharge date cannot be in the past');
+    expect(msg(await call(reception, 'POST', '/ipd/admissions', { ...base, expectedDischargeDate: '2026-02-30' }))).toContain('valid date');
+
+    // Back-dated two days, attendant mobile with +91, blank optional fields.
+    const ok = await call(reception, 'POST', '/ipd/admissions', {
+      ...base,
+      admittedAt: hoursAgo(48),
+      attendantMobile: '+91 98765 22222',
+      attendantName: '',
+      expectedDischargeDate: istDay(3),
+    });
+    expect(ok.statusCode, ok.body).toBe(201);
+    expect(ok.json()).toMatchObject({ attendantMobile: '9876522222', attendantName: null, expectedDischargeDate: istDay(3) });
+    vAdmission = ok.json().id;
+    expect(msg(await call(admin, 'PATCH', `/ipd/admissions/${vAdmission}`, { expectedDischargeDate: istDay(-5) }))).toContain('before the admission date');
+  });
+
+  it('checks chart times and readings', async () => {
+    const url = `/ipd/admissions/${vAdmission}`;
+    expect(msg(await call(nurse, 'POST', `${url}/vitals`, { pulse: 80, recordedAt: new Date(Date.now() + 3_600_000).toISOString() }))).toContain('cannot be in the future');
+    expect(msg(await call(nurse, 'POST', `${url}/vitals`, { pulse: 80, recordedAt: hoursAgo(72) }))).toContain('before the patient was admitted');
+    expect(msg(await call(nurse, 'POST', `${url}/vitals`, { bpSystolic: 80, bpDiastolic: 120 }))).toContain('Diastolic BP must be lower than systolic');
+    expect(msg(await call(nurse, 'POST', `${url}/vitals`, { bpSystolic: 120 }))).toContain('Enter both systolic and diastolic BP');
+    expect(msg(await call(nurse, 'POST', `${url}/vitals`, { temperatureC: 50 }))).toContain('Temperature (°C) must be between 25 and 45');
+    expect((await call(nurse, 'POST', `${url}/vitals`, { pulse: 88, recordedAt: hoursAgo(24) })).statusCode).toBe(201);
+    expect(msg(await call(nurse, 'POST', `${url}/intake-output`, { direction: 'intake', category: 'oral', volumeMl: -10 }))).toContain('cannot be negative');
+    expect(msg(await call(nurse, 'POST', `${url}/devices`, { deviceType: 'peripheral_iv', insertedAt: new Date(Date.now() + 86_400_000).toISOString() }))).toContain(
+      'Insertion time cannot be in the future',
+    );
+    expect(msg(await call(doctor, 'POST', `${url}/rounds`, { plan: 'Observe', roundAt: hoursAgo(72) }))).toContain('before the patient was admitted');
+    expect(msg(await call(doctor, 'POST', `${url}/medications`, { drugName: 'PCM', dose: '650 mg', frequency: 'TDS', startAt: hoursAgo(72) }))).toContain(
+      'Start time cannot be before the admission',
+    );
+  });
+
+  it('checks charges and the discharge summary', async () => {
+    const url = `/ipd/admissions/${vAdmission}`;
+    expect(msg(await call(clerk, 'POST', `${url}/charges`, { description: 'Dressing', unitPrice: 100, chargeDate: istDay(1) }))).toContain('Charge date cannot be in the future');
+    expect(msg(await call(clerk, 'POST', `${url}/charges`, { description: 'Dressing', unitPrice: 100, chargeDate: istDay(-10) }))).toContain('before the admission date');
+    expect(msg(await call(clerk, 'POST', `${url}/charges`, { description: 'Dressing', unitPrice: 100, taxRate: 7 }))).toContain('Use a GST slab');
+    expect(msg(await call(clerk, 'POST', `${url}/charges`, { description: 'Dressing', unitPrice: 100, qty: 0 }))).toContain('Quantity must be more than 0');
+    expect(msg(await call(clerk, 'POST', `${url}/charges`, { qty: 1 }))).toContain('Give a service code, or a description and a price');
+    const ok = await call(clerk, 'POST', `${url}/charges`, { description: 'Dressing', unitPrice: 100, taxRate: 12, chargeDate: istDay(-1) });
+    expect(ok.statusCode, ok.body).toBe(201);
+
+    const past = await call(doctor, 'PUT', `${url}/discharge-summary`, { finalDiagnosis: 'Viral fever', followUpDate: istDay(-1) });
+    expect(msg(past)).toContain('Follow-up date cannot be in the past');
+    expect(msg(await call(doctor, 'PUT', `${url}/discharge-summary`, { finalDiagnosis: ' ' }))).toContain('final diagnosis needs at least 2 characters');
+    expect((await call(doctor, 'PUT', `${url}/discharge-summary`, { finalDiagnosis: 'Viral fever', followUpDate: istDay(7) })).statusCode).toBe(200);
   });
 });
 

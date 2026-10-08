@@ -1,5 +1,19 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import {
+  blankToUndefined,
+  indianMobile,
+  isoDate,
+  isoDateTime,
+  money as moneyField,
+  notFutureDateTime,
+  pastOrTodayDate,
+  personName,
+  positiveMoney as positiveMoneyField,
+  requiredText,
+  todayIso,
+} from '../validation';
+import { GST_RATES } from './billing';
 
 /**
  * IPD & Nursing: permissions and API contracts (Zod schemas + types).
@@ -54,14 +68,16 @@ export const ipdModule = defineModule({
 
 // ---------- shared bits ----------
 
-const money = z.coerce
-  .number()
-  .min(0)
-  .max(99_999_999_999.99)
-  .refine((v) => Math.abs(Math.round(v * 100) - v * 100) < 1e-6, 'At most 2 decimal places');
-const positiveMoney = money.refine((v) => v > 0, 'Must be more than 0');
-const optionalText = (max: number) => z.string().trim().max(max).optional();
-const mobile = z.string().trim().regex(/^[6-9]\d{9}$/, 'Enter a 10-digit mobile number');
+const money = moneyField();
+const positiveMoney = positiveMoneyField();
+const optionalText = (max: number) => z.string().trim().max(max, `Enter at most ${max} characters`).optional();
+const mobile = indianMobile;
+/** India calendar date (YYYY-MM-DD) of an ISO time. */
+const istDay = (at: string) => todayIso(0, new Date(at));
+/** GST on a charge: the slabs Billing accepts on the invoice. */
+const gstRate = z.coerce
+  .number({ error: 'Enter the GST rate' })
+  .refine((v) => (GST_RATES as readonly number[]).includes(v), `Use a GST slab: ${GST_RATES.join(', ')}`);
 const pageFields = {
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(25),
@@ -96,7 +112,7 @@ export type AdvanceMode = (typeof ADVANCE_MODES)[number];
 
 export const wardInputSchema = z.object({
   code: z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9_-]{0,19}$/, 'Letters, digits, - or _ (max 20)'),
-  name: z.string().trim().min(1).max(100),
+  name: requiredText('the ward name', 100),
   wardType: z.enum(WARD_TYPES).default('general'),
   floor: optionalText(40),
   defaultDailyRate: money.default(0),
@@ -121,7 +137,7 @@ export interface Ward {
   occupiedCount: number;
 }
 
-const bedCode = z.string().trim().min(1).max(20);
+const bedCode = requiredText('the bed code', 20).regex(/^[A-Za-z0-9][A-Za-z0-9 /_-]*$/, 'Bed code can have letters, digits, space, / - or _');
 export const bedInputSchema = z.object({
   wardId: z.uuid(),
   code: bedCode,
@@ -136,9 +152,14 @@ export type BedInput = z.input<typeof bedInputSchema>;
 export const bulkBedsSchema = z
   .object({
     wardId: z.uuid(),
-    prefix: z.string().trim().max(10).default(''),
-    from: z.coerce.number().int().min(0).max(9999),
-    to: z.coerce.number().int().min(0).max(9999),
+    prefix: z
+      .string()
+      .trim()
+      .max(10, 'Prefix can be at most 10 characters')
+      .regex(/^[A-Za-z0-9 /_-]*$/, 'Prefix can have letters, digits, space, / - or _')
+      .default(''),
+    from: z.coerce.number({ error: 'Enter the first bed number' }).int('Use whole numbers').min(0, 'Bed numbers start at 0').max(9999, 'Bed numbers go up to 9999'),
+    to: z.coerce.number({ error: 'Enter the last bed number' }).int('Use whole numbers').min(0, 'Bed numbers start at 0').max(9999, 'Bed numbers go up to 9999'),
     roomNo: optionalText(20),
     dailyRate: money.optional(),
     chargeServiceCode: z.string().trim().toUpperCase().max(40).optional(),
@@ -201,28 +222,43 @@ export interface BedBoard {
 
 // ---------- admissions ----------
 
-export const admitSchema = z.object({
-  patientId: z.uuid(),
-  bedId: z.uuid(),
+const admitFields = z.object({
+  patientId: z.uuid({ error: 'Pick the patient to admit' }),
+  bedId: z.uuid({ error: 'Pick a bed' }),
   /** Admitting / treating doctor (staff user id). */
-  doctorId: z.uuid(),
+  doctorId: z.uuid({ error: 'Pick the treating doctor' }),
   admissionType: z.enum(ADMISSION_TYPES).default('planned'),
-  reason: z.string().trim().min(2).max(1000),
+  reason: requiredText('the reason for admission', 1000, 2),
   provisionalDiagnosis: optionalText(1000),
   isMlc: z.boolean().default(false),
   mlcNo: optionalText(50),
-  attendantName: optionalText(100),
+  attendantName: blankToUndefined(personName('the attendant name').optional()),
   attendantRelation: optionalText(50),
-  attendantMobile: mobile.optional(),
-  expectedDischargeDate: z.iso.date().optional(),
+  attendantMobile: blankToUndefined(mobile.optional()),
+  expectedDischargeDate: blankToUndefined(isoDate.optional()),
   /** Defaults to now; allows entering an admission a little after the fact. */
-  admittedAt: z.iso.datetime({ offset: true }).optional(),
+  admittedAt: blankToUndefined(notFutureDateTime('Admission time').optional()),
   /** Advance taken at the desk while admitting. */
   advance: z.object({ mode: z.enum(ADVANCE_MODES), amount: positiveMoney, reference: optionalText(100) }).optional(),
 });
+
+export const admitSchema = admitFields.superRefine((a, ctx) => {
+  if (!a.expectedDischargeDate) return;
+  if (a.expectedDischargeDate < todayIso()) {
+    ctx.addIssue({ code: 'custom', path: ['expectedDischargeDate'], message: 'Expected discharge date cannot be in the past' });
+  } else if (a.admittedAt && a.expectedDischargeDate < istDay(a.admittedAt)) {
+    ctx.addIssue({ code: 'custom', path: ['expectedDischargeDate'], message: 'Expected discharge date is before the admission date' });
+  }
+});
 export type AdmitInput = z.input<typeof admitSchema>;
 
-export const updateAdmissionSchema = admitSchema
+/** Editing after admit: '' clears an optional field. The date is checked against the admission date by the API. */
+export const updateAdmissionSchema = admitFields
+  .extend({
+    attendantName: z.union([z.literal(''), personName('the attendant name')]).optional(),
+    attendantMobile: z.union([z.literal(''), mobile]).optional(),
+    expectedDischargeDate: z.union([z.literal(''), isoDate]).optional(),
+  })
   .pick({
     doctorId: true,
     reason: true,
@@ -238,14 +274,14 @@ export const updateAdmissionSchema = admitSchema
 export type UpdateAdmission = z.input<typeof updateAdmissionSchema>;
 
 export const transferSchema = z.object({
-  bedId: z.uuid(),
-  reason: z.string().trim().min(2).max(500),
+  bedId: z.uuid({ error: 'Pick the new bed' }),
+  reason: requiredText('the reason for transfer', 500, 2),
   /** Bed left behind goes to cleaning by default. */
   vacatedBedStatus: z.enum(['cleaning', 'available']).default('cleaning'),
 });
 export type TransferInput = z.input<typeof transferSchema>;
 
-export const cancelAdmissionSchema = z.object({ reason: z.string().trim().min(3).max(500) });
+export const cancelAdmissionSchema = z.object({ reason: requiredText('the reason for cancelling', 500, 3) });
 export type CancelAdmission = z.input<typeof cancelAdmissionSchema>;
 
 export const dischargeSchema = z.object({
@@ -328,26 +364,53 @@ export interface Admission extends AdmissionSummary {
 
 // ---------- nursing ----------
 
-const int = (min: number, max: number) => z.coerce.number().int().min(min).max(max).optional();
-const recordedAt = z.iso.datetime({ offset: true }).optional();
+/** An optional whole-number reading in a range, with a message naming the reading. */
+const int = (label: string, min: number, max: number) =>
+  blankToUndefined(
+    z.coerce
+      .number({ error: `Enter ${label} as a number` })
+      .int(`${label} must be a whole number`)
+      .min(min, `${label} must be between ${min} and ${max}`)
+      .max(max, `${label} must be between ${min} and ${max}`)
+      .optional(),
+  );
+const reading = (label: string, min: number, max: number) =>
+  blankToUndefined(
+    z.coerce
+      .number({ error: `Enter ${label} as a number` })
+      .min(min, `${label} must be between ${min} and ${max}`)
+      .max(max, `${label} must be between ${min} and ${max}`)
+      .optional(),
+  );
+/** When a chart entry happened: not in the future (the API also checks it is not before the admission). */
+const chartTime = (label: string) => blankToUndefined(notFutureDateTime(label).optional());
+const recordedAt = chartTime('Time recorded');
 
 export const vitalsInputSchema = z
   .object({
     recordedAt,
-    temperatureC: z.coerce.number().min(25).max(45).optional(),
-    pulse: int(0, 300),
-    respRate: int(0, 100),
-    bpSystolic: int(0, 300),
-    bpDiastolic: int(0, 200),
-    spo2: int(0, 100),
-    painScore: int(0, 10),
-    bloodSugar: z.coerce.number().min(0).max(1000).optional(),
+    temperatureC: reading('Temperature (°C)', 25, 45),
+    pulse: int('Pulse', 0, 300),
+    respRate: int('Respiratory rate', 0, 100),
+    bpSystolic: int('Systolic BP', 0, 300),
+    bpDiastolic: int('Diastolic BP', 0, 200),
+    spo2: int('SpO2', 0, 100),
+    painScore: int('Pain score', 0, 10),
+    bloodSugar: reading('Blood sugar', 0, 1000),
     notes: optionalText(500),
   })
   .refine(
     (v) => [v.temperatureC, v.pulse, v.respRate, v.bpSystolic, v.bpDiastolic, v.spo2, v.painScore, v.bloodSugar].some((x) => x !== undefined),
     { message: 'Enter at least one reading' },
-  );
+  )
+  .refine((v) => (v.bpSystolic === undefined) === (v.bpDiastolic === undefined), {
+    message: 'Enter both systolic and diastolic BP',
+    path: ['bpDiastolic'],
+  })
+  .refine((v) => v.bpSystolic === undefined || v.bpDiastolic === undefined || v.bpDiastolic < v.bpSystolic, {
+    message: 'Diastolic BP must be lower than systolic',
+    path: ['bpDiastolic'],
+  });
 export type VitalsInput = z.input<typeof vitalsInputSchema>;
 
 export interface Vitals {
@@ -367,7 +430,7 @@ export interface Vitals {
 
 export const nursingNoteInputSchema = z.object({
   shift: z.enum(NURSING_SHIFTS).optional(),
-  note: z.string().trim().min(2).max(4000),
+  note: requiredText('the note', 4000, 2),
 });
 export type NursingNoteInput = z.input<typeof nursingNoteInputSchema>;
 
@@ -384,7 +447,11 @@ export const intakeOutputInputSchema = z
   .object({
     direction: z.enum(['intake', 'output']),
     category: z.enum(['oral', 'iv', 'ryles', 'urine', 'drain', 'vomit', 'stool', 'other']),
-    volumeMl: z.coerce.number().int().min(0).max(20000),
+    volumeMl: z.coerce
+      .number({ error: 'Enter the volume in ml' })
+      .int('Volume must be whole ml')
+      .min(0, 'Volume cannot be negative')
+      .max(20000, 'Volume cannot be more than 20,000 ml'),
     recordedAt,
     notes: optionalText(300),
   })
@@ -407,22 +474,23 @@ export interface IntakeOutputChart {
 }
 
 export const medicationOrderInputSchema = z.object({
-  drugName: z.string().trim().min(1).max(200),
-  dose: z.string().trim().min(1).max(100),
+  drugName: requiredText('the medicine', 200),
+  dose: requiredText('the dose', 100),
   route: z.enum(MED_ROUTES).default('oral'),
-  frequency: z.string().trim().min(1).max(50),
+  frequency: requiredText('the frequency', 50),
   instructions: optionalText(500),
   isPrn: z.boolean().default(false),
-  startAt: z.iso.datetime({ offset: true }).optional(),
+  /** May be in the future (scheduled start); the API checks it is not before the admission. */
+  startAt: blankToUndefined(isoDateTime.optional()),
 });
 export type MedicationOrderInput = z.input<typeof medicationOrderInputSchema>;
 
-export const stopMedicationSchema = z.object({ reason: z.string().trim().min(2).max(300) });
+export const stopMedicationSchema = z.object({ reason: requiredText('the reason for stopping', 300, 2) });
 export type StopMedication = z.input<typeof stopMedicationSchema>;
 
 export const administerSchema = z.object({
   status: z.enum(ADMINISTRATION_STATUSES).default('given'),
-  givenAt: z.iso.datetime({ offset: true }).optional(),
+  givenAt: chartTime('Time given'),
   notes: optionalText(300),
 });
 export type AdministerInput = z.input<typeof administerSchema>;
@@ -462,13 +530,13 @@ export const deviceInputSchema = z.object({
   deviceType: z.enum(DEVICE_TYPES),
   site: optionalText(100),
   notes: optionalText(300),
-  insertedAt: z.iso.datetime({ offset: true }).optional(),
+  insertedAt: chartTime('Insertion time'),
 });
 export type DeviceInput = z.input<typeof deviceInputSchema>;
 
 export const removeDeviceSchema = z.object({
   reason: optionalText(300),
-  removedAt: z.iso.datetime({ offset: true }).optional(),
+  removedAt: chartTime('Removal time'),
 });
 export type RemoveDevice = z.input<typeof removeDeviceSchema>;
 
@@ -489,8 +557,8 @@ export interface Device {
 export const roundInputSchema = z.object({
   subjective: optionalText(2000),
   findings: optionalText(4000),
-  plan: z.string().trim().min(2).max(4000),
-  roundAt: z.iso.datetime({ offset: true }).optional(),
+  plan: requiredText('the plan', 4000, 2),
+  roundAt: chartTime('Round time'),
 });
 export type RoundInput = z.input<typeof roundInputSchema>;
 
@@ -509,20 +577,26 @@ export interface Round {
 export const chargeInputSchema = z
   .object({
     /** Priced from the billing service master when unitPrice is omitted. */
-    serviceCode: z.string().trim().toUpperCase().max(40).optional(),
-    description: z.string().trim().min(1).max(300).optional(),
-    qty: z.coerce.number().positive().max(10000).default(1),
-    unitPrice: money.optional(),
-    taxRate: z.coerce.number().min(0).max(40).optional(),
-    discount: money.optional(),
-    chargeDate: z.iso.date().optional(),
+    serviceCode: blankToUndefined(z.string().trim().toUpperCase().max(40, 'Service code can be at most 40 characters').optional()),
+    description: blankToUndefined(z.string().trim().max(300, 'Description can be at most 300 characters').optional()),
+    qty: z.coerce
+      .number({ error: 'Enter the quantity' })
+      .positive('Quantity must be more than 0')
+      .max(10000, 'Quantity cannot be more than 10,000')
+      .refine((v) => Math.abs(Math.round(v * 100) - v * 100) < 1e-6, 'Quantity can have at most 2 decimal places')
+      .default(1),
+    unitPrice: blankToUndefined(money.optional()),
+    taxRate: blankToUndefined(gstRate.optional()),
+    discount: blankToUndefined(money.optional()),
+    /** Not in the future; the API checks it is within the stay. */
+    chargeDate: blankToUndefined(pastOrTodayDate('Charge date').optional()),
   })
   .refine((c) => c.serviceCode || (c.description && c.unitPrice !== undefined), {
     message: 'Give a service code, or a description and a price',
   });
 export type ChargeInput = z.input<typeof chargeInputSchema>;
 
-export const cancelChargeSchema = z.object({ reason: z.string().trim().min(3).max(300) });
+export const cancelChargeSchema = z.object({ reason: requiredText('the reason for cancelling', 300, 3) });
 export type CancelCharge = z.input<typeof cancelChargeSchema>;
 
 export interface Charge {
@@ -605,16 +679,16 @@ export interface FinalizedBill {
 // ---------- discharge summary ----------
 
 export const dischargeMedicationSchema = z.object({
-  drugName: z.string().trim().min(1).max(200),
+  drugName: requiredText('the medicine', 200),
   dose: optionalText(100),
   frequency: optionalText(50),
-  days: z.coerce.number().int().min(0).max(365).optional(),
+  days: blankToUndefined(z.coerce.number().int('Days must be a whole number').min(0, 'Days cannot be negative').max(365, 'Days cannot be more than 365').optional()),
   instructions: optionalText(300),
 });
 export type DischargeMedication = z.infer<typeof dischargeMedicationSchema>;
 
 export const dischargeSummaryInputSchema = z.object({
-  finalDiagnosis: z.string().trim().min(2).max(2000),
+  finalDiagnosis: requiredText('the final diagnosis', 2000, 2),
   presentingComplaints: optionalText(4000),
   history: optionalText(4000),
   examination: optionalText(4000),
@@ -624,7 +698,8 @@ export const dischargeSummaryInputSchema = z.object({
   conditionAtDischarge: optionalText(1000),
   medications: z.array(dischargeMedicationSchema).max(50).default([]),
   advice: optionalText(4000),
-  followUpDate: z.iso.date().optional(),
+  /** The API checks it is not before the discharge (or today, while admitted). */
+  followUpDate: isoDate.optional(),
   followUpNotes: optionalText(500),
 });
 export type DischargeSummaryInput = z.input<typeof dischargeSummaryInputSchema>;
@@ -652,7 +727,7 @@ export interface DischargeSummary {
 
 // ---------- daily census ----------
 
-export const censusQuerySchema = z.object({ date: z.iso.date() });
+export const censusQuerySchema = z.object({ date: isoDate });
 
 /** Midnight census for one ward and one India calendar date. */
 export interface WardCensus {

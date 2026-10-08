@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { blankToUndefined, datesInOrder, indianMobile, isoDate as calendarDate, notFutureDateTime, requiredText, todayIso } from '../validation';
 
 /**
  * Quality & NABH: permissions and API contracts (Zod schemas + types).
@@ -69,13 +70,17 @@ export const qualityModule = defineModule({
 
 // ---------- shared bits ----------
 
-const text = (max: number) => z.string().trim().min(1).max(max);
-const optionalText = (max: number) => z.string().trim().max(max).optional();
+const text = (max: number, label = 'a value') => requiredText(label, max);
+const optionalText = (max: number) => z.string().trim().max(max, `Enter at most ${max} characters`).optional();
 const pageFields = {
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(25),
 };
-const isoDate = z.iso.date();
+const isoDate = calendarDate;
+const notFutureDate = (message: string) => calendarDate.refine((d) => d <= todayIso(), message);
+const notPastDate = (message: string) => calendarDate.refine((d) => d >= todayIso(), message);
+/** For list filters: the "to" date must not be before "from". */
+const rangeInOrder = { message: 'The "to" date is before the "from" date', path: ['to'] };
 const period = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Use YYYY-MM');
 
 export interface Person {
@@ -125,11 +130,11 @@ export const reportIncidentSchema = z.object({
   kind: z.enum(INCIDENT_KINDS),
   category: z.enum(INCIDENT_CATEGORIES),
   severity: z.enum(INCIDENT_SEVERITIES),
-  occurredAt: z.iso.datetime({ offset: true }).refine((v) => new Date(v).getTime() <= Date.now() + 5 * 60_000, 'Cannot be in the future'),
+  occurredAt: notFutureDateTime('Time of the incident'),
   location: optionalText(200),
   department: optionalText(120),
   patientId: z.uuid().optional(),
-  description: text(5000),
+  description: text(5000, 'what happened'),
   immediateAction: optionalText(2000),
   anonymous: z.boolean().default(false),
 });
@@ -142,7 +147,7 @@ export const reviewIncidentSchema = z.object({
   kind: z.enum(INCIDENT_KINDS).optional(),
   category: z.enum(INCIDENT_CATEGORIES).optional(),
   rootCause: optionalText(5000),
-  contributingFactors: z.array(text(120)).max(20).optional(),
+  contributingFactors: z.array(text(120, 'the factor')).max(20, 'Add at most 20 factors').optional(),
   /** Required when closing or rejecting. */
   note: optionalText(2000),
 });
@@ -157,7 +162,7 @@ export const incidentQuerySchema = z.object({
   to: isoDate.optional(),
   q: z.string().trim().max(100).optional(),
   ...pageFields,
-});
+}).refine((v) => datesInOrder(v.from, v.to), rangeInOrder);
 export type IncidentQuery = Partial<z.input<typeof incidentQuerySchema>>;
 
 export interface IncidentSummary {
@@ -232,10 +237,10 @@ export const createComplaintSchema = z.object({
   category: z.enum(COMPLAINT_CATEGORIES),
   priority: z.enum(COMPLAINT_PRIORITIES).default('medium'),
   patientId: z.uuid().optional(),
-  complainantName: text(120),
-  complainantMobile: z.string().trim().regex(/^[6-9]\d{9}$/, 'Enter a 10-digit mobile number').optional(),
+  complainantName: text(120, "the complainant's name"),
+  complainantMobile: blankToUndefined(indianMobile.optional()),
   department: optionalText(120),
-  description: text(5000),
+  description: text(5000, 'the complaint'),
 });
 export type CreateComplaint = z.input<typeof createComplaintSchema>;
 
@@ -304,20 +309,24 @@ export const HAI_STATUSES = ['suspected', 'confirmed', 'ruled_out'] as const;
 export type HaiType = (typeof HAI_TYPES)[number];
 export type HaiStatus = (typeof HAI_STATUSES)[number];
 
-export const createHaiSchema = z.object({
-  patientId: z.uuid(),
+const haiFields = z.object({
+  patientId: z.uuid({ error: 'Pick the patient' }),
   infectionType: z.enum(HAI_TYPES),
   ward: optionalText(80),
-  onsetDate: isoDate,
-  deviceInsertedOn: isoDate.optional(),
+  onsetDate: notFutureDate('Onset date cannot be in the future'),
+  deviceInsertedOn: blankToUndefined(notFutureDate('Device insertion date cannot be in the future').optional()),
   procedureName: optionalText(200),
   organism: optionalText(200),
   cultureRef: optionalText(80),
   status: z.enum(HAI_STATUSES).default('suspected'),
   notes: optionalText(2000),
 });
+const deviceBeforeOnset = (v: { onsetDate?: string; deviceInsertedOn?: string }) => datesInOrder(v.deviceInsertedOn, v.onsetDate);
+const DEVICE_AFTER_ONSET = { message: 'Device insertion date must be on or before the onset date', path: ['deviceInsertedOn'] };
+export const createHaiSchema = haiFields.refine(deviceBeforeOnset, DEVICE_AFTER_ONSET);
 export type CreateHai = z.input<typeof createHaiSchema>;
-export const updateHaiSchema = createHaiSchema.omit({ patientId: true }).partial();
+/** The API also checks the dates against the saved case. */
+export const updateHaiSchema = haiFields.omit({ patientId: true }).partial().refine(deviceBeforeOnset, DEVICE_AFTER_ONSET);
 export type UpdateHai = z.input<typeof updateHaiSchema>;
 
 export const haiQuerySchema = z.object({
@@ -326,7 +335,7 @@ export const haiQuerySchema = z.object({
   from: isoDate.optional(),
   to: isoDate.optional(),
   ...pageFields,
-});
+}).refine((v) => datesInOrder(v.from, v.to), rangeInOrder);
 export type HaiQuery = Partial<z.input<typeof haiQuerySchema>>;
 
 export interface HaiCase {
@@ -345,14 +354,20 @@ export interface HaiCase {
   createdAt: string;
 }
 
+const count = (label: string) =>
+  z.coerce
+    .number({ error: `Enter ${label.toLowerCase()}` })
+    .int(`${label} must be a whole number`)
+    .min(0, `${label} cannot be negative`)
+    .max(100000, `${label} cannot be more than 1,00,000`);
 export const censusInputSchema = z.object({
-  day: isoDate,
-  ward: z.string().trim().min(1).max(80).default('All'),
-  patientDays: z.coerce.number().int().min(0).max(100000),
-  catheterDays: z.coerce.number().int().min(0).max(100000).default(0),
-  centralLineDays: z.coerce.number().int().min(0).max(100000).default(0),
-  ventilatorDays: z.coerce.number().int().min(0).max(100000).default(0),
-  surgeries: z.coerce.number().int().min(0).max(100000).default(0),
+  day: notFutureDate('Census cannot be entered for a future date'),
+  ward: text(80, 'the ward').default('All'),
+  patientDays: count('Patient days'),
+  catheterDays: count('Catheter days').default(0),
+  centralLineDays: count('Central line days').default(0),
+  ventilatorDays: count('Ventilator days').default(0),
+  surgeries: count('Surgeries').default(0),
 });
 export type CensusInput = z.input<typeof censusInputSchema>;
 export interface CensusDay {
@@ -384,9 +399,9 @@ export interface ChecklistItem {
   text: string;
 }
 export const checklistInputSchema = z.object({
-  name: text(160),
+  name: text(160, 'the checklist name'),
   category: z.enum(CHECKLIST_CATEGORIES),
-  items: z.array(text(500)).min(1).max(200),
+  items: z.array(text(500, 'the item')).min(1, 'Add at least one item').max(200, 'A checklist can have at most 200 items'),
   isActive: z.boolean().default(true),
 });
 export type ChecklistInput = z.input<typeof checklistInputSchema>;
@@ -400,8 +415,8 @@ export interface Checklist {
 }
 
 export const scheduleAuditSchema = z.object({
-  checklistId: z.uuid(),
-  scheduledOn: isoDate,
+  checklistId: z.uuid({ error: 'Pick a checklist' }),
+  scheduledOn: notPastDate('Audit date cannot be in the past'),
   department: optionalText(120),
   auditorId: z.uuid().optional(),
 });
@@ -421,7 +436,7 @@ export const auditQuerySchema = z.object({
   from: isoDate.optional(),
   to: isoDate.optional(),
   ...pageFields,
-});
+}).refine((v) => datesInOrder(v.from, v.to), rangeInOrder);
 export type AuditQuery = Partial<z.input<typeof auditQuerySchema>>;
 
 export interface AuditSummary {
@@ -464,13 +479,13 @@ export const createCapaSchema = z
   .object({
     sourceType: z.enum(CAPA_SOURCES),
     sourceId: z.uuid().optional(),
-    title: text(200),
-    problem: text(5000),
+    title: text(200, 'a title'),
+    problem: text(5000, 'the problem'),
     rootCause: optionalText(5000),
     correctiveAction: optionalText(5000),
     preventiveAction: optionalText(5000),
-    ownerId: z.uuid().optional(),
-    dueDate: isoDate,
+    ownerId: blankToUndefined(z.uuid({ error: 'Pick a valid owner' }).optional()),
+    dueDate: notPastDate('Due date cannot be in the past'),
   })
   .refine((v) => v.sourceType === 'other' || v.sourceType === 'indicator' || v.sourceId, {
     message: 'Pick the record this action is for',
@@ -480,11 +495,12 @@ export type CreateCapa = z.input<typeof createCapaSchema>;
 
 export const updateCapaSchema = z.object({
   status: z.enum(CAPA_STATUSES).optional(),
-  title: text(200).optional(),
+  title: text(200, 'a title').optional(),
   rootCause: optionalText(5000),
   correctiveAction: optionalText(5000),
   preventiveAction: optionalText(5000),
   ownerId: z.uuid().nullable().optional(),
+  /** A changed due date cannot be in the past (checked by the API, so an unchanged overdue date still saves). */
   dueDate: isoDate.optional(),
   /** Completion note (completed) or effectiveness check (verified, back to in_progress). */
   note: optionalText(2000),
@@ -549,19 +565,23 @@ export type DocumentType = (typeof DOCUMENT_TYPES)[number];
 export const DOCUMENT_STATUSES = ['draft', 'approved', 'archived'] as const;
 export type DocumentStatus = (typeof DOCUMENT_STATUSES)[number];
 
-export const createDocumentSchema = z.object({
+const documentFields = z.object({
   code: z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9_./-]{0,39}$/, 'Letters, digits and _ . / - only (e.g. HIC-POL-01)'),
-  title: text(200),
+  title: text(200, 'the title'),
   chapter: chapterEnum,
   docType: z.enum(DOCUMENT_TYPES),
   department: optionalText(120),
   content: z.string().max(200_000).optional(),
-  fileUrl: z.url().max(1000).optional(),
-  effectiveFrom: isoDate.optional(),
-  reviewDue: isoDate.optional(),
+  fileUrl: blankToUndefined(z.url({ protocol: /^https?$/, error: 'Enter a full link starting with http:// or https://' }).max(1000, 'Link is too long').optional()),
+  effectiveFrom: blankToUndefined(isoDate.optional()),
+  reviewDue: blankToUndefined(isoDate.optional()),
 });
+const REVIEW_BEFORE_EFFECTIVE = { message: 'Review date must be on or after the effective date', path: ['reviewDue'] };
+const reviewAfterEffective = (v: { effectiveFrom?: string; reviewDue?: string }) => datesInOrder(v.effectiveFrom, v.reviewDue);
+export const createDocumentSchema = documentFields.refine(reviewAfterEffective, REVIEW_BEFORE_EFFECTIVE);
 export type CreateDocument = z.input<typeof createDocumentSchema>;
-export const updateDocumentSchema = createDocumentSchema.omit({ code: true }).partial();
+/** The API also checks the dates against the saved draft. */
+export const updateDocumentSchema = documentFields.omit({ code: true }).partial().refine(reviewAfterEffective, REVIEW_BEFORE_EFFECTIVE);
 export type UpdateDocument = z.input<typeof updateDocumentSchema>;
 
 export const documentQuerySchema = z.object({
@@ -646,8 +666,8 @@ export const indicatorQuerySchema = z.object({ period: period.optional() });
 export const indicatorTrendQuerySchema = z.object({ months: z.coerce.number().int().min(1).max(24).default(6), to: period.optional() });
 export const indicatorValueInputSchema = z.object({
   period,
-  numerator: z.coerce.number().min(0).max(1e12),
-  denominator: z.coerce.number().positive().max(1e12).optional(),
+  numerator: z.coerce.number({ error: 'Enter the numerator' }).min(0, 'Numerator cannot be negative').max(1e12, 'Numerator is too large'),
+  denominator: blankToUndefined(z.coerce.number({ error: 'Enter the denominator' }).positive('Denominator must be more than 0').max(1e12, 'Denominator is too large').optional()),
   note: optionalText(500),
 });
 export type IndicatorValueInput = z.input<typeof indicatorValueInputSchema>;

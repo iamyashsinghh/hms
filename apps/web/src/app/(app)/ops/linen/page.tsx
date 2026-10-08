@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ErrorBox, Field, LINEN_KIND_LABELS, MessageRow, Pager, formatDateTime, opt } from '@/modules/ops/ui';
+import { ErrorBox, Field, LINEN_KIND_LABELS, MessageRow, Pager, formatDateTime, opt, checked } from '@/modules/ops/ui';
 
 interface ItemForm {
   id?: string;
@@ -27,7 +27,7 @@ function ItemFormCard({ initial, onDone }: { initial: ItemForm; onDone: () => vo
   const [f, setF] = React.useState(initial);
   const save = useMutation({
     mutationFn: () => {
-      const body = { name: f.name.trim(), parLevel: Number(f.parLevel || 0), isActive: f.isActive };
+      const body = checked(O.linenItemInputSchema, { name: f.name.trim(), parLevel: f.parLevel.trim() === '' ? 0 : Number(f.parLevel), isActive: f.isActive });
       return f.id ? api.ops.linen.updateItem(f.id, body) : api.ops.linen.createItem(body);
     },
     onSuccess: () => {
@@ -87,7 +87,7 @@ function MovementForm({ items, onDone }: { items: O.LinenItem[]; onDone: () => v
   const needsLocation = kind === 'issue' || kind === 'collect';
   const record = useMutation({
     mutationFn: () =>
-      api.ops.linen.record({
+      api.ops.linen.record(checked(O.linenTxnInputSchema, {
         itemId,
         kind,
         qty: Number(qty),
@@ -95,7 +95,7 @@ function MovementForm({ items, onDone }: { items: O.LinenItem[]; onDone: () => v
         fromPool: kind === 'condemn' ? fromPool : undefined,
         reference: opt(reference),
         notes: opt(notes),
-      }),
+      })),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['ops'] });
       setQty('');

@@ -7,12 +7,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Loader2 } from 'lucide-react';
 import { quality as Q } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { NoAccess } from '@/components/no-access';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import { ActivityList, EnumSelect, ErrorBox, Field, StaffSelect, StatusBadge, Textarea, formatDateTime } from '@/modules/quality/ui';
+import { ActivityList, EnumSelect, ErrorBox, Field, StaffSelect, StatusBadge, Textarea, formatDateTime, todayIST } from '@/modules/quality/ui';
 
 const SOURCE_LINK: Partial<Record<Q.CapaSource, string>> = {
   incident: '/quality/incidents/',
@@ -114,6 +115,7 @@ function UpdatePanel({ c, onSaved }: { c: Q.Capa; onSaved: (c: Q.Capa) => void }
     note: '',
   });
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setF({ ...f, [k]: e.target.value });
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const save = useMutation({
     mutationFn: () =>
       api.quality.capas.update(c.id, {
@@ -139,7 +141,12 @@ function UpdatePanel({ c, onSaved }: { c: Q.Capa; onSaved: (c: Q.Capa) => void }
           className="space-y-4"
           onSubmit={(e) => {
             e.preventDefault();
-            save.mutate();
+            const { errors: found } = validate(Q.updateCapaSchema, { dueDate: f.dueDate, note: f.note || undefined });
+            const all: FieldErrors = { ...(found ?? {}) };
+            if (f.dueDate !== c.dueDate && f.dueDate && f.dueDate < todayIST()) all.dueDate = 'Due date cannot be in the past';
+            if (!f.dueDate) all.dueDate = 'Enter the due date';
+            setErrors(all);
+            if (!Object.keys(all).length) save.mutate();
           }}
         >
           <ErrorBox error={save.error} />
@@ -149,8 +156,8 @@ function UpdatePanel({ c, onSaved }: { c: Q.Capa; onSaved: (c: Q.Capa) => void }
           <Field id="owner" label="Owner">
             <StaffSelect id="owner" value={f.ownerId} onChange={(v) => setF({ ...f, ownerId: v })} placeholder="No owner" />
           </Field>
-          <Field id="due" label="Due date">
-            <Input id="due" type="date" value={f.dueDate} onChange={set('dueDate')} />
+          <Field id="due" label="Due date" error={errors.dueDate}>
+            <Input id="due" type="date" min={c.dueDate < todayIST() ? c.dueDate : todayIST()} value={f.dueDate} onChange={set('dueDate')} />
           </Field>
           <Field id="root" label="Root cause">
             <Textarea id="root" value={f.rootCause} onChange={set('rootCause')} />

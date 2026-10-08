@@ -4,8 +4,9 @@ import * as React from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
-import { ipd as I, type Patient } from '@hms/shared';
+import { ipd as I, todayIso, type Patient } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -41,6 +42,7 @@ function AdmitPage() {
   const [expected, setExpected] = React.useState('');
   const [advance, setAdvance] = React.useState({ amount: '', mode: 'cash' as I.AdvanceMode, reference: '' });
   const [formError, setFormError] = React.useState<string | null>(null);
+  const [errors, setErrors] = React.useState<FieldErrors>({});
 
   const presetPatient = params.get('patientId');
   React.useEffect(() => {
@@ -73,7 +75,8 @@ function AdmitPage() {
   function submit(e: React.FormEvent) {
     e.preventDefault();
     setFormError(null);
-    const amount = Number(advance.amount);
+    setErrors({});
+    const amount = advance.amount.trim() === '' ? 0 : Number(advance.amount);
     const body: I.AdmitInput = {
       patientId: patient?.id ?? '',
       bedId,
@@ -87,11 +90,14 @@ function AdmitPage() {
       attendantRelation: attendant.relation || undefined,
       attendantMobile: attendant.mobile || undefined,
       expectedDischargeDate: expected || undefined,
-      advance: canAdvance && amount > 0 ? { amount, mode: advance.mode, reference: advance.reference || undefined } : undefined,
+      advance: canAdvance && advance.amount.trim() !== '' ? { amount, mode: advance.mode, reference: advance.reference || undefined } : undefined,
     };
-    const parsed = I.admitSchema.safeParse(body);
     if (!patient) return setFormError('Pick the patient to admit');
-    if (!parsed.success) return setFormError(parsed.error.issues[0]?.message ?? 'Check the form');
+    const { errors: found } = validate(I.admitSchema, body);
+    if (found) {
+      setErrors(found);
+      return setFormError(found._form ?? 'Please correct the highlighted fields');
+    }
     admit.mutate(body);
   }
 
@@ -108,7 +114,7 @@ function AdmitPage() {
               <div className="sm:col-span-2">
                 <PatientPicker value={patient} onChange={setPatient} />
               </div>
-              <Field id="doctor" label="Admitting doctor">
+              <Field id="doctor" label="Admitting doctor" error={errors.doctorId}>
                 <Select id="doctor" value={doctorId} onChange={(e) => setDoctorId(e.target.value)} required>
                   <option value="">Choose…</option>
                   {doctors?.map((d) => (
@@ -128,8 +134,8 @@ function AdmitPage() {
                   ))}
                 </Select>
               </Field>
-              <Field id="reason" label="Reason for admission" className="sm:col-span-2">
-                <Textarea id="reason" value={reason} onChange={(e) => setReason(e.target.value)} required maxLength={1000} rows={2} />
+              <Field id="reason" label="Reason for admission" className="sm:col-span-2" error={errors.reason}>
+                <Textarea id="reason" value={reason} onChange={(e) => setReason(e.target.value)} required minLength={2} maxLength={1000} rows={2} />
               </Field>
               <Field id="dx" label="Provisional diagnosis (optional)" className="sm:col-span-2">
                 <Input id="dx" value={diagnosis} onChange={(e) => setDiagnosis(e.target.value)} maxLength={1000} />
@@ -138,7 +144,7 @@ function AdmitPage() {
                 <input type="checkbox" checked={isMlc} onChange={(e) => setIsMlc(e.target.checked)} /> Medico-legal case (MLC)
               </label>
               {isMlc && (
-                <Field id="mlc" label="MLC / police intimation no.">
+                <Field id="mlc" label="MLC / police intimation no." error={errors.mlcNo}>
                   <Input id="mlc" value={mlcNo} onChange={(e) => setMlcNo(e.target.value)} maxLength={50} />
                 </Field>
               )}
@@ -150,17 +156,17 @@ function AdmitPage() {
               <CardTitle>Attendant</CardTitle>
             </CardHeader>
             <CardContent className="grid gap-4 sm:grid-cols-3">
-              <Field id="att-name" label="Name">
+              <Field id="att-name" label="Name" error={errors.attendantName}>
                 <Input id="att-name" value={attendant.name} onChange={(e) => setAttendant({ ...attendant, name: e.target.value })} maxLength={100} />
               </Field>
               <Field id="att-rel" label="Relation">
                 <Input id="att-rel" value={attendant.relation} onChange={(e) => setAttendant({ ...attendant, relation: e.target.value })} maxLength={50} placeholder="Son, wife…" />
               </Field>
-              <Field id="att-mob" label="Mobile">
-                <Input id="att-mob" inputMode="numeric" value={attendant.mobile} onChange={(e) => setAttendant({ ...attendant, mobile: e.target.value })} maxLength={10} />
+              <Field id="att-mob" label="Mobile" error={errors.attendantMobile}>
+                <Input id="att-mob" inputMode="numeric" value={attendant.mobile} onChange={(e) => setAttendant({ ...attendant, mobile: e.target.value })} maxLength={14} placeholder="10-digit mobile" />
               </Field>
-              <Field id="edd" label="Expected discharge (optional)">
-                <Input id="edd" type="date" value={expected} onChange={(e) => setExpected(e.target.value)} />
+              <Field id="edd" label="Expected discharge (optional)" error={errors.expectedDischargeDate}>
+                <Input id="edd" type="date" min={todayIso()} value={expected} onChange={(e) => setExpected(e.target.value)} />
               </Field>
             </CardContent>
           </Card>
@@ -189,6 +195,7 @@ function AdmitPage() {
                   );
                 })}
               </Select>
+              {errors.bedId && <p className="text-xs text-destructive">Pick a free bed</p>}
               {board && freeBeds.length === 0 && <p className="text-sm text-destructive">No free beds right now.</p>}
               {bed && (
                 <p className="text-sm text-muted-foreground">
@@ -204,7 +211,7 @@ function AdmitPage() {
                 <CardTitle>Advance (optional)</CardTitle>
               </CardHeader>
               <CardContent className="grid gap-3">
-                <Field id="adv-amt" label="Amount (₹)">
+                <Field id="adv-amt" label="Amount (₹)" error={errors["advance.amount"]}>
                   <Input id="adv-amt" type="number" min={0} step="0.01" value={advance.amount} onChange={(e) => setAdvance({ ...advance, amount: e.target.value })} />
                 </Field>
                 <Field id="adv-mode" label="Mode">
@@ -217,7 +224,7 @@ function AdmitPage() {
                   </Select>
                 </Field>
                 {advance.mode !== 'cash' && (
-                  <Field id="adv-ref" label="Reference / UTR">
+                  <Field id="adv-ref" label="Reference / UTR" error={errors["advance.reference"]}>
                     <Input id="adv-ref" value={advance.reference} onChange={(e) => setAdvance({ ...advance, reference: e.target.value })} maxLength={100} />
                   </Field>
                 )}

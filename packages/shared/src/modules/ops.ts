@@ -1,5 +1,17 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import {
+  blankToUndefined,
+  datesInOrder,
+  indianMobile,
+  isoDate as calendarDate,
+  isoDateTime,
+  money as moneyField,
+  pastOrTodayDate,
+  requiredText,
+  todayIso,
+  todayOrFutureDate,
+} from '../validation';
 
 /**
  * Facility Services: permissions and API contracts (Zod schemas + types).
@@ -49,14 +61,15 @@ export const opsModule = defineModule({
 
 // ---------- shared bits ----------
 
-const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD');
-const text = (max: number) => z.string().trim().min(1).max(max);
-const optionalText = (max: number) => z.string().trim().max(max).optional();
-const money = z.coerce
-  .number()
-  .min(0)
-  .max(99_999_999.99)
-  .refine((v) => Math.abs(Math.round(v * 100) - v * 100) < 1e-6, 'At most 2 decimal places');
+const isoDate = calendarDate;
+const text = (max: number, label = 'a value') => requiredText(label, max);
+const optionalText = (max: number) => z.string().trim().max(max, `Enter at most ${max} characters`).optional();
+const money = moneyField(99_999_999.99);
+const optionalDate = blankToUndefined(isoDate.optional());
+const mobile = indianMobile;
+/** An odometer reading in km. */
+const odometer = (label: string) =>
+  z.coerce.number({ error: `Enter the ${label}` }).int(`${label} must be whole km`).min(0, `${label} cannot be negative`).max(9_999_999, `${label} is too large`);
 const listQuery = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(50),
@@ -78,33 +91,48 @@ export type AssetCriticality = (typeof ASSET_CRITICALITY)[number];
 export type WorkOrderType = (typeof WORK_ORDER_TYPES)[number];
 export type WorkOrderStatus = (typeof WORK_ORDER_STATUSES)[number];
 
-export const assetInputSchema = z.object({
-  name: text(200),
+const assetFields = z.object({
+  name: text(200, 'the equipment name'),
   category: z.enum(ASSET_CATEGORIES).default('general'),
   criticality: z.enum(ASSET_CRITICALITY).default('medium'),
   make: optionalText(100),
   model: optionalText(100),
   serialNo: optionalText(100),
   location: optionalText(200),
-  departmentId: z.uuid().optional(),
-  purchaseDate: isoDate.optional(),
-  purchaseCost: money.optional(),
+  departmentId: blankToUndefined(z.uuid({ error: 'Pick a valid department' }).optional()),
+  purchaseDate: blankToUndefined(pastOrTodayDate('Purchase date').optional()),
+  purchaseCost: blankToUndefined(money.optional()),
   vendor: optionalText(200),
-  warrantyUntil: isoDate.optional(),
+  warrantyUntil: optionalDate,
   amcVendor: optionalText(200),
-  amcUntil: isoDate.optional(),
+  amcUntil: optionalDate,
   /** Preventive maintenance every N days (0 or empty = no PM schedule). */
-  pmIntervalDays: z.coerce.number().int().min(0).max(3650).optional(),
-  nextPmDue: isoDate.optional(),
-  calibrationDue: isoDate.optional(),
+  pmIntervalDays: blankToUndefined(
+    z.coerce.number().int('PM interval must be whole days').min(0, 'PM interval cannot be negative').max(3650, 'PM interval can be at most 3650 days').optional(),
+  ),
+  nextPmDue: optionalDate,
+  calibrationDue: optionalDate,
   notes: optionalText(1000),
 });
+
+/** Warranty and AMC end dates cannot be before the purchase date (the API also checks edits against the saved record). */
+export function assetDateIssues(a: { purchaseDate?: string | null; warrantyUntil?: string | null; amcUntil?: string | null }): { path: string; message: string }[] {
+  const out: { path: string; message: string }[] = [];
+  if (!datesInOrder(a.purchaseDate, a.warrantyUntil)) out.push({ path: 'warrantyUntil', message: 'Warranty end date is before the purchase date' });
+  if (!datesInOrder(a.purchaseDate, a.amcUntil)) out.push({ path: 'amcUntil', message: 'AMC end date is before the purchase date' });
+  return out;
+}
+const checkAssetDates = (a: Parameters<typeof assetDateIssues>[0], ctx: z.RefinementCtx) => {
+  for (const i of assetDateIssues(a)) ctx.addIssue({ code: 'custom', path: [i.path], message: i.message });
+};
+
+export const assetInputSchema = assetFields.superRefine(checkAssetDates);
 export type AssetInput = z.input<typeof assetInputSchema>;
 
-export const updateAssetSchema = assetInputSchema.partial().extend({
+export const updateAssetSchema = assetFields.partial().extend({
   /** Only out_of_service <-> in_service and condemned are set by hand; maintenance status follows work orders. */
   status: z.enum(['in_service', 'out_of_service', 'condemned']).optional(),
-});
+}).superRefine(checkAssetDates);
 export type UpdateAsset = z.input<typeof updateAssetSchema>;
 
 export interface Asset {
@@ -145,9 +173,9 @@ export const assetQuerySchema = listQuery.extend({
 export type AssetQuery = Partial<z.input<typeof assetQuerySchema>>;
 
 export const createWorkOrderSchema = z.object({
-  assetId: z.uuid(),
+  assetId: z.uuid({ error: 'Pick the equipment' }),
   type: z.enum(WORK_ORDER_TYPES).default('breakdown'),
-  problem: text(1000),
+  problem: text(1000, 'the problem'),
   priority: z.enum(['low', 'normal', 'urgent']).default('normal'),
 });
 export type CreateWorkOrder = z.input<typeof createWorkOrderSchema>;
@@ -156,9 +184,9 @@ export const updateWorkOrderSchema = z.object({
   status: z.enum(['in_progress', 'completed', 'cancelled']),
   assignedTo: optionalText(200),
   resolution: optionalText(2000),
-  cost: money.optional(),
+  cost: blankToUndefined(money.optional()),
   /** For calibration work orders: next calibration due date once completed. */
-  nextCalibrationDue: isoDate.optional(),
+  nextCalibrationDue: blankToUndefined(todayOrFutureDate('Next calibration due date').optional()),
 });
 export type UpdateWorkOrder = z.input<typeof updateWorkOrderSchema>;
 
@@ -213,12 +241,17 @@ export type CssdMethod = (typeof CSSD_METHODS)[number];
 export type CssdCycleStatus = (typeof CSSD_CYCLE_STATUSES)[number];
 
 export const cssdSetInputSchema = z.object({
-  name: text(200),
+  name: text(200, 'the set name'),
   department: optionalText(100),
   /** Instruments in the set, e.g. ["Artery forceps x4", "Scissors x2"]. */
-  contents: z.array(text(200)).max(200).default([]),
+  contents: z.array(text(200, 'the instrument')).max(200, 'A set can list at most 200 instruments').default([]),
   /** Days a sterile pack stays usable. */
-  shelfLifeDays: z.coerce.number().int().min(1).max(365).default(30),
+  shelfLifeDays: z.coerce
+    .number({ error: 'Enter the shelf life in days' })
+    .int('Shelf life must be whole days')
+    .min(1, 'Shelf life must be at least 1 day')
+    .max(365, 'Shelf life can be at most 365 days')
+    .default(30),
   isActive: z.boolean().optional(),
 });
 export type CssdSetInput = z.input<typeof cssdSetInputSchema>;
@@ -242,10 +275,12 @@ export interface CssdSet {
 }
 
 export const startCycleSchema = z.object({
-  sterilizer: text(100),
+  sterilizer: text(100, 'the sterilizer'),
   method: z.enum(CSSD_METHODS).default('steam'),
-  setIds: z.array(z.uuid()).min(1).max(200),
-  temperatureC: z.coerce.number().min(0).max(300).optional(),
+  setIds: z.array(z.uuid()).min(1, 'Pick at least one set').max(200, 'At most 200 sets in one load'),
+  temperatureC: blankToUndefined(
+    z.coerce.number({ error: 'Enter the temperature' }).min(0, 'Temperature cannot be negative').max(300, 'Temperature can be at most 300 °C').optional(),
+  ),
   pressure: optionalText(50),
 });
 export type StartCycle = z.input<typeof startCycleSchema>;
@@ -277,8 +312,8 @@ export interface CssdCycle {
 }
 
 export const issueSetSchema = z.object({
-  setId: z.uuid(),
-  issuedTo: text(200),
+  setId: z.uuid({ error: 'Pick the set' }),
+  issuedTo: text(200, 'who it is issued to'),
   /** Patient the instruments were used on, for recall tracing. */
   patientId: z.uuid().optional(),
 });
@@ -322,9 +357,9 @@ export const LINEN_TXN_KINDS = ['stock_in', 'issue', 'collect', 'laundry_out', '
 export type LinenTxnKind = (typeof LINEN_TXN_KINDS)[number];
 
 export const linenItemInputSchema = z.object({
-  name: text(100),
+  name: text(100, 'the item name'),
   /** Minimum clean stock to keep; the stock screen flags items below it. */
-  parLevel: z.coerce.number().int().min(0).max(100000).default(0),
+  parLevel: z.coerce.number().int('Par level must be a whole number').min(0, 'Par level cannot be negative').max(100000, 'Par level can be at most 1,00,000').default(0),
   isActive: z.boolean().optional(),
 });
 export type LinenItemInput = z.input<typeof linenItemInputSchema>;
@@ -349,9 +384,9 @@ export interface LinenStock {
 }
 
 export const linenTxnInputSchema = z.object({
-  itemId: z.uuid(),
+  itemId: z.uuid({ error: 'Pick the linen item' }),
   kind: z.enum(LINEN_TXN_KINDS),
-  qty: z.coerce.number().int().min(1).max(100000),
+  qty: z.coerce.number({ error: 'Enter the number of pieces' }).int('Pieces must be a whole number').min(1, 'Enter at least 1 piece').max(100000, 'At most 1,00,000 pieces at a time'),
   /** Ward / location for issue and collect. */
   location: optionalText(100),
   /** For condemn: which pool the pieces come out of. */
@@ -394,13 +429,19 @@ export type TripKind = (typeof TRIP_KINDS)[number];
 export type TripStatus = (typeof TRIP_STATUSES)[number];
 
 export const vehicleInputSchema = z.object({
-  registrationNo: z.string().trim().toUpperCase().min(4).max(20),
+  registrationNo: z
+    .string({ error: 'Enter the registration number' })
+    .trim()
+    .toUpperCase()
+    .min(4, 'Registration number needs at least 4 characters')
+    .max(20, 'Registration number can be at most 20 characters')
+    .regex(/^[A-Z0-9][A-Z0-9 -]*$/, 'Registration number can have letters, digits, spaces and - only'),
   type: z.enum(VEHICLE_TYPES).default('bls'),
   driverName: optionalText(100),
-  driverMobile: z.string().trim().regex(/^[6-9]\d{9}$/, 'Enter a 10-digit mobile number').optional(),
+  driverMobile: blankToUndefined(mobile.optional()),
   /** Charge per km when billing a trip (0 = flat charge only). */
-  ratePerKm: money.optional(),
-  baseCharge: money.optional(),
+  ratePerKm: blankToUndefined(money.optional()),
+  baseCharge: blankToUndefined(money.optional()),
   status: z.enum(['available', 'maintenance', 'inactive']).optional(),
 });
 export type VehicleInput = z.input<typeof vehicleInputSchema>;
@@ -419,11 +460,11 @@ export interface Vehicle {
 
 export const createTripSchema = z.object({
   kind: z.enum(TRIP_KINDS).default('emergency_pickup'),
-  patientId: z.uuid().optional(),
+  patientId: blankToUndefined(z.uuid({ error: 'Pick a valid patient' }).optional()),
   /** Caller / patient name when the patient is not registered yet. */
-  contactName: text(200),
-  contactMobile: z.string().trim().regex(/^[6-9]\d{9}$/, 'Enter a 10-digit mobile number'),
-  pickupAddress: text(500),
+  contactName: text(200, 'the contact name'),
+  contactMobile: mobile,
+  pickupAddress: text(500, 'the pickup address'),
   dropAddress: optionalText(500),
   notes: optionalText(1000),
   vehicleId: z.uuid().optional(),
@@ -431,19 +472,19 @@ export const createTripSchema = z.object({
 export type CreateTrip = z.input<typeof createTripSchema>;
 
 export const tripActionSchema = z.discriminatedUnion('action', [
-  z.object({ action: z.literal('dispatch'), vehicleId: z.uuid(), odometerStart: z.coerce.number().int().min(0).optional() }),
+  z.object({ action: z.literal('dispatch'), vehicleId: z.uuid({ error: 'Pick an ambulance' }), odometerStart: blankToUndefined(odometer('Start reading').optional()) }),
   z.object({ action: z.literal('onboard') }),
   z.object({
     action: z.literal('complete'),
-    odometerEnd: z.coerce.number().int().min(0).optional(),
+    odometerEnd: blankToUndefined(odometer('End reading').optional()),
     /** Distance in km if odometers are not used. */
-    distanceKm: z.coerce.number().min(0).max(5000).optional(),
+    distanceKm: blankToUndefined(z.coerce.number({ error: 'Enter the distance in km' }).min(0, 'Distance cannot be negative').max(5000, 'Distance can be at most 5,000 km').optional()),
     /** Bill the patient for this trip through Billing (needs a registered patient). */
     bill: z.boolean().default(false),
     /** Override the computed charge. */
-    charge: money.optional(),
+    charge: blankToUndefined(money.optional()),
   }),
-  z.object({ action: z.literal('cancel'), reason: text(500) }),
+  z.object({ action: z.literal('cancel'), reason: text(500, 'the reason for cancelling') }),
 ]);
 export type TripAction = z.input<typeof tripActionSchema>;
 
@@ -500,16 +541,19 @@ export type DietType = (typeof DIET_TYPES)[number];
 export type Meal = (typeof MEALS)[number];
 export type MealStatus = (typeof MEAL_STATUSES)[number];
 
-export const dietOrderInputSchema = z.object({
-  patientId: z.uuid(),
-  /** Ward / bed until IPD admissions land, e.g. "Ward 2 / Bed 14". */
-  location: text(100),
-  dietType: z.enum(DIET_TYPES),
-  vegetarian: z.boolean().default(true),
-  instructions: optionalText(500),
-  startDate: isoDate.optional(),
-  endDate: isoDate.optional(),
-});
+export const dietOrderInputSchema = z
+  .object({
+    patientId: z.uuid({ error: 'Pick the patient' }),
+    /** Ward / bed until IPD admissions land, e.g. "Ward 2 / Bed 14". */
+    location: text(100, 'the ward / bed'),
+    dietType: z.enum(DIET_TYPES),
+    vegetarian: z.boolean().default(true),
+    instructions: optionalText(500),
+    /** Defaults to today; a new diet cannot start in the past. */
+    startDate: blankToUndefined(todayOrFutureDate('Start date').optional()),
+    endDate: optionalDate,
+  })
+  .refine((o) => datesInOrder(o.startDate ?? todayIso(), o.endDate), { message: 'End date is before the start date', path: ['endDate'] });
 export type DietOrderInput = z.input<typeof dietOrderInputSchema>;
 
 export interface DietOrder {
@@ -551,7 +595,8 @@ export interface KitchenSheet {
 
 export const markMealSchema = z.object({
   orderId: z.uuid(),
-  date: isoDate.optional(),
+  /** Meals are marked for today or earlier, never ahead. */
+  date: blankToUndefined(pastOrTodayDate('Meal date').optional()),
   meal: z.enum(MEALS),
   status: z.enum(MEAL_STATUSES),
   notes: optionalText(300),
@@ -570,12 +615,13 @@ export type HkPriority = (typeof HK_PRIORITIES)[number];
 export type HkStatus = (typeof HK_STATUSES)[number];
 
 export const createHkTaskSchema = z.object({
-  location: text(200),
+  location: text(200, 'the location'),
   kind: z.enum(HK_KINDS).default('routine'),
   priority: z.enum(HK_PRIORITIES).default('normal'),
   description: optionalText(1000),
   assignedTo: optionalText(100),
-  dueAt: z.iso.datetime({ offset: true }).optional(),
+  /** Defaults by priority; a due time given by hand cannot be in the past. */
+  dueAt: blankToUndefined(isoDateTime.refine((v) => Date.parse(v) >= Date.now() - 5 * 60_000, 'Due time cannot be in the past').optional()),
 });
 export type CreateHkTask = z.input<typeof createHkTaskSchema>;
 

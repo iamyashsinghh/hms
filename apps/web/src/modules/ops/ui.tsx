@@ -5,7 +5,9 @@ import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight, Search, X } from 'lucide-react';
 import type { ops as O, Patient } from '@hms/shared';
+import type { z } from 'zod';
 import { api } from '@/lib/api';
+import { firstError, validate } from '@/lib/validate';
 import { fullName } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
@@ -319,6 +321,16 @@ export function PatientPicker({ value, onChange, label = 'Patient' }: { value: P
 }
 
 /** Optional number from a text input value. */
+/**
+ * Checks a request body against its shared schema before it is sent. Used inside a mutationFn:
+ * the first problem is thrown, so the form's error box shows it without a round trip.
+ */
+export function checked<T>(schema: z.ZodType, body: T): T {
+  const { errors } = validate(schema, body);
+  if (errors) throw new Error(firstError(errors) ?? 'Please check the form');
+  return body;
+}
+
 export const num = (s: string) => (s.trim() === '' ? undefined : Number(s));
 /** Optional string from a text input value. */
 export const opt = (s: string) => (s.trim() === '' ? undefined : s.trim());
