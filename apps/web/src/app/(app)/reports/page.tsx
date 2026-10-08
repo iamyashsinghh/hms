@@ -55,10 +55,16 @@ export default function ReportsDashboardPage() {
       ) : s ? (
         <>
           {s.opdVisits + s.billed + s.collections === 0 && <EmptyHint />}
-          <div className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <StatTile label="OPD visits" value={s.opdVisits} previous={s.previous.opdVisits} />
             <StatTile label="New patients" value={s.newPatients} previous={s.previous.newPatients} />
             <StatTile label="Billed" value={s.billed} previous={s.previous.billed} format={money} />
+            <StatTile
+              label="Not yet billed"
+              value={s.unbilledCharges.amount}
+              format={money}
+              hint={`${plural(s.unbilledCharges.count, 'charge')} · ${plural(s.unbilledCharges.patients, 'patient')} at day end`}
+            />
             <StatTile label="Collections" value={s.collections} previous={s.previous.collections} format={money} />
             <StatTile label="Pending bills" value={s.pendingBills.amount} format={money} hint={`${plural(s.pendingBills.count, 'bill')} with a balance`} />
             <StatTile label="Appointments" value={s.appointmentsBooked} hint={`${num(s.appointmentsCancelled)} cancelled`} />
