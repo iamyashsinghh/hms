@@ -8,6 +8,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Loader2, RotateCcw } from 'lucide-react';
 import { notifications as n } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { firstError, validate } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -60,15 +61,16 @@ function TemplateEditor({ template: current }: { template: n.Template }) {
     queryClient.invalidateQueries({ queryKey: ['notifications', 'templates'] });
     router.push('/notifications/templates');
   };
+  const [formError, setFormError] = React.useState<string | null>(null);
+  const body = (): n.UpsertTemplate => ({
+    subject: form.subject || null,
+    body: form.body,
+    dltTemplateId: form.dltTemplateId || null,
+    providerTemplateName: form.providerTemplateName || null,
+    isActive: form.isActive,
+  });
   const save = useMutation({
-    mutationFn: () =>
-      api.notifications.saveTemplate(key, channel, {
-        subject: form.subject || null,
-        body: form.body,
-        dltTemplateId: form.dltTemplateId || null,
-        providerTemplateName: form.providerTemplateName || null,
-        isActive: form.isActive,
-      }),
+    mutationFn: () => api.notifications.saveTemplate(key, channel, body()),
     onSuccess: done,
   });
   const reset = useMutation({ mutationFn: () => api.notifications.resetTemplate(key, channel), onSuccess: done });
@@ -88,7 +90,9 @@ function TemplateEditor({ template: current }: { template: n.Template }) {
           className="grid gap-6 lg:grid-cols-5"
           onSubmit={(e) => {
             e.preventDefault();
-            save.mutate();
+            const v = validate(n.upsertTemplateSchema, body());
+            setFormError(firstError(v.errors));
+            if (v.data) save.mutate();
           }}
         >
           <Card className="lg:col-span-3">
@@ -96,11 +100,11 @@ function TemplateEditor({ template: current }: { template: n.Template }) {
               <CardTitle>Text</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              {(save.error || reset.error) && <ErrorBox>{errorMessage(save.error ?? reset.error)}</ErrorBox>}
+              {(formError || save.error || reset.error) && <ErrorBox>{formError ?? errorMessage(save.error ?? reset.error)}</ErrorBox>}
               {hasSubject && (
                 <div>
                   <Label htmlFor="subject">{channel === 'email' ? 'Subject' : 'Title'}</Label>
-                  <Input id="subject" className="mt-2" value={form.subject} onChange={(e) => set({ subject: e.target.value })} />
+                  <Input id="subject" className="mt-2" value={form.subject} maxLength={200} onChange={(e) => set({ subject: e.target.value })} />
                 </div>
               )}
               <div>
@@ -110,13 +114,13 @@ function TemplateEditor({ template: current }: { template: n.Template }) {
               {channel === 'sms' && (
                 <div>
                   <Label htmlFor="dlt">DLT / MSG91 template id</Label>
-                  <Input id="dlt" className="mt-2" value={form.dltTemplateId} onChange={(e) => set({ dltTemplateId: e.target.value })} placeholder="Required by TRAI for SMS in India" />
+                  <Input id="dlt" className="mt-2" value={form.dltTemplateId} maxLength={50} onChange={(e) => set({ dltTemplateId: e.target.value })} placeholder="Required by TRAI for SMS in India" />
                 </div>
               )}
               {channel === 'whatsapp' && (
                 <div>
                   <Label htmlFor="wa">Approved WhatsApp template id</Label>
-                  <Input id="wa" className="mt-2" value={form.providerTemplateName} onChange={(e) => set({ providerTemplateName: e.target.value })} />
+                  <Input id="wa" className="mt-2" value={form.providerTemplateName} maxLength={100} onChange={(e) => set({ providerTemplateName: e.target.value })} />
                 </div>
               )}
               <Checkbox label="Template is on" checked={form.isActive} onChange={(e) => set({ isActive: e.target.checked })} />

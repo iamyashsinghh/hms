@@ -3,9 +3,10 @@
 import * as React from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Plus, Search, Send } from 'lucide-react';
-import type { integrations as I } from '@hms/shared';
+import { integrations as I } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { Can, usePermission } from '@/lib/auth';
+import { type FieldErrors, validate } from '@/lib/validate';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
 import { Badge } from '@/components/ui/badge';
@@ -52,6 +53,7 @@ export default function DevicesPage() {
   const [form, setForm] = React.useState<Form | null>(null);
   const [testing, setTesting] = React.useState<{ device: I.LabDevice; message: string } | null>(null);
   const [viewing, setViewing] = React.useState<string | null>(null);
+  const [errors, setErrors] = React.useState<FieldErrors>({});
 
   const [deviceId, setDeviceId] = React.useState('');
   const [status, setStatus] = React.useState<I.DeviceMessageStatus | 'all'>('all');
@@ -110,20 +112,23 @@ export default function DevicesPage() {
               className="grid gap-4 sm:grid-cols-3"
               onSubmit={(e) => {
                 e.preventDefault();
-                save.mutate(form);
+                const body = { name: form.name, model: form.model.trim() || undefined, protocol: form.protocol, isActive: form.isActive };
+                const v = form.id ? validate(I.updateDeviceSchema, body) : validate(I.deviceInputSchema, { ...body, code: form.code });
+                setErrors(v.errors ?? {});
+                if (v.data) save.mutate(form);
               }}
             >
               <div className="sm:col-span-3">
                 <ErrorBox error={save.error ? errorMessage(save.error) : null} />
               </div>
-              <Field id="code" label="Code *" hint="Must match MSH-3 (sending application) or the deviceCode the machine sends.">
-                <Input id="code" value={form.code} disabled={!!form.id} onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase() })} placeholder="e.g. SYSMEX-XN" required />
+              <Field id="code" label="Code *" hint="Must match MSH-3 (sending application) or the deviceCode the machine sends." error={errors.code}>
+                <Input id="code" maxLength={30} value={form.code} disabled={!!form.id} onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase() })} placeholder="e.g. SYSMEX-XN" required />
               </Field>
-              <Field id="name" label="Name *">
-                <Input id="name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Haematology analyser" required />
+              <Field id="name" label="Name *" error={errors.name}>
+                <Input id="name" maxLength={100} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Haematology analyser" required />
               </Field>
-              <Field id="model" label="Model">
-                <Input id="model" value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} placeholder="e.g. Sysmex XN-1000" />
+              <Field id="model" label="Model" error={errors.model}>
+                <Input id="model" maxLength={100} value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} placeholder="e.g. Sysmex XN-1000" />
               </Field>
               <Field id="protocol" label="Protocol">
                 <Select id="protocol" value={form.protocol} onChange={(e) => setForm({ ...form, protocol: e.target.value as I.DeviceProtocol })}>

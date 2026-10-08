@@ -169,8 +169,15 @@ describe('reports', () => {
   it('validates ranges', async () => {
     const bad = await get(owner, `dashboard?from=2026-02-01&to=2026-01-01`);
     expect(bad.statusCode).toBe(400);
+    expect(bad.json().error.message).toContain('"from" must be on or before "to"');
     const long = await get(owner, `dashboard?from=2024-01-01&to=2026-01-01`);
     expect(long.statusCode).toBe(400);
+    expect(long.json().error.message).toContain('A report can cover at most 366 days');
+    const wrongFormat = await get(owner, `patients?from=08-10-2026&to=2026-10-08`);
+    expect(wrongFormat.statusCode).toBe(400);
+    expect(wrongFormat.json().error.message).toContain('Enter a valid date');
+    const exportReversed = await get(owner, `export?report=collections&from=2026-02-01&to=2026-01-01`);
+    expect(exportReversed.statusCode).toBe(400);
   });
 
   it('enforces permissions', async () => {

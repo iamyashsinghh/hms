@@ -376,3 +376,58 @@ describe('integrations: hospital isolation', () => {
     expect((await call(null, 'POST', `/integrations/callbacks/abdm/${otherTenantId}/profile-share`, body, { 'x-abdm-signature': sig })).statusCode).toBe(404);
   });
 });
+
+describe('integrations: input validation', () => {
+  it('rejects past or far-off API key expiry, empty scopes and bad webhook URLs', async () => {
+    const past = await call(admin, 'POST', '/integrations/api-keys', { name: `Old key ${run}`, scopes: ['patients.read'], expiresAt: '2020-01-01T00:00:00+05:30' });
+    expect(past.statusCode).toBe(400);
+    expect(past.json().error.message).toContain('Expiry date must be in the future');
+    const far = await call(admin, 'POST', '/integrations/api-keys', { name: `Far key ${run}`, scopes: ['patients.read'], expiresAt: new Date(Date.now() + 10 * 366 * 86_400_000).toISOString() });
+    expect(far.statusCode).toBe(400);
+    expect(far.json().error.message).toContain('at most 5 years');
+    const noScopes = await call(admin, 'POST', '/integrations/api-keys', { name: `No scopes ${run}`, scopes: [] });
+    expect(noScopes.statusCode).toBe(400);
+    expect(noScopes.json().error.message).toContain('Pick at least one permission');
+    const ok = await call(admin, 'POST', '/integrations/api-keys', { name: `Expiring ${run}`, scopes: ['patients.read'], expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString() });
+    expect(ok.statusCode).toBe(201);
+    await call(admin, 'POST', `/integrations/api-keys/${ok.json().id}/revoke`);
+
+    const notUrl = await call(admin, 'POST', '/integrations/webhooks', { url: 'example.com/hook', events: ['core.patient.registered'] });
+    expect(notUrl.statusCode).toBe(400);
+    expect(notUrl.json().error.message).toContain('Enter a full URL');
+    const plainHttp = await call(admin, 'POST', '/integrations/webhooks', { url: 'http://example.com/hook', events: ['core.patient.registered'] });
+    expect(plainHttp.statusCode).toBe(400);
+    expect(plainHttp.json().error.message).toContain('Webhook URLs must use https');
+    const noEvents = await call(admin, 'POST', '/integrations/webhooks', { url: 'https://example.com/hook', events: [] });
+    expect(noEvents.statusCode).toBe(400);
+    expect(noEvents.json().error.message).toContain('Pick at least one event');
+  });
+
+  it('checks settings, consent dates, payment amounts and simulated profiles', async () => {
+    const badKey = await call(admin, 'PUT', '/integrations/settings', { abdmMode: 'mock', paymentProvider: 'razorpay', paymentKeyId: 'secret_abc' });
+    expect(badKey.statusCode).toBe(400);
+    expect(badKey.json().error.message).toContain('rzp_test_');
+    const badHfr = await call(admin, 'PUT', '/integrations/settings', { abdmMode: 'mock', paymentProvider: 'mock', hfrId: 'IN 0000/DEMO' });
+    expect(badHfr.statusCode).toBe(400);
+    expect(badHfr.json().error.message).toContain('HFR id can only have');
+
+    const p = await newPatient();
+    const futureFrom = await call(doctor, 'POST', '/integrations/abdm/consents', { patientId: p.id, hiTypes: ['Prescription'], dateFrom: '2999-01-01', dateTo: '2999-12-31' });
+    expect(futureFrom.statusCode).toBe(400);
+    expect(futureFrom.json().error.message).toContain('Start date cannot be in the future');
+    const reversed = await call(doctor, 'POST', '/integrations/abdm/consents', { patientId: p.id, hiTypes: ['Prescription'], dateFrom: '2025-06-01', dateTo: '2025-01-01' });
+    expect(reversed.statusCode).toBe(400);
+    expect(reversed.json().error.message).toContain('End date must be on or after the start date');
+
+    const zero = await call(billingClerk, 'POST', '/integrations/payments', { invoiceId: p.id, amount: 0 });
+    expect(zero.statusCode).toBe(400);
+    expect(zero.json().error.message).toContain('Must be more than 0');
+    const paise = await call(billingClerk, 'POST', '/integrations/payments', { invoiceId: p.id, amount: 10.555 });
+    expect(paise.statusCode).toBe(400);
+    expect(paise.json().error.message).toContain('At most 2 decimal places');
+
+    const futureYear = await call(reception, 'POST', '/integrations/abdm/scan-share/simulate', { name: 'Future Baby', gender: 'female', yearOfBirth: new Date().getFullYear() + 1 });
+    expect(futureYear.statusCode).toBe(400);
+    expect(futureYear.json().error.message).toContain('Year of birth cannot be in the future');
+  });
+});

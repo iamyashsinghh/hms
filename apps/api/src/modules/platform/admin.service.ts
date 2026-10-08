@@ -357,6 +357,13 @@ export class AdminService {
   }
 
   async updateAnnouncement(admin: PlatformPrincipal, id: string, a: UpdateAnnouncement): Promise<Announcement> {
+    if (a.startsAt !== undefined || a.endsAt !== undefined) {
+      const [cur] = await this.db.global.select().from(platformAnnouncements).where(eq(platformAnnouncements.id, id)).limit(1);
+      if (!cur) throw notFound('Announcement');
+      const start = a.startsAt !== undefined ? a.startsAt : cur.startsAt;
+      const end = a.endsAt !== undefined ? a.endsAt : cur.endsAt;
+      if (start && end && new Date(end).getTime() <= new Date(start).getTime()) throw badRequest('end_before_start', 'End time must be after the start time');
+    }
     const [row] = await this.db.global.update(platformAnnouncements).set(announcementColumns(a)).where(eq(platformAnnouncements.id, id)).returning();
     if (!row) throw notFound('Announcement');
     await this.audit(admin, 'announcement.updated', null, { id });

@@ -3,7 +3,7 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, Loader2 } from 'lucide-react';
-import type { portal } from '@hms/shared';
+import { portal } from '@hms/shared';
 import { errorMessage } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -31,6 +31,13 @@ export function BookTab({
   const [date, setDate] = React.useState(istDate(1));
   const [slot, setSlot] = React.useState<string | null>(null);
   const [reason, setReason] = React.useState('');
+  const dateError = !date
+    ? 'Pick a date'
+    : date < istDate(0)
+      ? 'Pick today or a later date'
+      : date > istDate(portal.PORTAL_MAX_BOOKING_DAYS)
+        ? `You can book up to ${portal.PORTAL_MAX_BOOKING_DAYS} days ahead`
+        : null;
 
   const doctors = useQuery({
     queryKey: ['portal', 'doctors'],
@@ -39,7 +46,7 @@ export function BookTab({
   const slots = useQuery({
     queryKey: ['portal', 'slots', doctorId, date],
     queryFn: () => patientApi.portal.slots(doctorId, date),
-    enabled: !!doctorId && !!date,
+    enabled: !!doctorId && !dateError,
   });
   const book = useMutation({
     mutationFn: () =>
@@ -128,13 +135,15 @@ export function BookTab({
               id="bk-date"
               type="date"
               min={istDate(0)}
-              max={istDate(60)}
+              max={istDate(portal.PORTAL_MAX_BOOKING_DAYS)}
               value={date}
+              aria-invalid={!!dateError}
               onChange={(e) => {
                 setDate(e.target.value);
                 setSlot(null);
               }}
             />
+            {dateError && <p className="text-xs text-destructive">{dateError}</p>}
           </div>
         </div>
         {doctor?.consultationFee != null && (
@@ -146,7 +155,9 @@ export function BookTab({
         {doctorId && (
           <div className="space-y-2">
             <Label>Time</Label>
-            {slots.isPending ? (
+            {dateError ? (
+              <p className="text-sm text-muted-foreground">Pick a valid date to see times.</p>
+            ) : slots.isPending ? (
               <p className="text-sm text-muted-foreground">Loading slots…</p>
             ) : slots.error ? (
               <p className="text-sm text-destructive">{errorMessage(slots.error)}</p>
@@ -183,7 +194,7 @@ export function BookTab({
         </div>
         {book.error && <p className="text-sm text-destructive">{errorMessage(book.error)}</p>}
         <Button
-          disabled={!patientId || !doctorId || !slot || book.isPending}
+          disabled={!patientId || !doctorId || !slot || !!dateError || book.isPending}
           onClick={() => book.mutate()}
         >
           {book.isPending && <Loader2 className="animate-spin" />} Book{' '}

@@ -6,6 +6,7 @@ import { Link2, Loader2, RotateCw, Unlink } from 'lucide-react';
 import { integrations as I, type Patient } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { usePermission } from '@/lib/auth';
+import { firstError, validate } from '@/lib/validate';
 import { formatDate, genderLabel } from '@/lib/format';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -53,6 +54,7 @@ function AbhaFlow() {
   const [request, setRequest] = React.useState<I.AbhaRequest | null>(null);
   const [linked, setLinked] = React.useState<I.AbhaLink | null>(null);
 
+  const [idError, setIdError] = React.useState<string | null>(null);
   const requestOtp = useMutation({
     mutationFn: () => api.integrations.abha.requestOtp({ purpose, method, identifier: identifier.trim(), patientId: patient?.id }),
     onSuccess: (r) => {
@@ -111,7 +113,10 @@ function AbhaFlow() {
             className="grid gap-4 sm:grid-cols-2"
             onSubmit={(e) => {
               e.preventDefault();
-              requestOtp.mutate();
+              const v = validate(I.abhaOtpRequestSchema, { purpose, method, identifier: identifier.trim(), patientId: patient?.id });
+              const message = patient ? firstError(v.errors) : 'Pick a patient';
+              setIdError(message);
+              if (!message) requestOtp.mutate();
             }}
           >
             <div className="sm:col-span-2">
@@ -144,11 +149,15 @@ function AbhaFlow() {
                 ))}
               </Select>
             </Field>
-            <Field id="identifier" label={IDENTIFIER_HINT[method].label}>
+            <Field id="identifier" label={IDENTIFIER_HINT[method].label} error={idError ?? undefined}>
               <Input
                 id="identifier"
                 value={identifier}
-                onChange={(e) => setIdentifier(e.target.value)}
+                maxLength={64}
+                onChange={(e) => {
+                  setIdentifier(e.target.value);
+                  setIdError(null);
+                }}
                 placeholder={IDENTIFIER_HINT[method].placeholder}
                 inputMode={method === 'abha' ? 'text' : 'numeric'}
                 autoComplete="off"
@@ -385,7 +394,7 @@ function LinksTable({ canManage }: { canManage: boolean }) {
               Unlink ABHA <span className="font-mono">{formatAbhaNumber(unlinking.abhaNumber)}</span> from <PatientName id={unlinking.patientId} />?
             </p>
             <Field id="reason" label="Reason *">
-              <Input id="reason" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Linked to the wrong patient" minLength={3} required autoFocus />
+              <Input id="reason" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Linked to the wrong patient" minLength={3} maxLength={300} required autoFocus />
             </Field>
             <ErrorBox error={unlink.error ? errorMessage(unlink.error) : null} />
             <div className="flex justify-end gap-2">

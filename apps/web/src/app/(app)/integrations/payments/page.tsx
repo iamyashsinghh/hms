@@ -3,9 +3,10 @@
 import * as React from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, ExternalLink, Loader2, Plus, Search, X, XCircle } from 'lucide-react';
-import type { billing as B, integrations as I } from '@hms/shared';
+import { integrations as I, type billing as B } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { Can, usePermission } from '@/lib/auth';
+import { firstError, validate } from '@/lib/validate';
 import { formatDate } from '@/lib/format';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -139,6 +140,7 @@ export default function PaymentsPage() {
   const [invoice, setInvoice] = React.useState<B.InvoiceSummary | string | null>(null);
   const [amount, setAmount] = React.useState('');
   const [created, setCreated] = React.useState<I.PaymentIntent | null>(null);
+  const [formError, setFormError] = React.useState<string | null>(null);
 
   const query: I.PaymentIntentQuery = { status, page, pageSize: PAGE_SIZE };
   const { data, isPending, error } = useQuery({
@@ -230,11 +232,19 @@ export default function PaymentsPage() {
               className="grid gap-4 sm:grid-cols-3"
               onSubmit={(e) => {
                 e.preventDefault();
-                create.mutate();
+                const invoiceId = typeof invoice === 'string' ? invoice.trim() : invoice?.id;
+                const v = validate(I.createPaymentIntentSchema, { invoiceId, amount: amount.trim() ? amount : undefined });
+                let message = invoiceId ? firstError(v.errors) : 'Pick a bill';
+                if (v.errors?.invoiceId) message = 'Pick a bill from the list';
+                if (!message && v.data?.amount !== undefined && invoice && typeof invoice !== 'string' && v.data.amount > invoice.balance) {
+                  message = `Only ₹${invoice.balance.toFixed(2)} is due on this bill`;
+                }
+                setFormError(message);
+                if (!message) create.mutate();
               }}
             >
               <div className="sm:col-span-3">
-                <ErrorBox error={create.error ? errorMessage(create.error) : null} />
+                <ErrorBox error={formError ?? (create.error ? errorMessage(create.error) : null)} />
               </div>
               <div className="sm:col-span-2">
                 <InvoicePicker value={invoice} onChange={setInvoice} />

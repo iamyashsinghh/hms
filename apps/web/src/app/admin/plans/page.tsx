@@ -2,17 +2,18 @@
 
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { platform } from '@hms/shared';
+import { platform } from '@hms/shared';
 import { PageHeader } from '@/components/page-header';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { firstError, validate } from '@/lib/validate';
 import { consoleApi } from '@/modules/platform/console/session';
 import { useIsSuperAdmin } from '@/modules/platform/console/shell';
 import { ErrorBox, MODULE_LABELS, StatusBadge, inr } from '@/modules/platform/ui';
 
-const num = (v: string) => (v === '' ? null : Number(v));
+const num = (v: string) => (v.trim() === '' ? null : Number(v));
 
 function PlanEditor({ plan }: { plan: platform.Plan }) {
   const qc = useQueryClient();
@@ -25,6 +26,7 @@ function PlanEditor({ plan }: { plan: platform.Plan }) {
     users: plan.limits.users?.toString() ?? '',
     beds: plan.limits.beds?.toString() ?? '',
   });
+  const [formError, setFormError] = React.useState<string | null>(null);
   const save = useMutation({
     mutationFn: (patch: platform.UpdatePlan) => consoleApi.updatePlan(plan.code, patch),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['console', 'plans'] }),
@@ -32,7 +34,7 @@ function PlanEditor({ plan }: { plan: platform.Plan }) {
   const field = (k: keyof typeof f, label: string) => (
     <div>
       <Label htmlFor={`${plan.code}-${k}`}>{label}</Label>
-      <Input id={`${plan.code}-${k}`} className="mt-1" disabled={!isSuper} value={f[k]} onChange={(e) => setF((x) => ({ ...x, [k]: e.target.value }))} />
+      <Input id={`${plan.code}-${k}`} className="mt-1" inputMode="decimal" disabled={!isSuper} value={f[k]} onChange={(e) => setF((x) => ({ ...x, [k]: e.target.value }))} />
     </div>
   );
   return (
@@ -57,20 +59,24 @@ function PlanEditor({ plan }: { plan: platform.Plan }) {
           {field('beds', 'Max beds')}
         </div>
         <p className="text-xs text-muted-foreground">{plan.modules.map((m) => MODULE_LABELS[m] ?? m).join(' · ')}</p>
-        <ErrorBox error={save.error} />
+        <ErrorBox error={formError ? new Error(formError) : save.error} />
         {isSuper && (
           <div className="flex gap-2">
             <Button
               size="sm"
               disabled={save.isPending}
-              onClick={() =>
-                save.mutate({
+              onClick={() => {
+                const patch: platform.UpdatePlan = {
                   priceMonthly: f.priceMonthly === '' ? null : f.priceMonthly,
                   priceYearly: f.priceYearly === '' ? null : f.priceYearly,
-                  trialDays: Number(f.trialDays),
+                  trialDays: f.trialDays.trim() === '' ? Number.NaN : Number(f.trialDays),
                   limits: { facilities: num(f.facilities), users: num(f.users), beds: num(f.beds) },
-                })
-              }
+                };
+                const v = validate(platform.updatePlanSchema, patch);
+                const message = firstError(v.errors);
+                setFormError(message);
+                if (!message) save.mutate(patch);
+              }}
             >
               Save
             </Button>

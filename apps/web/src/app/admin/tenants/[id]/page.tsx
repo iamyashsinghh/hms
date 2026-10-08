@@ -7,6 +7,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Loader2 } from 'lucide-react';
 import { platform } from '@hms/shared';
 import { formatDate } from '@/lib/format';
+import { firstError, validate } from '@/lib/validate';
 import { PageHeader } from '@/components/page-header';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -92,17 +93,25 @@ function SubscriptionCard({ t, isSuper, onDone }: { t: Detail; isSuper: boolean;
   const [cycle, setCycle] = React.useState<platform.BillingCycle>(s?.billingCycle ?? 'monthly');
   const [price, setPrice] = React.useState('');
   const [trialDays, setTrialDays] = React.useState('');
+  const [formError, setFormError] = React.useState<string | null>(null);
+  const subBody = (mode: 'plan' | 'trial' | 'activate'): platform.AdminSetSubscription => ({
+    planCode,
+    billingCycle: cycle,
+    price: price.trim() ? price.trim() : undefined,
+    trialEndsAt: mode === 'trial' && trialDays ? new Date(Date.now() + Number(trialDays) * 86_400_000).toISOString() : undefined,
+    activateNow: mode === 'activate',
+  });
   const save = useMutation({
-    mutationFn: (mode: 'plan' | 'trial' | 'activate') =>
-      consoleApi.setSubscription(t.id, {
-        planCode,
-        billingCycle: cycle,
-        price: price ? price : undefined,
-        trialEndsAt: mode === 'trial' && trialDays ? new Date(Date.now() + Number(trialDays) * 86_400_000).toISOString() : undefined,
-        activateNow: mode === 'activate',
-      }),
+    mutationFn: (mode: 'plan' | 'trial' | 'activate') => consoleApi.setSubscription(t.id, subBody(mode)),
     onSuccess: onDone,
   });
+  const submit = (mode: 'plan' | 'trial' | 'activate') => {
+    let message: string | null = null;
+    if (mode === 'trial' && !(Number.isInteger(Number(trialDays)) && Number(trialDays) >= 1 && Number(trialDays) <= 365)) message = 'Trial days must be a whole number from 1 to 365';
+    message ??= firstError(validate(platform.adminSetSubscriptionSchema, subBody(mode)).errors);
+    setFormError(message);
+    if (!message) save.mutate(mode);
+  };
   return (
     <Card>
       <CardHeader>
@@ -135,18 +144,18 @@ function SubscriptionCard({ t, isSuper, onDone }: { t: Detail; isSuper: boolean;
                 <option value="monthly">Monthly</option>
                 <option value="yearly">Yearly</option>
               </Select>
-              <Input placeholder="Custom price" inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} />
-              <Input placeholder="Trial days" type="number" value={trialDays} onChange={(e) => setTrialDays(e.target.value)} />
+              <Input placeholder="Custom price" aria-label="Custom price" inputMode="decimal" maxLength={15} value={price} onChange={(e) => setPrice(e.target.value)} />
+              <Input placeholder="Trial days" aria-label="Trial days" type="number" min={1} max={365} step={1} value={trialDays} onChange={(e) => setTrialDays(e.target.value)} />
             </div>
-            <ErrorBox error={save.error} />
+            <ErrorBox error={formError ? new Error(formError) : save.error} />
             <div className="flex flex-wrap gap-2">
-              <Button size="sm" variant="outline" disabled={save.isPending} onClick={() => save.mutate('plan')}>
+              <Button size="sm" variant="outline" disabled={save.isPending} onClick={() => submit('plan')}>
                 Change plan
               </Button>
-              <Button size="sm" variant="outline" disabled={save.isPending || !trialDays} onClick={() => save.mutate('trial')}>
+              <Button size="sm" variant="outline" disabled={save.isPending || !trialDays} onClick={() => submit('trial')}>
                 Set trial
               </Button>
-              <Button size="sm" disabled={save.isPending} onClick={() => save.mutate('activate')}>
+              <Button size="sm" disabled={save.isPending} onClick={() => submit('activate')}>
                 Activate (contract)
               </Button>
             </div>
@@ -173,21 +182,21 @@ function StatusCard({ t, onDone }: { t: Detail; onDone: (d: Detail) => void }) {
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
         <p className="text-muted-foreground">Suspending signs every user out. Billing payments do not lift a manual suspension.</p>
-        <Input placeholder="Reason (required)" value={reason} onChange={(e) => setReason(e.target.value)} />
+        <Input placeholder="Reason (required)" aria-label="Reason" maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
         <ErrorBox error={change.error} />
         <div className="flex flex-wrap gap-2">
           {t.status !== 'active' && (
-            <Button size="sm" disabled={reason.length < 3 || change.isPending} onClick={() => change.mutate('active')}>
+            <Button size="sm" disabled={reason.trim().length < 3 || change.isPending} onClick={() => change.mutate('active')}>
               Reactivate
             </Button>
           )}
           {t.status !== 'suspended' && (
-            <Button size="sm" variant="destructive" disabled={reason.length < 3 || change.isPending} onClick={() => change.mutate('suspended')}>
+            <Button size="sm" variant="destructive" disabled={reason.trim().length < 3 || change.isPending} onClick={() => change.mutate('suspended')}>
               Suspend
             </Button>
           )}
           {t.status !== 'closed' && (
-            <Button size="sm" variant="outline" disabled={reason.length < 3 || change.isPending} onClick={() => change.mutate('closed')}>
+            <Button size="sm" variant="outline" disabled={reason.trim().length < 3 || change.isPending} onClick={() => change.mutate('closed')}>
               Close account
             </Button>
           )}
@@ -202,6 +211,7 @@ function EntitlementsCard({ t, onDone }: { t: Detail; onDone: (d: Detail) => voi
   const [limits, setLimits] = React.useState<Record<string, string>>(() =>
     Object.fromEntries(platform.LIMIT_KEYS.map((k) => [k, t.limitOverrides[k] === undefined ? '' : String(t.limitOverrides[k] ?? -1)])),
   );
+  const [limitError, setLimitError] = React.useState<string | null>(null);
   const save = useMutation({ mutationFn: (body: platform.AdminSetEntitlements) => consoleApi.setEntitlements(t.id, body), onSuccess: onDone });
   const cycle = (key: string) => {
     const cur = overrides.get(key);
@@ -244,6 +254,8 @@ function EntitlementsCard({ t, onDone }: { t: Detail; onDone: (d: Detail) => voi
                 id={`lim-${k}`}
                 className="mt-2"
                 type="number"
+                min={-1}
+                step={1}
                 placeholder="Plan default"
                 value={limits[k]}
                 onChange={(e) => setLimits((l) => ({ ...l, [k]: e.target.value }))}
@@ -254,18 +266,23 @@ function EntitlementsCard({ t, onDone }: { t: Detail; onDone: (d: Detail) => voi
             <Button
               variant="outline"
               disabled={save.isPending}
-              onClick={() =>
-                save.mutate({
-                  limits: Object.fromEntries(platform.LIMIT_KEYS.map((k) => [k, limits[k] === '' ? null : Number(limits[k])])) as platform.AdminSetEntitlements['limits'],
-                })
-              }
+              onClick={() => {
+                const body: platform.AdminSetEntitlements = {
+                  limits: Object.fromEntries(platform.LIMIT_KEYS.map((k) => [k, (limits[k] ?? '').trim() === '' ? null : Number(limits[k])])) as platform.AdminSetEntitlements['limits'],
+                };
+                const v = validate(platform.adminSetEntitlementsSchema, body);
+                const key = v.errors ? Object.keys(v.errors)[0] : undefined;
+                const message = key ? `${key.split('.').pop()}: ${v.errors![key]}` : null;
+                setLimitError(message);
+                if (!message) save.mutate(body);
+              }}
             >
               Save limits
             </Button>
           </div>
         </div>
         <p className="text-xs text-muted-foreground">Use -1 for unlimited; leave blank for the plan limit.</p>
-        <ErrorBox error={save.error} />
+        <ErrorBox error={limitError ? new Error(limitError) : save.error} />
       </CardContent>
     </Card>
   );

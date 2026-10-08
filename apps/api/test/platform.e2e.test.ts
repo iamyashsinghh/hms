@@ -360,3 +360,57 @@ describe('announcements, help and onboarding', () => {
     expect(untick.json().done).toBe(0);
   });
 });
+
+describe('platform: input validation', () => {
+  it('validates new hospitals: code, name, email, mobile and trial days', async () => {
+    const { acceptTerms: _ignored, ...base } = signupBody(uniq());
+    const create = (extra: Record<string, unknown>) => admin('POST', '/tenants', { ...base, ...extra });
+    const trailing = await create({ code: 'city-hosp-' });
+    expect(trailing.statusCode).toBe(400);
+    expect(trailing.json().error.message).toContain('cannot end with -');
+    const badEmail = await create({ email: 'admin@' });
+    expect(badEmail.statusCode).toBe(400);
+    expect(badEmail.json().error.message).toContain('Enter a valid email address');
+    const badMobile = await create({ mobile: '12345' });
+    expect(badMobile.statusCode).toBe(400);
+    expect(badMobile.json().error.message).toContain('Enter a 10-digit Indian mobile number');
+    const badName = await create({ adminName: 'Asha 123' });
+    expect(badName.statusCode).toBe(400);
+    expect(badName.json().error.message).toContain('can only have letters');
+    const badTrial = await create({ trialDays: -3 });
+    expect(badTrial.statusCode).toBe(400);
+    expect(badTrial.json().error.message).toContain('Trial days cannot be negative');
+  });
+
+  it('validates announcement dates, plan prices and trial end', async () => {
+    const pastEnd = await admin('POST', '/announcements', { title: 'Old news', body: 'x', endsAt: '2020-01-01T00:00:00Z' });
+    expect(pastEnd.statusCode).toBe(400);
+    expect(pastEnd.json().error.message).toContain('End time is already in the past');
+    const start = new Date(Date.now() + 5 * 86_400_000).toISOString();
+    const before = new Date(Date.now() + 2 * 86_400_000).toISOString();
+    const reversed = await admin('POST', '/announcements', { title: 'Reversed', body: 'x', startsAt: start, endsAt: before });
+    expect(reversed.statusCode).toBe(400);
+    expect(reversed.json().error.message).toContain('End time must be after the start time');
+
+    const ok = await admin('POST', '/announcements', { title: 'Validation window', body: 'x', startsAt: before, endsAt: start, isPublished: false });
+    expect(ok.statusCode).toBe(201);
+    const moveEnd = await admin('PATCH', `/announcements/${ok.json().id}`, { endsAt: new Date(Date.now() + 86_400_000).toISOString() });
+    expect(moveEnd.statusCode).toBe(400);
+    expect(moveEnd.json().error.message).toContain('End time must be after the start time');
+
+    const negativePrice = await admin('PATCH', '/plans/starter', { priceMonthly: '-10' });
+    expect(negativePrice.statusCode).toBe(400);
+    expect(negativePrice.json().error.message).toContain('Price cannot be negative');
+
+    const tenantId = (await signup()).tenantId;
+    const pastTrial = await admin('PUT', `/tenants/${tenantId}/subscription`, { planCode: 'starter', trialEndsAt: '2020-01-01T00:00:00Z' });
+    expect(pastTrial.statusCode).toBe(400);
+    expect(pastTrial.json().error.message).toContain('Trial end must be in the future');
+  });
+
+  it('validates support tickets', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/v1/platform/tickets', headers: bearer(demoAdmin), payload: { subject: 'Hi', body: 'Help' } });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toContain('The subject needs at least 5 characters');
+  });
+});

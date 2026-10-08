@@ -351,3 +351,54 @@ describe('portal: records from other modules and online payment', () => {
     expect(cityFeedback.json().items.every((f: { patientName: string }) => f.patientName !== '')).toBe(true);
   });
 });
+
+describe('portal: input validation', () => {
+  it('checks family member details, booking dates and feedback ratings', async () => {
+    const s = await patientLogin(randomMobile());
+    const h = bearer(s.accessToken);
+    const add = (payload: Record<string, unknown>) => app.inject({ method: 'POST', url: '/api/v1/portal/family', headers: h, payload });
+
+    const futureDob = await add({ firstName: 'Baby', gender: 'female', dateOfBirth: '2999-01-01', relation: 'child' });
+    expect(futureDob.statusCode).toBe(400);
+    expect(futureDob.json().error.message).toContain('Date of birth cannot be in the future');
+    const digits = await add({ firstName: 'R2D2', gender: 'male', ageYears: 4, relation: 'child' });
+    expect(digits.statusCode).toBe(400);
+    expect(digits.json().error.message).toContain('First name can only have letters');
+    const noAge = await add({ firstName: 'Nobody', gender: 'male', relation: 'child' });
+    expect(noAge.statusCode).toBe(400);
+    expect(noAge.json().error.message).toContain('Enter date of birth or age');
+    const old = await add({ firstName: 'Old', gender: 'male', ageYears: 151, relation: 'parent' });
+    expect(old.statusCode).toBe(400);
+    expect(old.json().error.message).toContain('Age cannot be more than 150');
+    const me = await add({ firstName: 'Valid', lastName: "D'Souza", gender: 'female', dateOfBirth: '1990-05-01', relation: 'self' });
+    expect(me.statusCode).toBe(201);
+
+    const yesterday = new Date(Date.now() - 86_400_000 * 2).toISOString().slice(0, 10);
+    const pastSlots = await app.inject({ method: 'GET', url: `/api/v1/portal/doctors/${HOSPITAL.doctorId}/slots?date=${yesterday}`, headers: h });
+    expect(pastSlots.statusCode).toBe(400);
+    expect(pastSlots.json().error.message).toContain('Pick today or a later date');
+    const farDay = new Date(Date.now() + 90 * 86_400_000).toISOString().slice(0, 10);
+    const farSlots = await app.inject({ method: 'GET', url: `/api/v1/portal/doctors/${HOSPITAL.doctorId}/slots?date=${farDay}`, headers: h });
+    expect(farSlots.statusCode).toBe(400);
+    expect(farSlots.json().error.message).toContain('days ahead');
+
+    const pastBooking = await app.inject({
+      method: 'POST',
+      url: '/api/v1/portal/appointments',
+      headers: h,
+      payload: { patientId: me.json().id, doctorId: HOSPITAL.doctorId, slotStart: '2020-01-01T10:00:00+05:30' },
+    });
+    expect(pastBooking.statusCode).toBe(400);
+    expect(pastBooking.json().error.message).toContain('This time has already passed');
+
+    const badRating = await app.inject({ method: 'POST', url: '/api/v1/portal/feedback', headers: h, payload: { patientId: me.json().id, rating: 6 } });
+    expect(badRating.statusCode).toBe(400);
+    expect(badRating.json().error.message).toContain('Pick a rating from 1 to 5 stars');
+  });
+
+  it('rejects a bad mobile at sign-in', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/v1/portal/auth/otp/request', payload: { tenantCode: HOSPITAL.code, mobile: '12345' } });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toContain('Enter a 10-digit Indian mobile number');
+  });
+});
