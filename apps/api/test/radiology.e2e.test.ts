@@ -2,6 +2,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createPool, DEMO_PASSWORD, provisionTenant, sql } from '@hms/db';
+import type { billing, radiology } from '@hms/shared';
 import { DbService } from '../src/common/db/db.service';
 import { EventBus } from '../src/common/events/event-bus';
 import { bearer, bootApp, login } from './helpers';
@@ -327,6 +328,155 @@ describe('radiology orders from EMR', () => {
     // Picking the test keeps the doctor's priority (it used to fall back to routine).
     expect(unmatched.priority).not.toBe('routine');
     expect(res.json()).toMatchObject({ testId, studyName: testName, priority: unmatched.priority });
+  });
+});
+
+describe('radiology charges on the patient account', () => {
+  const s = Math.random().toString(36).slice(2, 6).toUpperCase();
+  const svcCode = `RSV${suffix}${s}`.slice(0, 40);
+  let svcTestId: string;
+  let ownTestId: string;
+  let pid: string;
+
+  async function charges(orderId: string) {
+    const res = await inject('GET', `/billing/charges?patientId=${pid}&sourceModule=radiology&pageSize=500`, admin);
+    expect(res.statusCode, res.body).toBe(200);
+    return (res.json().items as billing.Charge[]).filter((c) => c.sourceRef === orderId);
+  }
+  const setRules = (rules: Partial<billing.BillingRules>) => inject('PUT', '/billing/rules', admin, { rules });
+  const resetRules = () => inject('PUT', '/billing/rules', admin, { replace: true, rules: {} });
+  const order = async (test: string, extra: object = {}) => {
+    const res = await inject('POST', '/radiology/orders', reception, { patientId: pid, testId: test, ...extra });
+    expect(res.statusCode, res.body).toBe(201);
+    return res.json() as radiology.RadiologyOrder;
+  };
+
+  /** Runs the billing.charges.billed event of an invoice through the bus, as the worker would. */
+  async function deliverBilled(invoiceId: string) {
+    const rows = await app.get(DbService).asTenant({ tenantId }, async (tx) => {
+      const r = await tx.execute<{ payload: Record<string, unknown> }>(
+        sql`select payload from audit.outbox where topic = 'billing.charges.billed' and payload->>'invoiceId' = ${invoiceId}`,
+      );
+      return r.rows;
+    });
+    expect(rows).toHaveLength(1);
+    const event = { id: randomUUID(), tenantId, topic: 'billing.charges.billed', payload: rows[0]!.payload, createdAt: new Date().toISOString() };
+    await app.get(EventBus).dispatch(event);
+    await app.get(EventBus).dispatch({ ...event, id: randomUUID() });
+  }
+
+  beforeAll(async () => {
+    await resetRules();
+    pid = await newPatient();
+    const svc = await inject('POST', '/billing/services', admin, { code: svcCode, name: `CT head ${s}`, category: 'radiology', basePrice: 2500, taxRate: 0 });
+    expect(svc.statusCode, svc.body).toBe(201);
+    let res = await inject('POST', '/radiology/tests', admin, { code: `CTH-${suffix}${s}`, name: `CT head ${s}`, modalityId, serviceCode: svcCode, durationMinutes: 15 });
+    expect(res.statusCode, res.body).toBe(201);
+    svcTestId = res.json().id;
+    res = await inject('POST', '/radiology/tests', admin, { code: `XRC-${suffix}${s}`, name: `X-ray chest ${s}`, modalityId, price: 400, taxRate: 5, durationMinutes: 10 });
+    expect(res.statusCode, res.body).toBe(201);
+    ownTestId = res.json().id;
+  });
+  afterAll(() => resetRules());
+
+  it('posts the charge when ordered (the default rule), priced from the service or the test', async () => {
+    const a = await order(svcTestId);
+    expect(a).toMatchObject({ paymentState: 'pending', payFirst: true, invoiceId: null });
+    expect(await charges(a.id)).toMatchObject([{ status: 'pending', sourceLine: svcTestId, serviceCode: svcCode, unitPrice: 2500, description: `CT head ${s}` }]);
+    const b = await order(ownTestId);
+    expect(await charges(b.id)).toMatchObject([{ status: 'pending', sourceLine: ownTestId, serviceCode: null, unitPrice: 400, taxRate: 5, amount: 420 }]);
+  });
+
+  it('moves the charge when the study is changed, and keeps the bill number once billed at the desk', async () => {
+    const o = await order(ownTestId);
+    let res = await inject('PATCH', `/radiology/orders/${o.id}`, reception, { testId: svcTestId });
+    expect(res.statusCode, res.body).toBe(200);
+    const posted = await charges(o.id);
+    expect(posted.map((c) => [c.sourceLine, c.status])).toEqual([
+      [ownTestId, 'cancelled'],
+      [svcTestId, 'pending'],
+    ]);
+
+    const bill = await inject('POST', '/billing/charges/bill', admin, { patientId: pid, chargeIds: [posted[1]!.id] });
+    expect(bill.statusCode, bill.body).toBe(201);
+    const inv = bill.json() as billing.Invoice;
+    // Billed but the event has not arrived yet: the study can no longer be changed.
+    res = await inject('PATCH', `/radiology/orders/${o.id}`, reception, { testId: ownTestId });
+    expect(res.statusCode).toBe(409);
+    await deliverBilled(inv.id);
+    const after = (await inject('GET', `/radiology/orders/${o.id}`, reception)).json().order as radiology.RadiologyOrder;
+    expect(after).toMatchObject({ invoiceId: inv.id, invoiceNo: inv.number, paymentState: 'unpaid' });
+    const list = (await inject('GET', `/radiology/orders?patientId=${pid}&pageSize=200`, reception)).json().items as radiology.RadiologyOrder[];
+    expect(list.find((x) => x.id === o.id)?.paymentState).toBe('unpaid');
+  });
+
+  it('charges when the scan is done when the hospital says so, and bills through the old endpoint', async () => {
+    expect((await setRules({ radiologyChargeAt: 'scan_done' })).statusCode).toBe(200);
+    try {
+      const o = await order(ownTestId);
+      expect(o.paymentState).toBe('none');
+      expect(await charges(o.id)).toHaveLength(0);
+      let res = await inject('POST', `/radiology/orders/${o.id}/complete`, radiologist, {});
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().paymentState).toBe('pending');
+      expect((await charges(o.id)).map((c) => c.status)).toEqual(['pending']);
+
+      // Bill now before the scan: the charge is posted and billed at once, and paid.
+      const p = await order(svcTestId);
+      res = await inject('POST', `/radiology/orders/${p.id}/bill`, billingClerk, { payNow: { mode: 'cash', amount: 2500 } });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json()).toMatchObject({ paymentState: 'paid' });
+      expect(res.json().invoiceNo).toMatch(/^INV/);
+      const [c] = await charges(p.id);
+      expect(c).toMatchObject({ status: 'billed', invoiceId: res.json().invoiceId });
+      // The scan later does not charge again.
+      await inject('POST', `/radiology/orders/${p.id}/complete`, radiologist, {});
+      expect(await charges(p.id)).toHaveLength(1);
+    } finally {
+      await resetRules();
+    }
+  });
+
+  it('cancelling reverses the charge (cancelled if pending, credit note suggested if billed)', async () => {
+    const o = await order(ownTestId);
+    let res = await inject('POST', `/radiology/orders/${o.id}/cancel`, reception, { reason: 'Patient refused' });
+    expect(res.statusCode, res.body).toBe(200);
+    expect((await charges(o.id)).map((c) => c.status)).toEqual(['cancelled']);
+
+    const billed = await order(ownTestId);
+    res = await inject('POST', `/radiology/orders/${billed.id}/bill`, billingClerk, {});
+    expect(res.statusCode, res.body).toBe(200);
+    res = await inject('POST', `/radiology/orders/${billed.id}/cancel`, reception, { reason: 'Wrong side ordered' });
+    expect(res.statusCode, res.body).toBe(200);
+    const [c] = await charges(billed.id);
+    expect(c).toMatchObject({ status: 'billed' });
+    expect(c!.reversalRequestedAt).toBeTruthy();
+  });
+
+  it('charges a consultation order on the OPD visit once a test is picked', async () => {
+    const visitId = randomUUID();
+    const enc = (await inject('POST', '/emr/encounters', doctor, { patientId: pid, visitId })).json();
+    await inject('PATCH', `/emr/encounters/${enc.id}`, doctor, { notes: { chiefComplaints: 'Cough' } });
+    await inject('PUT', `/emr/encounters/${enc.id}/orders`, doctor, {
+      orders: [
+        { kind: 'radiology', name: `X-ray chest ${s}` },
+        { kind: 'radiology', name: `Unlisted view ${s}` },
+      ],
+    });
+    expect((await inject('POST', `/emr/encounters/${enc.id}/sign`, doctor)).statusCode).toBe(200);
+    const event = { id: randomUUID(), tenantId, topic: 'emr.encounter.signed', payload: { encounterId: enc.id, patientId: pid, doctorId }, createdAt: new Date().toISOString() };
+    await app.get(EventBus).dispatch(event);
+    await app.get(EventBus).dispatch({ ...event, id: randomUUID() });
+    const items = ((await inject('GET', `/radiology/orders?patientId=${pid}&pageSize=200`, reception)).json().items as radiology.RadiologyOrder[]).filter(
+      (o) => o.encounterId === enc.id,
+    );
+    const matched = items.find((o) => o.testId === ownTestId)!;
+    const unmatched = items.find((o) => o.testId === null)!;
+    expect(await charges(matched.id)).toMatchObject([{ status: 'pending', visitId, account: 'opd', doctorId, unitPrice: 400 }]);
+    expect(await charges(unmatched.id)).toHaveLength(0);
+    const res = await inject('PATCH', `/radiology/orders/${unmatched.id}`, reception, { testId: svcTestId });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(await charges(unmatched.id)).toMatchObject([{ status: 'pending', visitId, unitPrice: 2500 }]);
   });
 });
 
