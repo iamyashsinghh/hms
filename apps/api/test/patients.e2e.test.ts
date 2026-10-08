@@ -38,6 +38,18 @@ describe('patients', () => {
     expect(res.json().error.code).toBe('validation_failed');
   });
 
+  it('rejects a date of birth in the future', async () => {
+    const nextYear = `${new Date().getUTCFullYear() + 1}-01-01`;
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/patients',
+      headers: bearer(reception),
+      payload: { firstName: 'Future', gender: 'female', dateOfBirth: nextYear },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('validation_failed');
+  });
+
   it('enforces permissions: a doctor cannot register patients', async () => {
     const res = await app.inject({ method: 'POST', url: '/api/v1/patients', headers: bearer(doctor), payload: { firstName: 'A', gender: 'male' } });
     expect(res.statusCode).toBe(403);

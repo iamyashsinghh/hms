@@ -1,8 +1,9 @@
 'use client';
 
 import * as React from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronLeft, ChevronRight, Loader2, Plus, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Loader2, Plus, UserPlus, X } from 'lucide-react';
 import { frontoffice as fo, type Patient } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { Can, usePermission } from '@/lib/auth';
@@ -13,23 +14,44 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { DoctorSelect, ErrorBox, PatientPicker, SlotPicker, StatusBadge, istToday, label, timeOf } from '@/modules/frontoffice/ui';
-
-const shiftDate = (d: string, days: number) => {
-  const x = new Date(`${d}T12:00:00Z`);
-  x.setUTCDate(x.getUTCDate() + days);
-  return x.toISOString().slice(0, 10);
-};
+import {
+  BookingDateInput,
+  DoctorSelect,
+  ErrorBox,
+  PatientPicker,
+  SlotPicker,
+  StatusBadge,
+  bookingDateError,
+  dateTimeOf,
+  istDateOf,
+  istToday,
+  isValidDate,
+  label,
+  longDate,
+  shiftDate,
+  timeOf,
+} from '@/modules/frontoffice/ui';
+import { QuickRegister, formFromSearch, type PatientForm } from '@/modules/frontoffice/patient-form';
 
 export default function AppointmentsPage() {
+  return (
+    <React.Suspense>
+      <Appointments />
+    </React.Suspense>
+  );
+}
+
+function Appointments() {
   const canRead = usePermission('frontoffice.appointment.read');
   const canUpdate = usePermission('frontoffice.appointment.update');
   const canCheckIn = usePermission('frontoffice.queue.manage');
   const queryClient = useQueryClient();
+  // ?patientId=… opens the booking form for that patient (the link shown right after registration).
+  const preselectId = useSearchParams().get('patientId');
   const [date, setDate] = React.useState(istToday());
   const [doctorId, setDoctorId] = React.useState('');
   const [status, setStatus] = React.useState('');
-  const [booking, setBooking] = React.useState(false);
+  const [booking, setBooking] = React.useState(!!preselectId);
   const [rescheduling, setRescheduling] = React.useState<fo.Appointment | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
 
@@ -37,7 +59,7 @@ export default function AppointmentsPage() {
     queryKey: ['frontoffice', 'appointments', { date, doctorId, status }],
     queryFn: () =>
       api.frontoffice.appointments.list({ date, doctorId: doctorId || undefined, status: (status || undefined) as fo.AppointmentStatus, pageSize: 200 }),
-    enabled: canRead,
+    enabled: canRead && isValidDate(date),
     refetchInterval: 30_000,
   });
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['frontoffice'] });
@@ -81,12 +103,15 @@ export default function AppointmentsPage() {
 
       {booking && (
         <BookCard
-          defaultDate={date}
+          defaultDate={isValidDate(date) && date >= istToday() ? date : istToday()}
           defaultDoctorId={doctorId}
+          defaultPatientId={preselectId}
           onClose={() => setBooking(false)}
           onBooked={(a) => {
             setBooking(false);
-            setNotice(`Booked ${a.appointmentNo} for ${a.patient?.name} at ${timeOf(a.slotStart)}`);
+            // Jump to the day it landed on so the new appointment is visible in the list.
+            setDate(istDateOf(a.slotStart));
+            setNotice(`Booked ${a.appointmentNo} for ${a.patient?.name} on ${dateTimeOf(a.slotStart)}`);
             refresh();
           }}
         />
@@ -97,7 +122,8 @@ export default function AppointmentsPage() {
           onClose={() => setRescheduling(null)}
           onDone={(a) => {
             setRescheduling(null);
-            setNotice(`Moved ${a.appointmentNo} to ${new Date(a.slotStart).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`);
+            setDate(istDateOf(a.slotStart));
+            setNotice(`Moved ${a.appointmentNo} to ${dateTimeOf(a.slotStart)}`);
             refresh();
           }}
         />
@@ -122,14 +148,22 @@ export default function AppointmentsPage() {
           <div>
             <Label htmlFor="a-date">Date</Label>
             <div className="mt-1 flex items-center gap-1">
-              <Button variant="outline" size="icon" aria-label="Previous day" onClick={() => setDate((d) => shiftDate(d, -1))}>
+              <Button variant="outline" size="icon" aria-label="Previous day" onClick={() => setDate((d) => shiftDate(isValidDate(d) ? d : istToday(), -1))}>
                 <ChevronLeft />
               </Button>
               <Input id="a-date" type="date" className="w-40" value={date} onChange={(e) => setDate(e.target.value)} />
-              <Button variant="outline" size="icon" aria-label="Next day" onClick={() => setDate((d) => shiftDate(d, 1))}>
+              <Button variant="outline" size="icon" aria-label="Next day" onClick={() => setDate((d) => shiftDate(isValidDate(d) ? d : istToday(), 1))}>
                 <ChevronRight />
               </Button>
+              {date !== istToday() && (
+                <Button variant="ghost" size="sm" onClick={() => setDate(istToday())}>
+                  Today
+                </Button>
+              )}
             </div>
+            <p className={`mt-1 text-xs ${isValidDate(date) ? 'text-muted-foreground' : 'text-destructive'}`}>
+              {isValidDate(date) ? longDate(date) : 'Enter a valid date'}
+            </p>
           </div>
           <div className="w-56">
             <Label htmlFor="a-doctor">Doctor</Label>
@@ -151,7 +185,9 @@ export default function AppointmentsPage() {
           {data && <span className="ml-auto text-sm text-muted-foreground">{data.total} appointments</span>}
         </div>
 
-        {error ? (
+        {!isValidDate(date) ? (
+          <p className="p-6 text-sm text-muted-foreground">Pick a date to see its appointments.</p>
+        ) : error ? (
           <p className="p-6 text-sm text-destructive">{errorMessage(error)}</p>
         ) : (
           <Table>
@@ -175,7 +211,7 @@ export default function AppointmentsPage() {
               ) : data.items.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
-                    No appointments on this day.
+                    No appointments on {longDate(date)}.
                   </TableCell>
                 </TableRow>
               ) : (
@@ -238,20 +274,34 @@ export default function AppointmentsPage() {
 function BookCard({
   defaultDate,
   defaultDoctorId,
+  defaultPatientId,
   onClose,
   onBooked,
 }: {
   defaultDate: string;
   defaultDoctorId: string;
+  defaultPatientId?: string | null;
   onClose: () => void;
   onBooked: (a: fo.Appointment) => void;
 }) {
-  const [patient, setPatient] = React.useState<Patient | null>(null);
+  const canRegister = usePermission('core.patient.create');
+  const [picked, setPicked] = React.useState<Patient | null | undefined>(undefined);
+  const [registering, setRegistering] = React.useState<PatientForm | null>(null);
   const [doctorId, setDoctorId] = React.useState(defaultDoctorId);
   const [date, setDate] = React.useState(defaultDate);
   const [slotStart, setSlotStart] = React.useState('');
   const [type, setType] = React.useState<fo.AppointmentType>('new');
   const [reason, setReason] = React.useState('');
+  const [tried, setTried] = React.useState(false);
+
+  // A patient handed over in the URL is used until the user picks or clears one.
+  const preselected = useQuery({
+    queryKey: ['patients', defaultPatientId],
+    queryFn: () => api.patients.get(defaultPatientId!),
+    enabled: !!defaultPatientId,
+  });
+  const patient = picked === undefined ? (preselected.data ?? null) : picked;
+  const setPatient = (p: Patient | null) => setPicked(p);
 
   const book = useMutation({
     mutationFn: () =>
@@ -260,10 +310,21 @@ function BookCard({
         doctorId,
         slotStart,
         type,
-        reason: reason || undefined,
+        reason: reason.trim() || undefined,
       }),
     onSuccess: onBooked,
   });
+
+  const problems = [
+    !patient && (registering ? 'Finish registering the patient' : 'Choose or register a patient'),
+    !doctorId && 'Choose a doctor',
+    bookingDateError(date),
+    !bookingDateError(date) && doctorId && !slotStart && 'Choose a time',
+  ].filter((p): p is string => !!p);
+  const submit = () => {
+    setTried(true);
+    if (!problems.length) book.mutate();
+  };
 
   return (
     <Card className="mb-6">
@@ -275,9 +336,31 @@ function BookCard({
       </CardHeader>
       <CardContent className="grid gap-4 md:grid-cols-2">
         <div className="md:col-span-2">
-          <Label>Patient</Label>
+          <div className="flex items-center justify-between">
+            <Label>Patient</Label>
+            {canRegister && !patient && !registering && (
+              <Button type="button" variant="link" size="sm" className="h-auto p-0" onClick={() => setRegistering(formFromSearch(''))}>
+                <UserPlus /> New patient
+              </Button>
+            )}
+          </div>
           <div className="mt-1">
-            <PatientPicker value={patient} onChange={setPatient} />
+            {registering && !patient ? (
+              <QuickRegister
+                initial={registering}
+                onCancel={() => setRegistering(null)}
+                onCreated={(p) => {
+                  setPatient(p);
+                  setRegistering(null);
+                }}
+              />
+            ) : (
+              <PatientPicker
+                value={patient}
+                onChange={setPatient}
+                onCreateNew={canRegister ? (typed) => setRegistering(formFromSearch(typed)) : undefined}
+              />
+            )}
           </div>
         </div>
         <div>
@@ -305,21 +388,18 @@ function BookCard({
         </div>
         <div>
           <Label htmlFor="b-date">Date</Label>
-          <Input
+          <BookingDateInput
             id="b-date"
-            type="date"
-            className="mt-1"
             value={date}
-            min={istToday()}
-            onChange={(e) => {
-              setDate(e.target.value);
+            onChange={(d) => {
+              setDate(d);
               setSlotStart('');
             }}
           />
         </div>
         <div>
           <Label htmlFor="b-reason">Reason</Label>
-          <Input id="b-reason" className="mt-1" placeholder="Optional" value={reason} onChange={(e) => setReason(e.target.value)} />
+          <Input id="b-reason" className="mt-1" placeholder="Optional" maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
         </div>
         <div className="md:col-span-2">
           <Label>Time</Label>
@@ -329,12 +409,22 @@ function BookCard({
         </div>
         <div className="md:col-span-2">
           <ErrorBox error={book.error} />
+          {tried && problems.length > 0 && (
+            <p role="alert" className="text-sm text-destructive">
+              {problems.join('. ')}.
+            </p>
+          )}
         </div>
-        <div className="flex justify-end gap-2 md:col-span-2">
+        <div className="flex items-center justify-end gap-2 md:col-span-2">
+          {patient && slotStart && (
+            <span className="mr-auto text-sm text-muted-foreground">
+              {patient.firstName} {patient.lastName} on <span className="font-medium text-foreground">{dateTimeOf(slotStart)}</span>
+            </span>
+          )}
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          <Button disabled={!patient || !doctorId || !slotStart || book.isPending} onClick={() => book.mutate()}>
+          <Button disabled={book.isPending || (tried && problems.length > 0)} onClick={submit}>
             {book.isPending && <Loader2 className="animate-spin" />}
             Book
           </Button>
@@ -345,9 +435,8 @@ function BookCard({
 }
 
 function RescheduleCard({ appointment, onClose, onDone }: { appointment: fo.Appointment; onClose: () => void; onDone: (a: fo.Appointment) => void }) {
-  const start = new Date(appointment.slotStart);
-  const ist = new Date(start.getTime() + 330 * 60_000).toISOString();
-  const [date, setDate] = React.useState(ist.slice(0, 10));
+  const current = istDateOf(appointment.slotStart);
+  const [date, setDate] = React.useState(current >= istToday() ? current : istToday());
   const [slotStart, setSlotStart] = React.useState('');
   const [doctorId, setDoctorId] = React.useState(appointment.doctorId);
   const [reason, setReason] = React.useState('');
@@ -356,7 +445,7 @@ function RescheduleCard({ appointment, onClose, onDone }: { appointment: fo.Appo
       api.frontoffice.appointments.reschedule(appointment.id, {
         slotStart,
         doctorId: doctorId !== appointment.doctorId ? doctorId : undefined,
-        reason: reason || undefined,
+        reason: reason.trim() || undefined,
       }),
     onSuccess: onDone,
   });
@@ -373,14 +462,11 @@ function RescheduleCard({ appointment, onClose, onDone }: { appointment: fo.Appo
       <CardContent className="grid gap-4 md:grid-cols-4">
         <div>
           <Label htmlFor="r-date">Date</Label>
-          <Input
+          <BookingDateInput
             id="r-date"
-            type="date"
-            className="mt-1"
-            min={istToday()}
             value={date}
-            onChange={(e) => {
-              setDate(e.target.value);
+            onChange={(d) => {
+              setDate(d);
               setSlotStart('');
             }}
           />
@@ -400,7 +486,7 @@ function RescheduleCard({ appointment, onClose, onDone }: { appointment: fo.Appo
         </div>
         <div>
           <Label htmlFor="r-reason">Reason</Label>
-          <Input id="r-reason" className="mt-1" value={reason} onChange={(e) => setReason(e.target.value)} />
+          <Input id="r-reason" className="mt-1" placeholder="Optional" maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
         </div>
         <div className="md:col-span-4">
           <Label>New time</Label>
@@ -411,11 +497,20 @@ function RescheduleCard({ appointment, onClose, onDone }: { appointment: fo.Appo
         <div className="md:col-span-4">
           <ErrorBox error={save.error} />
         </div>
-        <div className="flex justify-end gap-2 md:col-span-4">
+        <div className="flex items-center justify-end gap-2 md:col-span-4">
+          <span className="mr-auto text-sm text-muted-foreground">
+            Now {dateTimeOf(appointment.slotStart)}
+            {slotStart && (
+              <>
+                {' '}
+                → <span className="font-medium text-foreground">{dateTimeOf(slotStart)}</span>
+              </>
+            )}
+          </span>
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          <Button disabled={save.isPending || !doctorId || !slotStart} onClick={() => save.mutate()}>
+          <Button disabled={save.isPending || !doctorId || !slotStart || !!bookingDateError(date)} onClick={() => save.mutate()}>
             {save.isPending && <Loader2 className="animate-spin" />}
             Save
           </Button>

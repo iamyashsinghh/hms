@@ -103,11 +103,18 @@ export interface AccessTokenClaims {
 export const GENDERS = ['male', 'female', 'other', 'unknown'] as const;
 export const BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'] as const;
 
+/** Latest calendar date anywhere on Earth (UTC+14), so a birth "today" in any time zone is accepted. */
+const latestToday = () => new Date(Date.now() + 14 * 3_600_000).toISOString().slice(0, 10);
+
 export const createPatientSchema = z.object({
   firstName: z.string().trim().min(1).max(100),
   lastName: z.string().trim().max(100).optional(),
   gender: z.enum(GENDERS),
-  dateOfBirth: z.iso.date().optional(),
+  dateOfBirth: z.iso
+    .date()
+    .refine((d) => d <= latestToday(), 'Date of birth cannot be in the future')
+    .refine((d) => d >= '1870-01-01', 'Enter a real date of birth')
+    .optional(),
   /** Used when date of birth is unknown. */
   ageYears: z.number().int().min(0).max(150).optional(),
   mobile: z.string().regex(/^[6-9]\d{9}$/, 'Enter a 10-digit Indian mobile number').optional(),

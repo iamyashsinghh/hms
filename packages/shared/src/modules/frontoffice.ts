@@ -117,6 +117,9 @@ export type AvailableSlotsQuery = { date: string; facilityId?: string };
 
 // ---------- appointments ----------
 
+/** How far ahead the desk (and the API) accepts a booking or reschedule. */
+export const MAX_BOOKING_DAYS_AHEAD = 365;
+
 export const bookAppointmentSchema = z.object({
   patientId: z.uuid(),
   doctorId: z.uuid(),
