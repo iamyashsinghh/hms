@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import {
   and,
   asc,
+  billingCharges,
+  billingInvoices,
   count,
   desc,
   eq,
@@ -11,7 +13,6 @@ import {
   ipdBedStays,
   ipdBeds,
   ipdCensusRuns,
-  ipdCharges,
   ipdDevices,
   ipdDischargeSummaries,
   ipdIntakeOutput,
@@ -39,7 +40,8 @@ export type IoRow = typeof ipdIntakeOutput.$inferSelect;
 export type MedOrderRow = typeof ipdMedicationOrders.$inferSelect;
 export type MedAdminRow = typeof ipdMedicationAdministrations.$inferSelect;
 export type RoundRow = typeof ipdRounds.$inferSelect;
-export type ChargeRow = typeof ipdCharges.$inferSelect;
+/** A charge on the patient account (billing.charges), with the number of the bill it went on. */
+export type ChargeRow = typeof billingCharges.$inferSelect & { invoiceNumber: string | null };
 export type AdvanceRow = typeof ipdAdvances.$inferSelect;
 export type SummaryRow = typeof ipdDischargeSummaries.$inferSelect;
 export type DeviceRow = typeof ipdDevices.$inferSelect;
@@ -335,23 +337,18 @@ export class IpdRepository {
 
   // ---------- running bill ----------
 
-  charges(tx: Tx, admissionId: string): Promise<ChargeRow[]> {
-    return tx.select().from(ipdCharges).where(eq(ipdCharges.admissionId, admissionId)).orderBy(asc(ipdCharges.chargeDate), asc(ipdCharges.createdAt));
-  }
-
-  async chargeById(tx: Tx, id: string): Promise<ChargeRow | undefined> {
-    const [row] = await tx.select().from(ipdCharges).where(eq(ipdCharges.id, id)).limit(1);
-    return row;
-  }
-
-  async insertCharge(tx: Tx, values: typeof ipdCharges.$inferInsert): Promise<ChargeRow> {
-    const [row] = await tx.insert(ipdCharges).values(values).returning();
-    return row!;
-  }
-
-  async updateCharge(tx: Tx, id: string, values: Partial<typeof ipdCharges.$inferInsert>): Promise<ChargeRow> {
-    const [row] = await tx.update(ipdCharges).set(values).where(eq(ipdCharges.id, id)).returning();
-    return row!;
+  /**
+   * The admission's charges on the patient account (read-only; ChargesService posts and bills them).
+   * Ordered by date, then as posted.
+   */
+  async charges(tx: Tx, admissionId: string): Promise<ChargeRow[]> {
+    const rows = await tx
+      .select({ c: billingCharges, invoiceNumber: billingInvoices.number })
+      .from(billingCharges)
+      .leftJoin(billingInvoices, and(eq(billingInvoices.tenantId, billingCharges.tenantId), eq(billingInvoices.id, billingCharges.invoiceId)))
+      .where(eq(billingCharges.admissionId, admissionId))
+      .orderBy(asc(billingCharges.chargeDate), asc(billingCharges.createdAt));
+    return rows.map((r) => ({ ...r.c, invoiceNumber: r.invoiceNumber }));
   }
 
   advances(tx: Tx, admissionId: string): Promise<AdvanceRow[]> {

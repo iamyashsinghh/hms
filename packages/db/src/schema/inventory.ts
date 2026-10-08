@@ -315,6 +315,10 @@ export const inventoryIssues = pg.table(
     fromStoreId: uuid('from_store_id').notNull(),
     toStoreId: uuid('to_store_id').notNull(),
     notes: text('notes'),
+    /** Issued for a patient / IPD admission: consumables charged to the patient (billing rule). */
+    patientId: uuid('patient_id'),
+    admissionId: uuid('admission_id'),
+    patientName: text('patient_name'),
     createdBy: uuid('created_by'),
     createdAt: createdAt(),
   },

@@ -284,6 +284,26 @@ export class InsuranceService {
     });
   }
 
+  /**
+   * The approved pre-auth for an IPD stay (cross-module, inside the caller's transaction), for the
+   * "estimate vs actual" line on the running bill. A pre-auth whose admission reference is the admission
+   * id or IPD number wins; otherwise an approved pre-auth with no reference, raised from 30 days before
+   * the admission on. Null when there is none.
+   */
+  async approvedPreauthForAdmission(
+    tx: Tx,
+    a: { patientId: string; admissionId: string; ipdNo: string; admittedOn: string },
+  ): Promise<{ preauthId: string; number: string; payerName: string; approvedAmount: number } | null> {
+    const rows = await this.repo.approvedPreauths(tx, a.patientId);
+    const ref = (r: PreauthRow) => (r.admissionRef ?? '').trim().toUpperCase();
+    const match =
+      rows.find((r) => ref(r) === a.admissionId.toUpperCase() || ref(r) === a.ipdNo.toUpperCase()) ??
+      rows.find((r) => !ref(r) && iso(r.createdAt).slice(0, 10) >= addDays(a.admittedOn, -30));
+    if (!match || match.approvedAmount == null) return null;
+    const payer = await this.repo.payerById(tx, match.payerId);
+    return { preauthId: match.id, number: match.number, payerName: payer?.name ?? '', approvedAmount: amt(match.approvedAmount) };
+  }
+
   getPreauth(id: string): Promise<I.Preauth> {
     return this.db.tx((tx) => this.preauthTx(tx, id));
   }
