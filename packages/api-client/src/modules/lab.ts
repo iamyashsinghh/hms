@@ -1,4 +1,4 @@
-import type { Paginated, lab as L } from '@hms/shared';
+import type { ImportRequest, ImportResult, Paginated, lab as L } from '@hms/shared';
 import type { Http } from '../http';
 
 /** Laboratory endpoints. Owned by the "lab" workstream. Types come from @hms/shared (lab.*). */
@@ -7,6 +7,7 @@ export const labApi = (http: Http) => ({
     list: (q: L.CatalogueQuery = {}) => http.get<L.LabTest[]>('/lab/tests', q),
     get: (id: string) => http.get<L.LabTest>(`/lab/tests/${id}`),
     create: (body: L.TestInput) => http.post<L.LabTest>('/lab/tests', body),
+    import: (body: ImportRequest) => http.post<ImportResult>('/lab/tests/import', body),
     update: (id: string, body: L.UpdateTest) => http.patch<L.LabTest>(`/lab/tests/${id}`, body),
   },
   panels: {

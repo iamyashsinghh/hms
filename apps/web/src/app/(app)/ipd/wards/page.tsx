@@ -6,6 +6,7 @@ import { Loader2 } from 'lucide-react';
 import { ipd as I } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { usePermission } from '@/lib/auth';
+import { BulkImportButton } from '@/components/bulk-import';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
 import { Button } from '@/components/ui/button';
@@ -32,7 +33,13 @@ export default function WardsPage() {
 
   return (
     <>
-      <PageHeader title="Wards & beds" description="Set up wards with a default daily rate, then add beds. Room rent is charged per day from the bed's rate." />
+      <PageHeader
+        title="Wards & beds"
+        description="Set up wards with a default daily rate, then add beds. Room rent is charged per day from the bed's rate."
+        actions={
+          <BulkImportButton buttonLabel="Import beds from Excel" noun="beds" columns={I.BED_IMPORT_COLUMNS} run={(req) => api.ipd.beds.import(req)} invalidate={[['ipd']]} />
+        }
+      />
       <ErrorBox error={error ? errorMessage(error) : null} />
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">

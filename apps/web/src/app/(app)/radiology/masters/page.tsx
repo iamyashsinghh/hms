@@ -7,6 +7,7 @@ import { radiology } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { usePermission } from '@/lib/auth';
 import { NoAccess } from '@/components/no-access';
+import { BulkImportButton } from '@/components/bulk-import';
 import { PageHeader } from '@/components/page-header';
 import { Badge } from '@/components/ui/badge';
 import { Button, buttonVariants } from '@/components/ui/button';
@@ -355,9 +356,18 @@ export default function RadiologyMastersPage() {
         description="Machines, the tests you offer with prices and slot length, and report templates."
         actions={
           canManage && (
-            <Button variant="outline" disabled={starter.isPending} onClick={() => starter.mutate()}>
-              {starter.isPending ? <Loader2 className="animate-spin" /> : <Sparkles />} Load common tests
-            </Button>
+            <>
+              <BulkImportButton
+                buttonLabel="Import tests from Excel"
+                noun="radiology tests"
+                columns={radiology.TEST_IMPORT_COLUMNS}
+                run={(req) => api.radiology.importTests(req)}
+                invalidate={[['radiology']]}
+              />
+              <Button variant="outline" disabled={starter.isPending} onClick={() => starter.mutate()}>
+                {starter.isPending ? <Loader2 className="animate-spin" /> : <Sparkles />} Load common tests
+              </Button>
+            </>
           )
         }
       />

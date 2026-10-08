@@ -1,4 +1,4 @@
-import type { Paginated, ipd as I } from '@hms/shared';
+import type { ImportRequest, ImportResult, Paginated, ipd as I } from '@hms/shared';
 import type { Http } from '../http';
 
 /** IPD & Nursing endpoints. Owned by the "ipd" workstream. Types come from @hms/shared (ipd.*). */
@@ -14,6 +14,7 @@ export const ipdApi = (http: Http) => {
       list: (q: I.BedQuery = {}) => http.get<I.Bed[]>('/ipd/beds', q),
       create: (body: I.BedInput) => http.post<I.Bed>('/ipd/beds', body),
       createMany: (body: I.BulkBeds) => http.post<I.Bed[]>('/ipd/beds/bulk', body),
+      import: (body: ImportRequest) => http.post<ImportResult>('/ipd/beds/import', body),
       update: (id: string, body: I.UpdateBed) => http.patch<I.Bed>(`/ipd/beds/${id}`, body),
       setStatus: (id: string, body: I.BedStatusInput) => http.post<I.Bed>(`/ipd/beds/${id}/status`, body),
     },

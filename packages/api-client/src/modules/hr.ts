@@ -1,4 +1,4 @@
-import type { Paginated, hr as H } from '@hms/shared';
+import type { ImportRequest, ImportResult, Paginated, hr as H } from '@hms/shared';
 import type { Http } from '../http';
 
 /** HR & Roster endpoints. Owned by the "hr" workstream. Types come from @hms/shared (hr.*). */
@@ -9,6 +9,7 @@ export const hrApi = (http: Http) => ({
     list: (q: H.EmployeeQuery = {}) => http.get<Paginated<H.Employee>>('/hr/employees', q),
     get: (id: string) => http.get<H.Employee>(`/hr/employees/${id}`),
     create: (body: H.CreateEmployee) => http.post<H.Employee>('/hr/employees', body),
+    import: (body: ImportRequest) => http.post<ImportResult>('/hr/employees/import', body),
     update: (id: string, body: H.UpdateEmployee) => http.patch<H.Employee>(`/hr/employees/${id}`, body),
     leaveBalances: (id: string, year?: number) => http.get<H.LeaveBalance[]>(`/hr/employees/${id}/leave-balances`, { year }),
   },

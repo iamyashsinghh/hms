@@ -6,6 +6,7 @@ import { Loader2, Plus } from 'lucide-react';
 import { inventory } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { usePermission } from '@/lib/auth';
+import { BulkImportButton } from '@/components/bulk-import';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
 import { Badge } from '@/components/ui/badge';
@@ -105,9 +106,12 @@ export default function VendorsPage() {
         description="Suppliers you buy consumables, devices and drugs from."
         actions={
           canManage && (
-            <Button onClick={() => open('new')}>
-              <Plus /> New vendor
-            </Button>
+            <>
+              <BulkImportButton noun="vendors" columns={inventory.VENDOR_IMPORT_COLUMNS} run={(req) => api.inventory.vendors.import(req)} invalidate={[['inventory', 'vendors']]} />
+              <Button onClick={() => open('new')}>
+                <Plus /> New vendor
+              </Button>
+            </>
           )
         }
       />

@@ -1,4 +1,4 @@
-import type { inventory, Paginated } from '@hms/shared';
+import type { ImportRequest, ImportResult, inventory, Paginated } from '@hms/shared';
 import type { Http } from '../http';
 
 /** Inventory & Procurement endpoints. Owned by the "inventory" workstream. Types come from @hms/shared (inventory.*). */
@@ -7,6 +7,7 @@ export const inventoryApi = (http: Http) => ({
     list: (q: inventory.VendorQuery = {}) => http.get<Paginated<inventory.Vendor>>('/inventory/vendors', q),
     get: (id: string) => http.get<inventory.Vendor>(`/inventory/vendors/${id}`),
     create: (body: inventory.CreateVendor) => http.post<inventory.Vendor>('/inventory/vendors', body),
+    import: (body: ImportRequest) => http.post<ImportResult>('/inventory/vendors/import', body),
     update: (id: string, body: inventory.UpdateVendor) => http.patch<inventory.Vendor>(`/inventory/vendors/${id}`, body),
   },
   requisitions: {
