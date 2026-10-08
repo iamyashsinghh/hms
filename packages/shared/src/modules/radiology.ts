@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
-import { payNowSchema } from './billing';
+import { GST_RATES, payNowSchema } from './billing';
 import { isoDate, isoDateTime, money as moneyField, requiredText } from '../validation';
 
 /**
@@ -121,7 +121,10 @@ export const testInputSchema = z.object({
   serviceCode: z.string().trim().toUpperCase().max(40).optional().or(z.literal('').transform(() => undefined)),
   /** Used when no service code is set. */
   price: money.optional(),
-  taxRate: z.coerce.number({ error: 'GST: enter a number' }).min(0, 'GST cannot be negative').max(28, 'GST can be at most 28%').default(0),
+  taxRate: z.coerce
+    .number({ error: 'GST: enter a number' })
+    .refine((v) => (GST_RATES as readonly number[]).includes(v), `Use a GST slab: ${GST_RATES.join(', ')}`)
+    .default(0),
   durationMinutes: z.coerce
     .number({ error: 'Slot length: enter a number of minutes' })
     .int('Slot length must be whole minutes')

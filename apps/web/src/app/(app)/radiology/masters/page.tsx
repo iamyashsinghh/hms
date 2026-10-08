@@ -3,7 +3,7 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Pencil, Plus, Sparkles } from 'lucide-react';
-import { radiology } from '@hms/shared';
+import { GST_RATES, radiology } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { firstError, validate } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
@@ -181,7 +181,11 @@ function TestForm({ initial, onDone }: { initial?: radiology.RadiologyTest; onDo
         </Select>
       </Field>
       <Field label="Price (₹)"><Input inputMode="decimal" value={f.price} onChange={(e) => setF({ ...f, price: e.target.value })} /></Field>
-      <Field label="GST %"><Input inputMode="decimal" value={f.taxRate} onChange={(e) => setF({ ...f, taxRate: e.target.value })} /></Field>
+      <Field label="GST %">
+        <Select value={f.taxRate} onChange={(e) => setF({ ...f, taxRate: e.target.value })}>
+          {GST_RATES.map((r) => <option key={r} value={String(r)}>{r}%</option>)}
+        </Select>
+      </Field>
       <Field label="Or billing service code"><Input value={f.serviceCode} onChange={(e) => setF({ ...f, serviceCode: e.target.value })} /></Field>
       <Field label="Slot (minutes)"><Input inputMode="numeric" value={f.durationMinutes} onChange={(e) => setF({ ...f, durationMinutes: e.target.value })} /></Field>
       <Field label="Body part"><Input value={f.bodyPart} onChange={(e) => setF({ ...f, bodyPart: e.target.value })} /></Field>

@@ -334,8 +334,8 @@ describe('radiology validations', () => {
       expect(res.statusCode).toBe(400);
       expect(msg(res)).toContain('Slot length must be between 5 and 480 minutes');
     }
-    const gst = await inject('POST', '/radiology/tests', admin, { code: `V-GST-${suffix}`, name: 'GST check', modalityId, price: 100, taxRate: 30 });
-    expect(msg(gst)).toContain('GST can be at most 28%');
+    const gst = await inject('POST', '/radiology/tests', admin, { code: `V-GST-${suffix}`, name: 'GST check', modalityId, price: 100, taxRate: 7 });
+    expect(msg(gst)).toContain('Use a GST slab');
     const noMachine = await inject('POST', '/radiology/tests', admin, { code: `V-NM-${suffix}`, name: 'No machine', price: 100 });
     expect(msg(noMachine)).toContain('Pick the machine');
     const ae = await inject('POST', '/radiology/modalities', admin, { code: `VAE${suffix}`.slice(0, 20), name: 'AE check', kind: 'XR', aeTitle: 'BAD\\AE' });
