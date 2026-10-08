@@ -345,8 +345,19 @@ export class AccessService {
   updateRole(id: string, input: S.UpdateRole): Promise<S.Role> {
     return this.db.tx(async (tx) => {
       const role = await this.readRole(tx, id);
-      if (role.isSystem) throw forbidden('System roles cannot be edited. Create a custom role instead.');
-      if (input.name !== undefined) await tx.update(roles).set({ name: input.name }).where(eq(roles.id, id));
+      if (role.isSystem) {
+        // Hospital Admin keeps every permission so a hospital can never lock itself out.
+        if (role.key === 'hospital_admin') throw forbidden('Hospital Admin always has every permission and cannot be edited');
+        if (input.name !== undefined && input.name !== role.name) throw forbidden('System roles cannot be renamed. Create a custom role instead.');
+      } else if (input.name !== undefined) {
+        const [dup] = await tx
+          .select({ id: roles.id })
+          .from(roles)
+          .where(and(sql`lower(${roles.name}) = lower(${input.name})`, sql`${roles.id} <> ${id}`))
+          .limit(1);
+        if (dup) throw conflict('duplicate_role', `A role named ${input.name} already exists`);
+        await tx.update(roles).set({ name: input.name }).where(eq(roles.id, id));
+      }
       if (input.permissions !== undefined) {
         await this.assertPermissions(tx, input.permissions);
         await tx.delete(rolePermissions).where(eq(rolePermissions.roleId, id));

@@ -58,9 +58,15 @@ export class PatientsService {
   update(id: string, input: UpdatePatient): Promise<Patient> {
     const ctx = currentContext()!;
     return this.db.tx(async (tx) => {
+      const existing = await this.repo.findById(tx, id);
+      if (!existing) throw notFound('Patient');
+      if (!existing.isActive || existing.mergedIntoId) throw conflict('patient_merged', `${existing.uhid} was merged into another record and cannot be edited`);
+      if (input.abhaNumber) {
+        const dup = await this.repo.findActiveByAbha(tx, input.abhaNumber, id);
+        if (dup) throw conflict('duplicate_abha', `ABHA number ${input.abhaNumber} is already used by ${dup.uhid}`);
+      }
       const row = await this.repo.update(tx, id, { ...toColumns(input), updatedBy: ctx.userId });
-      if (!row) throw notFound('Patient');
-      return toDto(row);
+      return toDto(row!);
     });
   }
 
@@ -90,12 +96,12 @@ function toColumns(input: UpdatePatient): Partial<NewPatientRow> {
   if (input.firstName !== undefined) out.firstName = input.firstName;
   if (input.lastName !== undefined) out.lastName = input.lastName || null;
   if (input.gender !== undefined) out.gender = input.gender;
-  if (input.dateOfBirth !== undefined) out.dateOfBirth = input.dateOfBirth;
+  if (input.dateOfBirth) out.dateOfBirth = input.dateOfBirth;
   else if (input.ageYears !== undefined) {
     const d = new Date();
     d.setFullYear(d.getFullYear() - input.ageYears);
     out.dateOfBirth = d.toISOString().slice(0, 10);
-  }
+  } else if (input.dateOfBirth === null) out.dateOfBirth = null;
   if (input.mobile !== undefined) out.mobile = input.mobile;
   if (input.email !== undefined) out.email = input.email;
   if (input.bloodGroup !== undefined) out.bloodGroup = input.bloodGroup;

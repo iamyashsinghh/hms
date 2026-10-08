@@ -59,13 +59,14 @@ function RoleEditor({
     mutationFn: async () => {
       const permissions = [...selected];
       if (isNew) return api.setup.createRole(S.createRoleSchema.parse({ name, permissions }));
-      return api.setup.updateRole(id, S.updateRoleSchema.parse({ name, permissions }));
+      return api.setup.updateRole(id, S.updateRoleSchema.parse(role?.isSystem ? { permissions } : { name, permissions }));
     },
     onSuccess: done,
   });
   const remove = useMutation({ mutationFn: () => api.setup.deleteRole(id), onSuccess: done });
 
-  const readOnly = !canManage || role?.isSystem;
+  const locked = role?.key === 'hospital_admin';
+  const readOnly = !canManage || locked;
   const byModule = new Map<string, setup.PermissionCatalogEntry[]>();
   for (const p of catalog) byModule.set(p.module, [...(byModule.get(p.module) ?? []), p]);
   const toggle = (keys: string[], on: boolean) =>
@@ -84,7 +85,13 @@ function RoleEditor({
         <BackLink href="/setup/roles" label="All roles" />
         <PageHeader
           title={isNew ? 'New custom role' : role.name}
-          description={role?.isSystem ? 'System roles cannot be changed. Copy it into a custom role to adjust permissions.' : `${selected.size} permissions selected`}
+          description={
+            locked
+              ? 'Hospital Admin always has every permission and cannot be changed.'
+              : role?.isSystem
+                ? `${selected.size} permissions selected. This is a system role: you can change its permissions but not its name.`
+                : `${selected.size} permissions selected`
+          }
         />
       </div>
       <ErrorBox error={save.error ?? remove.error} />
@@ -93,7 +100,14 @@ function RoleEditor({
         <Card>
           <CardContent className="grid gap-4 pt-6 sm:grid-cols-2">
             <Field id="name" label="Role name *">
-              <Input id="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Front Desk Lead" />
+              <Input
+                id="name"
+                value={name}
+                disabled={role?.isSystem}
+                maxLength={80}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Front Desk Lead"
+              />
             </Field>
             {isNew && (
               <Field id="copy" label="Start from an existing role">
@@ -177,7 +191,7 @@ function RoleEditor({
             </Button>
           )}
           {!readOnly && (
-            <Button onClick={() => save.mutate()} disabled={save.isPending || name.trim().length < 2}>
+            <Button onClick={() => save.mutate()} disabled={save.isPending || name.trim().length < 2 || selected.size === 0}>
               {save.isPending && <Loader2 className="animate-spin" />}
               {isNew ? 'Create role' : 'Save role'}
             </Button>

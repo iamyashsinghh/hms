@@ -29,6 +29,16 @@ export class PatientsRepository {
     return row;
   }
 
+  /** Another active patient already holding this ABHA number, if any. */
+  async findActiveByAbha(tx: Tx, abhaNumber: string, exceptId?: string): Promise<PatientRow | undefined> {
+    const [row] = await tx
+      .select()
+      .from(patients)
+      .where(and(eq(patients.abhaNumber, abhaNumber), eq(patients.isActive, true), exceptId ? sql`${patients.id} <> ${exceptId}` : undefined))
+      .limit(1);
+    return row;
+  }
+
   async insert(tx: Tx, values: NewPatientRow): Promise<PatientRow> {
     const [row] = await tx.insert(patients).values(values).returning();
     return row!;

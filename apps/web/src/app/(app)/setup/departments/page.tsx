@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus } from 'lucide-react';
+import { Check, Loader2, Pencil, Plus, X } from 'lucide-react';
 import type { setup } from '@hms/shared';
 import { api } from '@/lib/api';
 import { usePermission } from '@/lib/auth';
@@ -49,6 +49,15 @@ export default function DepartmentsPage() {
     },
   });
   const toggleDept = useMutation({ mutationFn: (d: setup.Department) => api.setup.updateDepartment(d.id, { isActive: !d.isActive }), onSuccess: refresh });
+  const [editDept, setEditDept] = React.useState<{ id: string; name: string; type: setup.CreateDepartment['type'] } | null>(null);
+  const saveDept = useMutation({
+    mutationFn: async (d: { id: string; name: string; type: setup.CreateDepartment['type'] }) =>
+      api.setup.updateDepartment(d.id, S.updateDepartmentSchema.parse({ name: d.name, type: d.type })),
+    onSuccess: () => {
+      setEditDept(null);
+      refresh();
+    },
+  });
   const addSpec = useMutation({
     mutationFn: async (body: setup.CreateSpecialization) => api.setup.createSpecialization(S.createSpecializationSchema.parse(body)),
     onSuccess: () => {
@@ -57,6 +66,14 @@ export default function DepartmentsPage() {
     },
   });
   const toggleSpec = useMutation({ mutationFn: (s: setup.Specialization) => api.setup.updateSpecialization(s.id, { isActive: !s.isActive }), onSuccess: refresh });
+  const [editSpec, setEditSpec] = React.useState<{ id: string; name: string } | null>(null);
+  const saveSpec = useMutation({
+    mutationFn: async (s: { id: string; name: string }) => api.setup.updateSpecialization(s.id, S.updateSpecializationSchema.parse({ name: s.name })),
+    onSuccess: () => {
+      setEditSpec(null);
+      refresh();
+    },
+  });
 
   if (!canManage) return <NoAccess />;
 
@@ -102,7 +119,7 @@ export default function DepartmentsPage() {
               {addDept.isPending ? <Loader2 className="animate-spin" /> : <Plus />} Add
             </Button>
           </form>
-          <ErrorBox error={addDept.error ?? toggleDept.error} />
+          <ErrorBox error={addDept.error ?? toggleDept.error ?? saveDept.error} />
           <Table>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
@@ -125,14 +142,49 @@ export default function DepartmentsPage() {
               {departments.data?.map((d) => (
                 <TableRow key={d.id}>
                   <TableCell className="font-mono text-xs">{d.code}</TableCell>
-                  <TableCell className="font-medium">{d.name}</TableCell>
-                  <TableCell>{titleCase(d.type)}</TableCell>
+                  {editDept?.id === d.id ? (
+                    <>
+                      <TableCell>
+                        <Input aria-label="Department name" value={editDept.name} maxLength={120} onChange={(e) => setEditDept({ ...editDept, name: e.target.value })} />
+                      </TableCell>
+                      <TableCell>
+                        <Select aria-label="Type" value={editDept.type} onChange={(e) => setEditDept({ ...editDept, type: e.target.value as typeof editDept.type })}>
+                          {S.DEPARTMENT_TYPES.map((t) => (
+                            <option key={t} value={t}>
+                              {titleCase(t)}
+                            </option>
+                          ))}
+                        </Select>
+                      </TableCell>
+                    </>
+                  ) : (
+                    <>
+                      <TableCell className="font-medium">{d.name}</TableCell>
+                      <TableCell>{titleCase(d.type)}</TableCell>
+                    </>
+                  )}
                   <TableCell>{d.staffCount}</TableCell>
                   <TableCell>{d.isActive ? <Badge>Active</Badge> : <Badge variant="secondary">Inactive</Badge>}</TableCell>
-                  <TableCell className="text-right">
-                    <Button variant="ghost" size="sm" onClick={() => toggleDept.mutate(d)}>
-                      {d.isActive ? 'Deactivate' : 'Activate'}
-                    </Button>
+                  <TableCell className="whitespace-nowrap text-right">
+                    {editDept?.id === d.id ? (
+                      <>
+                        <Button size="sm" onClick={() => saveDept.mutate(editDept)} disabled={saveDept.isPending || editDept.name.trim().length < 2}>
+                          {saveDept.isPending ? <Loader2 className="animate-spin" /> : <Check />} Save
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => setEditDept(null)}>
+                          <X /> Cancel
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Button variant="ghost" size="sm" onClick={() => setEditDept({ id: d.id, name: d.name, type: d.type })}>
+                          <Pencil /> Edit
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => toggleDept.mutate(d)}>
+                          {d.isActive ? 'Deactivate' : 'Activate'}
+                        </Button>
+                      </>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}
@@ -160,19 +212,48 @@ export default function DepartmentsPage() {
               {addSpec.isPending ? <Loader2 className="animate-spin" /> : <Plus />} Add
             </Button>
           </form>
-          <ErrorBox error={addSpec.error ?? toggleSpec.error} />
+          <ErrorBox error={addSpec.error ?? toggleSpec.error ?? saveSpec.error} />
           <div className="flex flex-wrap gap-2">
-            {specializations.data?.map((s) => (
-              <button
-                key={s.id}
-                type="button"
-                title={s.isActive ? 'Click to deactivate' : 'Click to activate'}
-                onClick={() => toggleSpec.mutate(s)}
-                className={s.isActive ? 'rounded-full bg-primary/10 px-3 py-1 text-sm text-primary' : 'rounded-full bg-muted px-3 py-1 text-sm text-muted-foreground line-through'}
-              >
-                {s.name}
-              </button>
-            ))}
+            {specializations.data?.map((s) =>
+              editSpec?.id === s.id ? (
+                <form
+                  key={s.id}
+                  className="flex items-center gap-1"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    saveSpec.mutate(editSpec);
+                  }}
+                >
+                  <Input aria-label="Specialization name" className="h-8 w-48" autoFocus maxLength={120} value={editSpec.name} onChange={(e) => setEditSpec({ ...editSpec, name: e.target.value })} />
+                  <Button type="submit" size="sm" aria-label="Save" disabled={saveSpec.isPending || editSpec.name.trim().length < 2}>
+                    {saveSpec.isPending ? <Loader2 className="animate-spin" /> : <Check />}
+                  </Button>
+                  <Button type="button" variant="ghost" size="sm" aria-label="Cancel" onClick={() => setEditSpec(null)}>
+                    <X />
+                  </Button>
+                </form>
+              ) : (
+                <span key={s.id} className="inline-flex items-center">
+                  <button
+                    type="button"
+                    title={s.isActive ? 'Click to deactivate' : 'Click to activate'}
+                    onClick={() => toggleSpec.mutate(s)}
+                    className={s.isActive ? 'rounded-l-full bg-primary/10 py-1 pl-3 pr-2 text-sm text-primary' : 'rounded-l-full bg-muted py-1 pl-3 pr-2 text-sm text-muted-foreground line-through'}
+                  >
+                    {s.name}
+                  </button>
+                  <button
+                    type="button"
+                    title="Rename"
+                    aria-label={`Rename ${s.name}`}
+                    onClick={() => setEditSpec({ id: s.id, name: s.name })}
+                    className="rounded-r-full bg-muted py-1 pl-1.5 pr-2.5 text-muted-foreground hover:text-foreground"
+                  >
+                    <Pencil className="size-3.5" />
+                  </button>
+                </span>
+              ),
+            )}
           </div>
         </CardContent>
       </Card>

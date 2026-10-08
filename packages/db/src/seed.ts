@@ -9,14 +9,14 @@ export async function seed(connectionString: string, log: (m: string) => void = 
   await client.connect();
   try {
     await client.query('BEGIN');
-    const n = await syncPermissionCatalog(client);
-    log(`permissions: ${n}`);
+    const catalog = await syncPermissionCatalog(client);
+    log(`permissions: ${catalog.count} (${catalog.added.length} new)`);
 
     // New permissions reach existing hospitals' system roles.
     const tenants = await client.query<{ id: string }>('SELECT id FROM platform.tenants');
     for (const t of tenants.rows) {
       await client.query(`SELECT set_config('app.tenant_id', $1, true)`, [t.id]);
-      await syncSystemRoles(client, t.id);
+      await syncSystemRoles(client, t.id, catalog.added);
     }
 
     const demo = await provisionTenant(client, {

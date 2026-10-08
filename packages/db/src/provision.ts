@@ -2,20 +2,26 @@ import { ALL_MODULES, SYSTEM_ROLES, SYSTEM_ROLE_KEYS, defaultPermissionsForRole 
 import type { ClientBase } from 'pg';
 import { hashPassword } from './password';
 
-/** Upsert the global permission catalog from every module manifest. Needs the migrator role. */
-export async function syncPermissionCatalog(client: ClientBase): Promise<number> {
-  let n = 0;
+/**
+ * Upsert the global permission catalog from every module manifest. Needs the migrator role.
+ * Returns how many permissions there are and which keys did not exist before this run.
+ */
+export async function syncPermissionCatalog(client: ClientBase): Promise<{ count: number; added: string[] }> {
+  let count = 0;
+  const added: string[] = [];
   for (const m of ALL_MODULES) {
     for (const p of m.permissions) {
-      await client.query(
+      const r = await client.query<{ inserted: boolean }>(
         `INSERT INTO iam.permissions (key, module, description) VALUES ($1, $2, $3)
-         ON CONFLICT (key) DO UPDATE SET module = EXCLUDED.module, description = EXCLUDED.description`,
+         ON CONFLICT (key) DO UPDATE SET module = EXCLUDED.module, description = EXCLUDED.description
+         RETURNING (xmax = 0) AS inserted`,
         [p.key, m.key, p.description],
       );
-      n++;
+      if (r.rows[0]?.inserted) added.push(p.key);
+      count++;
     }
   }
-  return n;
+  return { count, added };
 }
 
 export interface ProvisionTenantInput {
@@ -52,16 +58,23 @@ export async function provisionTenant(client: ClientBase, input: ProvisionTenant
   return { tenantId, adminId: admin, facilityId };
 }
 
-/** Make sure every system role exists for the tenant and has at least its default permissions. */
-export async function syncSystemRoles(client: ClientBase, tenantId: string): Promise<void> {
+/**
+ * Make sure every system role exists for the tenant. A new role gets all its default permissions.
+ * A role that already exists may have been edited by the hospital, so it only gets the defaults
+ * among `newPermissions` (keys this release added to the catalog); permissions a hospital removed
+ * stay removed. Hospital Admin always gets every default.
+ */
+export async function syncSystemRoles(client: ClientBase, tenantId: string, newPermissions?: readonly string[]): Promise<void> {
+  const fresh = newPermissions ? new Set(newPermissions) : undefined;
   for (const key of SYSTEM_ROLE_KEYS) {
-    const r = await client.query<{ id: string }>(
+    const r = await client.query<{ id: string; inserted: boolean }>(
       `INSERT INTO iam.roles (tenant_id, key, name, is_system) VALUES ($1, $2, $3, true)
-       ON CONFLICT (tenant_id, key) DO UPDATE SET name = EXCLUDED.name RETURNING id`,
+       ON CONFLICT (tenant_id, key) DO UPDATE SET name = EXCLUDED.name RETURNING id, (xmax = 0) AS inserted`,
       [tenantId, key, SYSTEM_ROLES[key]],
     );
     const roleId = r.rows[0]!.id;
-    const perms = defaultPermissionsForRole(key);
+    const all = defaultPermissionsForRole(key);
+    const perms = r.rows[0]!.inserted || !fresh || key === 'hospital_admin' ? all : all.filter((p) => fresh.has(p));
     if (perms.length) {
       await client.query(
         `INSERT INTO iam.role_permissions (tenant_id, role_id, permission_key)
