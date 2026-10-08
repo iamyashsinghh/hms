@@ -40,10 +40,10 @@ Needs Docker with the Compose plugin. Everything runs on one port, **4001**: web
 database viewer (Adminer) at `/db/`.
 
 ```bash
-git clone https://github.com/iamyashsinghh/hms.git && cd hms
+git clone -b staging https://github.com/iamyashsinghh/hms.git && cd hms
 ./deploy.sh            # first run creates .env.prod with random secrets, builds, migrates, seeds the demo
-# every update:
-git pull && ./deploy.sh
+# every update (on the staging branch):
+git pull origin staging && ./deploy.sh
 ```
 
 - `.env.prod` holds every secret (Postgres, DB roles, JWT, super admin password). It is git-ignored; back it up.

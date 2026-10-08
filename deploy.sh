@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-command deploy:   ./deploy.sh
 # First run creates .env.prod with strong random secrets; later runs keep them and just rebuild,
-# migrate and restart. Update the server with:  git pull && ./deploy.sh
+# migrate and restart. Update the server with:  git pull origin staging && ./deploy.sh
 set -euo pipefail
 cd "$(dirname "$0")"
 
