@@ -17,6 +17,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input, Select } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { DoctorSelect, ErrorBox, PatientPicker, useDebounced } from '@/modules/frontoffice/ui';
+import { BillLink, CheckInCollect, RegistrationCollect } from '@/modules/frontoffice/billing';
 
 type Form = {
   firstName: string;
@@ -120,6 +121,10 @@ export default function FrontDeskRegisterPage() {
               <div className="font-mono text-sm text-muted-foreground">UHID {created.uhid}</div>
             </div>
           </CardContent>
+          {/* Registration fee, when the hospital charges one (billing rules). */}
+          <CardContent className="pt-0 empty:hidden">
+            <RegistrationCollect patientId={created.id} />
+          </CardContent>
         </Card>
         <QuickToken patient={created} />
         <div className="mt-6 flex gap-2">
@@ -139,6 +144,7 @@ export default function FrontDeskRegisterPage() {
           <Link href={`/patients/${created.id}`} className={buttonVariants({ variant: 'ghost' })}>
             Open patient
           </Link>
+          <BillLink patientId={created.id} className={buttonVariants({ variant: 'ghost' })} />
         </div>
       </div>
     );
@@ -273,10 +279,15 @@ function QuickToken({ patient }: { patient: Patient }) {
         </CardHeader>
         <CardContent className="flex flex-wrap items-end gap-3">
           {walk.data ? (
-            <div className="text-center">
-              <div className="text-xs text-muted-foreground">Token with {walk.data.doctorName}</div>
-              <div className="text-5xl font-bold tabular-nums text-primary">{walk.data.tokenNo}</div>
-            </div>
+            <>
+              <div className="text-center">
+                <div className="text-xs text-muted-foreground">Token with {walk.data.doctorName}</div>
+                <div className="text-5xl font-bold tabular-nums text-primary">{walk.data.tokenNo}</div>
+              </div>
+              <div className="w-full">
+                <CheckInCollect visit={walk.data} />
+              </div>
+            </>
           ) : (
             <>
               <div className="w-64">

@@ -15,6 +15,8 @@ import { Input, Select } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { DoctorSelect, ErrorBox, PatientPicker, PriorityBadge, StatusBadge, istToday, label, timeOf } from '@/modules/frontoffice/ui';
+import { BillLink, CheckInCollect, VisitCollect, useCanCollect } from '@/modules/frontoffice/billing';
+import { PaymentStateBadge } from '@/modules/billing/collect-now';
 
 const ACTIONS_FOR: Record<fo.VisitStatus, fo.VisitAction[]> = {
   waiting: ['call', 'start', 'skip', 'cancel'],
@@ -40,6 +42,8 @@ export default function QueuePage() {
   const [doctorId, setDoctorId] = React.useState('');
   const [date, setDate] = React.useState(istToday());
   const [room, setRoom] = React.useState('');
+  const canCollect = useCanCollect();
+  const [collecting, setCollecting] = React.useState<string | null>(null);
 
   const { data, error, isFetching, refetch } = useQuery({
     queryKey: ['frontoffice', 'queue', { doctorId, date }],
@@ -56,6 +60,8 @@ export default function QueuePage() {
 
   if (!canRead) return <NoAccess />;
   const s = data?.summary;
+  const unpaid = (v: fo.Visit) => v.paymentState === 'pending' || v.paymentState === 'unpaid';
+  const columns = 6 + (doctorId ? 0 : 1) + (canManage ? 1 : 0);
 
   return (
     <>
@@ -139,41 +145,66 @@ export default function QueuePage() {
                   </TableRow>
                 ) : (
                   data.items.map((v) => (
-                    <TableRow key={v.id} className={v.status === 'completed' || v.status === 'cancelled' ? 'opacity-60' : ''}>
-                      <TableCell className="text-lg font-semibold tabular-nums">{v.tokenNo}</TableCell>
-                      <TableCell>
-                        <div className="font-medium">{v.patient?.name ?? '—'}</div>
-                        <div className="font-mono text-xs text-muted-foreground">{v.patient?.uhid}</div>
-                      </TableCell>
-                      {!doctorId && <TableCell>{v.doctorName}</TableCell>}
-                      <TableCell>
-                        <div className="flex items-center gap-1">
-                          {label(v.kind)} <PriorityBadge priority={v.priority} />
-                        </div>
-                      </TableCell>
-                      <TableCell>{timeOf(v.checkedInAt)}</TableCell>
-                      <TableCell>
-                        <StatusBadge status={v.status} />
-                        {v.room && <span className="ml-1 text-xs text-muted-foreground">{v.room}</span>}
-                      </TableCell>
-                      {canManage && (
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-1">
-                            {ACTIONS_FOR[v.status].map((a) => (
-                              <Button
-                                key={a}
-                                size="sm"
-                                variant={a === 'cancel' || a === 'skip' ? 'ghost' : a === 'call' ? 'outline' : 'default'}
-                                disabled={move.isPending}
-                                onClick={() => move.mutate({ id: v.id, action: a })}
-                              >
-                                {ACTION_LABEL[a]}
-                              </Button>
-                            ))}
+                    <React.Fragment key={v.id}>
+                      <TableRow className={v.status === 'completed' || v.status === 'cancelled' ? 'opacity-60' : ''}>
+                        <TableCell className="text-lg font-semibold tabular-nums">{v.tokenNo}</TableCell>
+                        <TableCell>
+                          <div className="font-medium">{v.patient?.name ?? '—'}</div>
+                          <div className="font-mono text-xs text-muted-foreground">{v.patient?.uhid}</div>
+                        </TableCell>
+                        {!doctorId && <TableCell>{v.doctorName}</TableCell>}
+                        <TableCell>
+                          <div className="flex items-center gap-1">
+                            {label(v.kind)} <PriorityBadge priority={v.priority} />
                           </div>
                         </TableCell>
+                        <TableCell>{timeOf(v.checkedInAt)}</TableCell>
+                        <TableCell>
+                          <StatusBadge status={v.status} />
+                          {v.room && <span className="ml-1 text-xs text-muted-foreground">{v.room}</span>}
+                          {v.status !== 'cancelled' && (
+                            <span className="ml-1">
+                              <PaymentStateBadge state={v.paymentState} />
+                            </span>
+                          )}
+                        </TableCell>
+                        {canManage && (
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-1">
+                              {canCollect && v.paymentState === 'pending' && v.status !== 'cancelled' && (
+                                <Button size="sm" variant="outline" onClick={() => setCollecting(collecting === v.id ? null : v.id)}>
+                                  Collect
+                                </Button>
+                              )}
+                              {ACTIONS_FOR[v.status].map((a) => {
+                                // Billing rule: unpaid tokens wait until the consultation fee is collected.
+                                const held = (a === 'call' || a === 'start') && !!data.billing?.blockUnpaid && unpaid(v);
+                                return (
+                                  <Button
+                                    key={a}
+                                    size="sm"
+                                    variant={a === 'cancel' || a === 'skip' ? 'ghost' : a === 'call' ? 'outline' : 'default'}
+                                    disabled={move.isPending || held}
+                                    title={held ? 'Collect the consultation fee first' : undefined}
+                                    onClick={() => move.mutate({ id: v.id, action: a })}
+                                  >
+                                    {ACTION_LABEL[a]}
+                                  </Button>
+                                );
+                              })}
+                              <BillLink patientId={v.patientId} />
+                            </div>
+                          </TableCell>
+                        )}
+                      </TableRow>
+                      {collecting === v.id && (
+                        <TableRow className="hover:bg-transparent">
+                          <TableCell colSpan={columns}>
+                            <VisitCollect patientId={v.patientId} visitId={v.id} onDone={() => queryClient.invalidateQueries({ queryKey: ['frontoffice', 'queue'] })} />
+                          </TableCell>
+                        </TableRow>
                       )}
-                    </TableRow>
+                    </React.Fragment>
                   ))
                 )}
               </TableBody>
@@ -252,6 +283,7 @@ function WalkInCard({ defaultDoctorId }: { defaultDoctorId: string }) {
             </div>
           </div>
         )}
+        {issued && <CheckInCollect key={issued.id} visit={issued} onDone={() => queryClient.invalidateQueries({ queryKey: ['frontoffice', 'queue'] })} />}
       </CardContent>
     </Card>
   );

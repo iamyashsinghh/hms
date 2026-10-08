@@ -14,6 +14,7 @@ import { Input, Select } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { DoctorSelect, ErrorBox, PatientPicker, SlotPicker, StatusBadge, istToday, label, timeOf } from '@/modules/frontoffice/ui';
+import { CheckInCollect } from '@/modules/frontoffice/billing';
 
 const shiftDate = (d: string, days: number) => {
   const x = new Date(`${d}T12:00:00Z`);
@@ -32,6 +33,7 @@ export default function AppointmentsPage() {
   const [booking, setBooking] = React.useState(false);
   const [rescheduling, setRescheduling] = React.useState<fo.Appointment | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
+  const [checkedIn, setCheckedIn] = React.useState<fo.Visit | null>(null);
 
   const { data, error } = useQuery({
     queryKey: ['frontoffice', 'appointments', { date, doctorId, status }],
@@ -46,6 +48,7 @@ export default function AppointmentsPage() {
     mutationFn: async ({ a, kind }: { a: fo.Appointment; kind: 'checkin' | 'cancel' | 'noshow' }) => {
       if (kind === 'checkin') {
         const v = await api.frontoffice.appointments.checkIn(a.id);
+        setCheckedIn(v);
         return `Checked in ${a.patient?.name ?? ''}: token ${v.tokenNo}`;
       }
       if (kind === 'cancel') {
@@ -109,6 +112,11 @@ export default function AppointmentsPage() {
           <button aria-label="Dismiss" onClick={() => setNotice(null)}>
             <X className="size-4" />
           </button>
+        </div>
+      )}
+      {checkedIn && (
+        <div className="mb-4 max-w-xl">
+          <CheckInCollect key={checkedIn.id} visit={checkedIn} onDone={() => setCheckedIn(null)} />
         </div>
       )}
       {act.error && (

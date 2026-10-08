@@ -7,13 +7,13 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CalendarClock, Loader2 } from 'lucide-react';
-import { todayIso, type setup } from '@hms/shared';
+import { todayIso, setup } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
 import { Button, buttonVariants } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { BackLink, ErrorBox, Field, S, SuccessBox, optNull, optNumber, opt, titleCase } from '@/modules/setup/ui';
 
@@ -155,6 +155,10 @@ export default function StaffProfilePage({ params }: { params: Promise<{ userId:
             <Card>
               <CardHeader>
                 <CardTitle>OPD fees</CardTitle>
+                <CardDescription>
+                  Charged at check-in as billing services {setup.doctorFeeServiceCodes(userId).consultation} and{' '}
+                  {setup.doctorFeeServiceCodes(userId).followUp}, so payer price lists can price them. A follow-up fee of 0 makes follow-ups free.
+                </CardDescription>
               </CardHeader>
               <CardContent className="grid gap-5 sm:grid-cols-3">
                 <Field id="consultationFee" label="Consultation fee (₹)" error={errors.consultationFee}>
