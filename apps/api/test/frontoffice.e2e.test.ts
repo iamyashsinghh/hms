@@ -146,6 +146,8 @@ describe('frontoffice: appointments', () => {
     const p = await newPatient();
     const past = await book(p.id, slot(-120));
     expect(past.json().error.code).toBe('slot_in_past');
+    const tooFar = await book(p.id, slot(60 * 24 * 400));
+    expect(tooFar.json().error.code).toBe('slot_too_far');
     const notDoc = await app.inject({
       method: 'POST',
       url: '/api/v1/frontoffice/appointments',
@@ -153,6 +155,21 @@ describe('frontoffice: appointments', () => {
       payload: { patientId: p.id, doctorId: (await login(app, 'nurse@demo.hms')).user.id, slotStart: slot(600) },
     });
     expect(notDoc.json().error.code).toBe('not_a_doctor');
+  });
+
+  it('keeps the IST date for a late-evening booking of a patient registered at the desk', async () => {
+    // 23:30 IST is 18:00 UTC the same day; 00:30 IST is still the previous day in UTC.
+    const p = await newPatient(reception, { ageYears: undefined, dateOfBirth: '1990-05-04', mobile: '9876501234' });
+    // The database keeps earlier runs' bookings, so pick a random far-off day and minute.
+    const day = istDate(slot(60 * 24 * (20 + Math.floor(Math.random() * 300))));
+    const mm = String(5 * Math.floor(Math.random() * 6) + 30);
+    for (const time of [`23:${mm}`, `00:${mm}`]) {
+      const res = await book(p.id, new Date(`${day}T${time}:00+05:30`).toISOString());
+      expect(res.statusCode).toBe(201);
+      expect(istDate(res.json().slotStart)).toBe(day);
+    }
+    const list = await app.inject({ method: 'GET', url: `/api/v1/frontoffice/appointments?date=${day}&patientId=${p.id}`, headers: h(reception) });
+    expect(list.json().items).toHaveLength(2);
   });
 
   it('lists appointments by date and doctor', async () => {

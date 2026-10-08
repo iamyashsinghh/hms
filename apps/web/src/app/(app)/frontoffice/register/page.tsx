@@ -138,7 +138,7 @@ export default function FrontDeskRegisterPage() {
           >
             Register another
           </Button>
-          <Link href="/frontoffice/appointments" className={buttonVariants({ variant: 'outline' })}>
+          <Link href={`/frontoffice/appointments?patientId=${created.id}`} className={buttonVariants({ variant: 'outline' })}>
             Book an appointment
           </Link>
           <Link href={`/patients/${created.id}`} className={buttonVariants({ variant: 'ghost' })}>

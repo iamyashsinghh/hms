@@ -2,10 +2,11 @@
 
 import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Loader2, Search, X } from 'lucide-react';
-import type { Patient, frontoffice as fo } from '@hms/shared';
+import { Loader2, Search, UserPlus, X } from 'lucide-react';
+import { frontoffice as fo, type Patient } from '@hms/shared';
 import { api } from '@/lib/api';
 import { ageOf, fullName, genderLabel } from '@/lib/format';
+import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input, Select } from '@/components/ui/input';
@@ -13,6 +14,64 @@ import { Input, Select } from '@/components/ui/input';
 /** Hospital-local (IST) calendar date, YYYY-MM-DD. */
 export function istToday(): string {
   return new Date(Date.now() + 330 * 60_000).toISOString().slice(0, 10);
+}
+
+/** Adds days to a YYYY-MM-DD date. */
+export function shiftDate(d: string, days: number): string {
+  const x = new Date(`${d}T12:00:00Z`);
+  x.setUTCDate(x.getUTCDate() + days);
+  return x.toISOString().slice(0, 10);
+}
+
+/** True for a real calendar date in YYYY-MM-DD form (rejects 2026-02-30 and half-typed years like 0202). */
+export function isValidDate(d: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d < '1870-01-01' || d > '2999-12-31') return false;
+  const x = new Date(`${d}T00:00:00Z`);
+  return !Number.isNaN(x.getTime()) && x.toISOString().slice(0, 10) === d;
+}
+
+/**
+ * "Thu, 15 Oct 2026" for a YYYY-MM-DD date. Shown next to date pickers because the browser's own picker
+ * follows the browser language, and 10/08/2026 (US order) reads as 10 August to most of our users.
+ */
+export const longDate = (d: string) =>
+  isValidDate(d)
+    ? new Date(`${d}T00:00:00Z`).toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' })
+    : '—';
+
+/** Hospital-local (IST) calendar date of a timestamp. */
+export const istDateOf = (iso: string) => new Date(new Date(iso).getTime() + 330 * 60_000).toISOString().slice(0, 10);
+
+/** "Thu, 15 Oct 2026 at 11:30 am" in IST. */
+export const dateTimeOf = (iso: string) => `${longDate(istDateOf(iso))} at ${timeOf(iso)}`;
+
+/** Why a booking date is not acceptable, or null when it is. */
+export function bookingDateError(d: string): string | null {
+  if (!d) return 'Choose a date';
+  if (!isValidDate(d)) return 'Enter a valid date';
+  if (d < istToday()) return 'This date is in the past';
+  if (d > shiftDate(istToday(), fo.MAX_BOOKING_DAYS_AHEAD)) return `Appointments can be booked up to ${fo.MAX_BOOKING_DAYS_AHEAD} days ahead`;
+  return null;
+}
+
+/** Date picker for booking: today up to MAX_BOOKING_DAYS_AHEAD, with the chosen day spelled out under it. */
+export function BookingDateInput({ id, value, onChange }: { id: string; value: string; onChange: (d: string) => void }) {
+  const error = bookingDateError(value);
+  return (
+    <>
+      <Input
+        id={id}
+        type="date"
+        className="mt-1"
+        min={istToday()}
+        max={shiftDate(istToday(), fo.MAX_BOOKING_DAYS_AHEAD)}
+        value={value}
+        aria-invalid={!!error}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <p className={cn('mt-1 text-xs', error ? 'text-destructive' : 'text-muted-foreground')}>{error ?? longDate(value)}</p>
+    </>
+  );
 }
 
 export const timeOf = (iso: string | null | undefined) =>
@@ -83,10 +142,13 @@ export function PatientPicker({
   value,
   onChange,
   placeholder = 'Search patient by name, UHID or mobile…',
+  onCreateNew,
 }: {
   value: Patient | null;
   onChange: (p: Patient | null) => void;
   placeholder?: string;
+  /** When set, the results end with a "register a new patient" row that hands over what was typed. */
+  onCreateNew?: (typed: string) => void;
 }) {
   const [q, setQ] = React.useState('');
   const term = useDebounced(q.trim());
@@ -140,6 +202,18 @@ export function PatientPicker({
               </button>
             ))
           )}
+          {onCreateNew && (
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 border-t px-3 py-2 text-left text-sm font-medium text-primary hover:bg-muted"
+              onClick={() => {
+                onCreateNew(q.trim());
+                setQ('');
+              }}
+            >
+              <UserPlus className="size-4" /> Register a new patient
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -156,9 +230,24 @@ export function ErrorBox({ error }: { error: unknown }) {
   );
 }
 
+/** IST wall-clock time now, HH:MM. */
+const istNowTime = () => new Date(Date.now() + 330 * 60_000).toISOString().slice(11, 16);
+
+/** 10:00, or on today once that has passed, the next quarter hour (capped at 23:45). */
+function defaultTime(date: string): string {
+  if (date !== istToday()) return '10:00';
+  const [h, m] = istNowTime().split(':').map(Number) as [number, number];
+  const next = Math.min(Math.ceil((h * 60 + m + 1) / 15) * 15, 23 * 60 + 45);
+  const t = `${String(Math.floor(next / 60)).padStart(2, '0')}:${String(next % 60).padStart(2, '0')}`;
+  return t > '10:00' ? t : '10:00';
+}
+
 /**
  * Picks a start time. Doctors with a setup schedule get their slots (full ones disabled); doctors without
  * one get a free time field. `value` is an ISO timestamp or ''.
+ *
+ * In free-time mode the value always follows the date and time on screen, so changing the date never
+ * leaves the form without a time (or pointing at the previously shown day).
  */
 export function SlotPicker({
   doctorId,
@@ -171,14 +260,26 @@ export function SlotPicker({
   value: string;
   onChange: (iso: string) => void;
 }) {
+  const validDate = isValidDate(date);
   const { data, isPending } = useQuery({
     queryKey: ['frontoffice', 'slots', doctorId, date],
     queryFn: () => api.frontoffice.slots(doctorId, { date }),
-    enabled: !!doctorId && !!date,
+    enabled: !!doctorId && validDate,
   });
-  const [time, setTime] = React.useState('10:00');
+  const [time, setTime] = React.useState(() => defaultTime(date));
+  const freeMode = !!doctorId && validDate && !isPending && !data?.length;
+  const timeError = !/^\d{2}:\d{2}$/.test(time) ? 'Enter a time' : date === istToday() && time < istNowTime() ? 'This time has already passed' : null;
+
+  const onChangeRef = React.useRef(onChange);
+  React.useEffect(() => {
+    onChangeRef.current = onChange;
+  });
+  React.useEffect(() => {
+    if (freeMode) onChangeRef.current(timeError ? '' : new Date(`${date}T${time}:00+05:30`).toISOString());
+  }, [freeMode, date, time, timeError]);
 
   if (!doctorId) return <p className="text-sm text-muted-foreground">Choose a doctor first.</p>;
+  if (!validDate) return <p className="text-sm text-muted-foreground">Choose a valid date first.</p>;
   if (isPending) return <Loader2 className="size-4 animate-spin text-muted-foreground" />;
   if (data && data.length) {
     return (
@@ -209,14 +310,16 @@ export function SlotPicker({
         type="time"
         step={300}
         className="w-36"
+        aria-label="Time"
+        aria-invalid={!!timeError}
         value={time}
-        onChange={(e) => {
-          setTime(e.target.value);
-          onChange(new Date(`${date}T${e.target.value}:00+05:30`).toISOString());
-        }}
-        onFocus={() => !value && onChange(new Date(`${date}T${time}:00+05:30`).toISOString())}
+        onChange={(e) => setTime(e.target.value)}
       />
-      <p className="text-xs text-muted-foreground">No schedule set up for this doctor, so any free time can be booked.</p>
+      {timeError ? (
+        <p className="text-xs text-destructive">{timeError}</p>
+      ) : (
+        <p className="text-xs text-muted-foreground">No schedule set up for this doctor, so any free time can be booked.</p>
+      )}
     </div>
   );
 }
