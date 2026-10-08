@@ -59,6 +59,15 @@ function estimate(lines: EstLine[], billDiscount: number): number {
   return total / 100;
 }
 
+/** Ticks or unticks a whole visit; shows a dash when only some of its charges are ticked. */
+function GroupCheckbox({ checked, mixed, onChange, label }: { checked: boolean; mixed: boolean; onChange: (v: boolean) => void; label: string }) {
+  const ref = React.useRef<HTMLInputElement>(null);
+  React.useEffect(() => {
+    if (ref.current) ref.current.indeterminate = mixed;
+  }, [mixed]);
+  return <input ref={ref} type="checkbox" className="size-4" checked={checked} onChange={(e) => onChange(e.target.checked)} aria-label={label} />;
+}
+
 /** Patient picker plus the patients waiting to be billed, when no patient is chosen yet. */
 export function BillPatientStart({ onPick }: { onPick: (patientId: string) => void }) {
   const [patient, setPatient] = React.useState<Patient | null>(null);
@@ -253,12 +262,12 @@ export function BillPatient({ patientId, onChangePatient }: { patientId: string;
 
         {data.groups.map((g) => {
           const ids = g.charges.map((c) => c.id);
-          const allOn = ids.every((id) => !skipped.has(id));
+          const on = ids.filter((id) => !skipped.has(id)).length;
           return (
             <Card key={`${g.account}:${g.admissionId ?? g.visitId ?? 'other'}`}>
               <CardHeader className="flex-row items-center justify-between gap-3 space-y-0 pb-3">
                 <label className="flex items-center gap-3">
-                  <input type="checkbox" className="size-4" checked={allOn} onChange={(e) => toggle(ids, e.target.checked)} aria-label={`Bill all of ${g.label}`} />
+                  <GroupCheckbox checked={on === ids.length} mixed={on > 0 && on < ids.length} onChange={(v) => toggle(ids, v)} label={`Bill all of ${g.label}`} />
                   <CardTitle>{g.label}</CardTitle>
                   <Badge variant="outline">{ACCOUNT_LABELS[g.account]}</Badge>
                 </label>

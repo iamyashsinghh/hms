@@ -135,6 +135,8 @@ export default function BillingRulesPage() {
   const { user } = useAuth();
   const facilities = user?.facilities ?? [];
   const [facilityId, setFacilityId] = React.useState('');
+  // Kept here: the form remounts with the saved rules.
+  const [saved, setSaved] = React.useState<string | null>(null);
 
   const { data, error, isPending } = useQuery({
     queryKey: ['billing', 'rules', facilityId || 'hospital'],
@@ -156,7 +158,10 @@ export default function BillingRulesPage() {
           <label htmlFor="rules-level" className="text-sm font-medium">
             Rules for
           </label>
-          <Select id="rules-level" className="w-72" value={facilityId} onChange={(e) => setFacilityId(e.target.value)}>
+          <Select id="rules-level" className="w-72" value={facilityId} onChange={(e) => {
+              setFacilityId(e.target.value);
+              setSaved(null);
+            }}>
             <option value="">The whole hospital (all branches)</option>
             {facilities.map((f) => (
               <option key={f.id} value={f.id}>
@@ -171,12 +176,24 @@ export default function BillingRulesPage() {
       </Card>
       {error && <ErrorBox error={errorMessage(error)} />}
       {isPending && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {data && <RulesForm key={`${facilityId}:${data.updatedAt}`} view={data} facilityId={facilityId || undefined} readOnly={!canManage} />}
+      {data && <RulesForm key={`${facilityId}:${data.updatedAt}`} view={data} facilityId={facilityId || undefined} readOnly={!canManage} saved={saved} onSaved={setSaved} />}
     </div>
   );
 }
 
-function RulesForm({ view, facilityId, readOnly }: { view: B.BillingRulesView; facilityId?: string; readOnly: boolean }) {
+function RulesForm({
+  view,
+  facilityId,
+  readOnly,
+  saved,
+  onSaved,
+}: {
+  view: B.BillingRulesView;
+  facilityId?: string;
+  readOnly: boolean;
+  saved: string | null;
+  onSaved: (notice: string | null) => void;
+}) {
   const queryClient = useQueryClient();
   const isBranch = !!facilityId;
   // What the branch falls back to: defaults ← hospital.
@@ -185,19 +202,21 @@ function RulesForm({ view, facilityId, readOnly }: { view: B.BillingRulesView; f
   const [form, setForm] = React.useState<Form>(initial);
   const [overridden, setOverridden] = React.useState<Set<RuleKey>>(() => new Set(Object.keys(view.branch ?? {}) as RuleKey[]));
   const [errors, setErrors] = React.useState<FieldErrors>({});
-  const [notice, setNotice] = React.useState<string | null>(null);
+  const [localNotice, setNotice] = React.useState<string | null>(null);
+  const notice = localNotice ?? saved;
 
   const save = useMutation({
     mutationFn: (body: B.BillingRulesInput) => api.billing.rules.save(body),
     onSuccess: (next) => {
       queryClient.setQueryData(['billing', 'rules', facilityId ?? 'hospital'], next);
       queryClient.invalidateQueries({ queryKey: ['billing', 'rules'] });
-      setNotice('Saved. New charges follow these rules from now.');
+      onSaved('Saved. New charges follow these rules from now.');
     },
   });
 
   const set = <K extends keyof Form>(key: K, value: Form[K]) => {
     setNotice(null);
+    onSaved(null);
     setForm((f) => ({ ...f, [key]: value }));
     if (isBranch) setOverridden((o) => new Set([...o, ...keysOf(key as RuleKey)]));
   };
