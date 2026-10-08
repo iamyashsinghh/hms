@@ -1,5 +1,7 @@
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { sql } from '@hms/db';
+import { DbService } from '../src/common/db/db.service';
 import { bearer, bootApp, login } from './helpers';
 
 let app: NestFastifyApplication;
@@ -144,6 +146,8 @@ describe('frontoffice: appointments', () => {
     const p = await newPatient();
     const past = await book(p.id, slot(-120));
     expect(past.json().error.code).toBe('slot_in_past');
+    const tooFar = await book(p.id, slot(60 * 24 * 400));
+    expect(tooFar.json().error.code).toBe('slot_too_far');
     const notDoc = await app.inject({
       method: 'POST',
       url: '/api/v1/frontoffice/appointments',
@@ -151,6 +155,21 @@ describe('frontoffice: appointments', () => {
       payload: { patientId: p.id, doctorId: (await login(app, 'nurse@demo.hms')).user.id, slotStart: slot(600) },
     });
     expect(notDoc.json().error.code).toBe('not_a_doctor');
+  });
+
+  it('keeps the IST date for a late-evening booking of a patient registered at the desk', async () => {
+    // 23:30 IST is 18:00 UTC the same day; 00:30 IST is still the previous day in UTC.
+    const p = await newPatient(reception, { ageYears: undefined, dateOfBirth: '1990-05-04', mobile: '9876501234' });
+    // The database keeps earlier runs' bookings, so pick a random far-off day and minute.
+    const day = istDate(slot(60 * 24 * (20 + Math.floor(Math.random() * 300))));
+    const mm = String(5 * Math.floor(Math.random() * 6) + 30);
+    for (const time of [`23:${mm}`, `00:${mm}`]) {
+      const res = await book(p.id, new Date(`${day}T${time}:00+05:30`).toISOString());
+      expect(res.statusCode).toBe(201);
+      expect(istDate(res.json().slotStart)).toBe(day);
+    }
+    const list = await app.inject({ method: 'GET', url: `/api/v1/frontoffice/appointments?date=${day}&patientId=${p.id}`, headers: h(reception) });
+    expect(list.json().items).toHaveLength(2);
   });
 
   it('lists appointments by date and doctor', async () => {
@@ -395,6 +414,41 @@ describe('frontoffice: duplicates, merge and ABHA', () => {
   });
 });
 
+describe('frontoffice: validation messages', () => {
+  const bad = async (method: 'GET' | 'POST', url: string, payload: Record<string, unknown> | undefined, message: string) => {
+    const res = await app.inject({ method, url, headers: h(reception), payload });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toContain(message);
+  };
+
+  it('explains bad ABHA numbers and addresses', async () => {
+    const p = await newPatient();
+    await bad('POST', `/api/v1/frontoffice/patients/${p.id}/abha`, { abhaNumber: '9112345678901' }, 'ABHA number has 14 digits');
+    await bad('POST', `/api/v1/frontoffice/patients/${p.id}/abha`, { abhaNumber: '91123456789012', abhaAddress: 'no at sign' }, 'Enter an ABHA address like name@abdm');
+  });
+
+  it('needs a real reason to merge or cancel, and two different patients', async () => {
+    const a = await newPatient();
+    const b = await newPatient();
+    const merge = (payload: Record<string, unknown>) => app.inject({ method: 'POST', url: '/api/v1/frontoffice/patients/merge', headers: h(admin), payload });
+    let res = await merge({ sourcePatientId: a.id, targetPatientId: b.id, reason: 'ab' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toContain('Reason needs at least 3 characters');
+    res = await merge({ sourcePatientId: a.id, targetPatientId: a.id, reason: 'Registered twice' });
+    expect(res.json().error.message).toContain('Pick two different patients');
+
+    const appt = await bookFree(a.id, 60 * 24 * 14);
+    await bad('POST', `/api/v1/frontoffice/appointments/${appt.id}/cancel`, { reason: '   ' }, 'Give a reason for cancelling');
+  });
+
+  it('checks walk-in, token and list inputs', async () => {
+    await bad('POST', '/api/v1/frontoffice/walk-ins', { doctorId }, 'Pick a patient');
+    const p = await newPatient();
+    await bad('POST', '/api/v1/frontoffice/walk-ins', { patientId: p.id, doctorId, priority: 'vip' }, 'Pick a priority');
+    await bad('GET', '/api/v1/frontoffice/appointments?from=2026-05-10&to=2026-05-01', undefined, 'End date is before start date');
+  });
+});
+
 describe('frontoffice: hospital isolation', () => {
   it("never shows or changes one hospital's appointments and queue from another", async () => {
     const p = await newPatient();
@@ -420,5 +474,231 @@ describe('frontoffice: hospital isolation', () => {
     expect(queue.json().items.find((v: { patientId: string }) => v.patientId === p.id)).toBeUndefined();
     const dupes = await app.inject({ method: 'GET', url: `/api/v1/frontoffice/patients/duplicates?firstName=Queue&lastName=${p.lastName}`, headers: bearer(otherHospital) });
     expect(dupes.json()).toEqual([]);
+  });
+});
+
+describe('frontoffice: OPD billing', () => {
+  let feeDoctorId: string;
+  let codes: { consultation: string; followUp: string };
+  let tenantId: string;
+  const api = (token: string, method: string, url: string, payload?: unknown) =>
+    app.inject({ method: method as 'GET', url: `/api/v1${url}`, headers: h(token), payload: payload as object });
+  const service = async (code: string) =>
+    (await api(admin, 'GET', `/billing/services?q=${code}&active=all`)).json().items.find((s: { code: string }) => s.code === code);
+  const walkIn = async (patientId: string, doc = feeDoctorId) => {
+    const res = await api(reception, 'POST', '/frontoffice/walk-ins', { patientId, doctorId: doc });
+    expect(res.statusCode, res.body).toBe(201);
+    return res.json();
+  };
+  const move = (id: string, action: string, token = reception) => api(token, 'POST', `/frontoffice/visits/${id}/transition`, { action });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const charges = async (patientId: string) => (await api(admin, 'GET', `/billing/charges?patientId=${patientId}`)).json().items as Array<Record<string, any>>;
+  const setRules = async (rules: Record<string, unknown>) => {
+    const res = await api(admin, 'PUT', '/billing/rules', { rules });
+    expect(res.statusCode, res.body).toBe(200);
+  };
+  const profile = (fees: Record<string, unknown>) => api(admin, 'PUT', `/setup/staff/${feeDoctorId}/profile`, { staffType: 'doctor', ...fees });
+
+  beforeAll(async () => {
+    const me = (await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: bearer(admin) })).json();
+    tenantId = me.tenantId;
+    const roles = (await api(admin, 'GET', '/setup/roles')).json() as { id: string; key: string }[];
+    const created = await api(admin, 'POST', '/setup/users', {
+      name: `Dr. Fee ${run}`,
+      email: `dr.fee.${run}@demo.hms`,
+      roles: [{ roleId: roles.find((r) => r.key === 'doctor')!.id }],
+      staffProfile: { staffType: 'doctor', consultationFee: 500, followUpFee: 200, followUpDays: 7 },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    feeDoctorId = created.json().id;
+    const last8 = feeDoctorId.replace(/-/g, '').slice(-8).toUpperCase();
+    codes = { consultation: `CONS-${last8}`, followUp: `FUP-${last8}` };
+    // Start from the hospital's default rules.
+    await api(admin, 'PUT', '/billing/rules', { replace: true, rules: {} });
+    await api(admin, 'PUT', '/billing/rules', { facilityId, replace: true, rules: {} });
+  });
+  afterAll(async () => {
+    await api(admin, 'PUT', '/billing/rules', { replace: true, rules: {} });
+  });
+
+  it("keeps the doctor's fees as billing services when the fee is edited in setup", async () => {
+    expect(await service(codes.consultation)).toMatchObject({ category: 'consultation', basePrice: 500, isActive: true });
+    expect((await service(codes.consultation)).name).toBe(`Consultation - Dr. Fee ${run}`);
+    expect(await service(codes.followUp)).toMatchObject({ basePrice: 200, isActive: true });
+
+    expect((await profile({ consultationFee: 600, followUpDays: 7 })).statusCode).toBe(200);
+    expect(await service(codes.consultation)).toMatchObject({ basePrice: 600, isActive: true });
+    // Follow-up fee cleared: its service is switched off.
+    expect(await service(codes.followUp)).toMatchObject({ isActive: false });
+
+    expect((await profile({ consultationFee: 600, followUpFee: 200, followUpDays: 7 })).statusCode).toBe(200);
+    expect(await service(codes.followUp)).toMatchObject({ basePrice: 200, isActive: true });
+  });
+
+  it("charges the doctor's fee at walk-in and the follow-up fee on a revisit inside the follow-up days", async () => {
+    const p = await newPatient();
+    const v1 = await walkIn(p.id);
+    expect(v1).toMatchObject({ feeType: 'full', paymentState: 'pending', collectNow: true });
+    expect(v1.chargeIds).toHaveLength(1);
+    let list = await charges(p.id);
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({
+      id: v1.chargeIds[0],
+      serviceCode: codes.consultation,
+      unitPrice: 600,
+      amount: 600,
+      status: 'pending',
+      visitId: v1.id,
+      account: 'opd',
+      doctorId: feeDoctorId,
+      sourceModule: 'frontoffice',
+      sourceRef: v1.id,
+      sourceLine: 'consultation',
+    });
+
+    // The queue shows the flag.
+    const q = (await api(reception, 'GET', `/frontoffice/queue?doctorId=${feeDoctorId}`)).json();
+    expect(q.items.find((v: { id: string }) => v.id === v1.id).paymentState).toBe('pending');
+    expect(q.billing).toEqual({ collectAtCheckIn: true, blockUnpaid: false });
+
+    // Flag only (default rule): the doctor can still see the patient.
+    expect((await move(v1.id, 'start')).statusCode).toBe(201);
+    expect((await move(v1.id, 'complete')).statusCode).toBe(201);
+
+    const v2 = await walkIn(p.id);
+    expect(v2.feeType).toBe('follow_up');
+    list = await charges(p.id);
+    expect(list.find((c) => c.sourceRef === v2.id)).toMatchObject({ serviceCode: codes.followUp, unitPrice: 200, status: 'pending' });
+    expect((await move(v2.id, 'start')).statusCode).toBe(201);
+    expect((await move(v2.id, 'complete')).statusCode).toBe(201);
+
+    // The hospital always charges the full fee.
+    await setRules({ followUp: 'full_fee' });
+    const v3 = await walkIn(p.id);
+    expect(v3.feeType).toBe('full');
+    expect((await charges(p.id)).find((c) => c.sourceRef === v3.id)).toMatchObject({ serviceCode: codes.consultation, unitPrice: 600 });
+    await move(v3.id, 'cancel');
+    await setRules({ followUp: 'doctor_fee' });
+
+    // A free follow-up (fee 0) posts no charge.
+    expect((await profile({ consultationFee: 600, followUpFee: 0, followUpDays: 7 })).statusCode).toBe(200);
+    const v4 = await walkIn(p.id);
+    expect(v4).toMatchObject({ feeType: 'free_follow_up', chargeIds: [], paymentState: 'none' });
+    expect((await charges(p.id)).filter((c) => c.sourceRef === v4.id)).toHaveLength(0);
+    await move(v4.id, 'cancel');
+    expect((await profile({ consultationFee: 600, followUpFee: 200, followUpDays: 7 })).statusCode).toBe(200);
+  });
+
+  it('charges at check-in, not at booking, and cancelling the appointment cancels the charge', async () => {
+    const p = await newPatient();
+    let appt: { id: string; slotStart: string } | undefined;
+    for (let i = 0; i < 40 && !appt; i++) {
+      const start = slot(2 + i * 6 + Math.floor(Math.random() * 4));
+      if (istDate(start) !== istDate(new Date().toISOString())) break;
+      const res = await api(reception, 'POST', '/frontoffice/appointments', { patientId: p.id, doctorId: feeDoctorId, slotStart: start, type: 'new', durationMinutes: 5 });
+      if (res.statusCode === 201) appt = res.json();
+    }
+    if (!appt) return; // too close to midnight (IST) to book today
+    expect(await charges(p.id)).toHaveLength(0);
+
+    const checkIn = await api(reception, 'POST', `/frontoffice/appointments/${appt.id}/check-in`, {});
+    expect(checkIn.statusCode, checkIn.body).toBe(201);
+    const v = checkIn.json();
+    expect(v).toMatchObject({ kind: 'appointment', feeType: 'full', collectNow: true });
+    expect((await charges(p.id))[0]).toMatchObject({ id: v.chargeIds[0], unitPrice: 600, visitId: v.id, status: 'pending' });
+
+    const cancelled = await api(reception, 'POST', `/frontoffice/appointments/${appt.id}/cancel`, { reason: 'Had to leave' });
+    expect(cancelled.statusCode).toBe(201);
+    expect((await charges(p.id))[0]).toMatchObject({ status: 'cancelled' });
+  });
+
+  it('posts no charge for a doctor without a fee', async () => {
+    const p = await newPatient();
+    const v = await walkIn(p.id, doctorId);
+    expect(v).toMatchObject({ feeType: 'none', chargeIds: [], paymentState: 'none' });
+    expect(await charges(p.id)).toHaveLength(0);
+    await move(v.id, 'cancel');
+  });
+
+  it('cancelling a token cancels its pending consultation charge', async () => {
+    const p = await newPatient();
+    const v = await walkIn(p.id);
+    expect((await move(v.id, 'cancel')).statusCode).toBe(201);
+    expect((await charges(p.id))[0]).toMatchObject({ status: 'cancelled', sourceRef: v.id });
+  });
+
+  it('keeps an unpaid patient from being called when the hospital blocks unpaid OPD', async () => {
+    await setRules({ opdPayment: 'before', opdUnpaid: 'block' });
+    try {
+      const p = await newPatient();
+      const v = await walkIn(p.id);
+      const q = (await api(reception, 'GET', `/frontoffice/queue?doctorId=${feeDoctorId}`)).json();
+      expect(q.billing).toEqual({ collectAtCheckIn: true, blockUnpaid: true });
+
+      const refused = await move(v.id, 'call');
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().error).toMatchObject({ code: 'consultation_unpaid', message: 'Collect the consultation fee first' });
+      expect((await move(v.id, 'start')).statusCode).toBe(409);
+
+      const paid = await api(admin, 'POST', '/billing/charges/bill', { patientId: p.id, chargeIds: v.chargeIds, payNow: { mode: 'cash', amount: 600 } });
+      expect(paid.statusCode, paid.body).toBe(201);
+      expect((await api(reception, 'GET', `/frontoffice/visits/${v.id}`)).json().paymentState).toBe('paid');
+      expect((await move(v.id, 'call')).statusCode).toBe(201);
+      expect((await move(v.id, 'start')).statusCode).toBe(201);
+
+      // Paying at the end of the visit ('after'): no prompt and no block.
+      await setRules({ opdPayment: 'after' });
+      const p2 = await newPatient();
+      const v2 = await walkIn(p2.id);
+      expect(v2.collectNow).toBe(false);
+      expect((await move(v2.id, 'call')).statusCode).toBe(201);
+      await move(v2.id, 'cancel');
+    } finally {
+      await setRules({ opdPayment: 'before', opdUnpaid: 'flag' });
+    }
+  });
+
+  it('charges the registration fee when the hospital switches it on, and again once it expires', async () => {
+    await setRules({ registrationFee: { enabled: true, amount: 150, validityMonths: 12 } });
+    try {
+      const p = await newPatient();
+      const reg = await charges(p.id);
+      expect(reg).toHaveLength(1);
+      expect(reg[0]).toMatchObject({
+        description: 'Registration fee',
+        unitPrice: 150,
+        amount: 150,
+        status: 'pending',
+        sourceModule: 'patients',
+        sourceRef: p.id,
+        sourceLine: 'registration',
+        account: 'other',
+        visitId: null,
+      });
+
+      // Still valid at check-in: nothing more is posted (this doctor has no fee).
+      const v1 = await walkIn(p.id, doctorId);
+      expect(v1.chargeIds).toHaveLength(0);
+      await move(v1.id, 'cancel');
+      expect(await charges(p.id)).toHaveLength(1);
+
+      // Thirteen months later the registration is renewed at check-in, on that visit.
+      await app.get(DbService).asTenant({ tenantId }, (tx) =>
+        tx.execute(sql`update billing.charges set charge_date = charge_date - interval '13 months' where id = ${reg[0]!.id}`),
+      );
+      const v2 = await walkIn(p.id, doctorId);
+      expect(v2.chargeIds).toHaveLength(1);
+      const renewal = (await charges(p.id)).find((c) => c.id === v2.chargeIds[0]);
+      expect(renewal).toMatchObject({ description: 'Registration fee (renewal)', unitPrice: 150, visitId: v2.id, sourceModule: 'patients' });
+      expect(renewal!.sourceLine).toMatch(/^registration-\d{4}-\d{2}-\d{2}$/);
+      expect(v2.paymentState).toBe('pending');
+      await move(v2.id, 'cancel');
+
+      await setRules({ registrationFee: { enabled: false, amount: 150, validityMonths: 12 } });
+      const off = await newPatient();
+      expect(await charges(off.id)).toHaveLength(0);
+    } finally {
+      await setRules({ registrationFee: { enabled: false, amount: 0, validityMonths: 12 } });
+    }
   });
 });

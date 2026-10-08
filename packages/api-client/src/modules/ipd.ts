@@ -1,4 +1,4 @@
-import type { ImportRequest, ImportResult, Paginated, ipd as I } from '@hms/shared';
+import type { ImportRequest, ImportResult, Paginated, billing as B, ipd as I } from '@hms/shared';
 import type { Http } from '../http';
 
 /** IPD & Nursing endpoints. Owned by the "ipd" workstream. Types come from @hms/shared (ipd.*). */
@@ -59,6 +59,8 @@ export const ipdApi = (http: Http) => {
     },
     bill: {
       get: (id: string) => http.get<I.RunningBill>(`${adm(id)}/bill`),
+      /** Billing services for "Post a charge", searched by name or code. */
+      services: (q?: string) => http.get<Paginated<B.Service>>('/ipd/services', q ? { q } : {}),
       addCharge: (id: string, body: I.ChargeInput) => http.post<I.Charge>(`${adm(id)}/charges`, body),
       cancelCharge: (id: string, chargeId: string, body: I.CancelCharge) => http.post<I.Charge>(`${adm(id)}/charges/${chargeId}/cancel`, body),
       advance: (id: string, body: I.AdvanceInput) => http.post<I.Advance>(`${adm(id)}/advances`, body),

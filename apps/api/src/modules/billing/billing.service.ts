@@ -144,6 +144,21 @@ export class BillingService {
     return tx ? run(tx) : this.db.tx(run);
   }
 
+  /** Full invoice inside the caller's transaction (used by ChargesService after billing). */
+  invoiceInTx(tx: Tx, id: string): Promise<Invoice> {
+    return this.invoiceTx(tx, id);
+  }
+
+  /** Outbox publish for sibling billing services (tenant from the transaction). */
+  publishEvent(tx: Tx, topic: string, payload: Record<string, unknown>): Promise<void> {
+    return this.publish(tx, topic, payload);
+  }
+
+  /** Facility for a new record (explicit, checked against the user's access, or the request's facility). */
+  facilityFor(explicit?: string): string {
+    return this.resolveFacility(explicit);
+  }
+
   // =====================================================================
   // Settings
   // =====================================================================
@@ -305,7 +320,10 @@ export class BillingService {
         isActive: d.isActive,
         updatedBy: ctx.userId,
       };
-      const list = id ? await this.repo.updatePriceList(tx, id, values) : await this.repo.insertPriceList(tx, { ...values, createdBy: ctx.userId });
+      // An edit that does not send payerId keeps the list's payer, so a payer tariff never silently becomes a cash list (BIL-46).
+      const list = id
+        ? await this.repo.updatePriceList(tx, id, d.payerId === undefined ? { ...values, payerId: undefined } : values)
+        : await this.repo.insertPriceList(tx, { ...values, createdBy: ctx.userId });
       if (!list) throw notFound('Price list');
       await this.repo.replacePriceListItems(tx, list.id, d.items.map((i) => ({ serviceId: i.serviceId, price: rupees(paise(i.price)) })));
       return priceListDto(list, await this.repo.priceListItems(tx, [list.id]));

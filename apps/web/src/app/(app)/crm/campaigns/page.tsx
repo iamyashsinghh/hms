@@ -91,7 +91,7 @@ export default function CampaignsPage() {
             <ErrorBox error={save.error ? errorMessage(save.error) : null} />
             <div className="grid gap-4 sm:grid-cols-3">
               <Field id="cg-name" label="Name *" className="sm:col-span-2">
-                <Input id="cg-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Free eye check-up week" />
+                <Input id="cg-name" maxLength={200} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Free eye check-up week" />
               </Field>
               <Field id="cg-channel" label="Channel">
                 <Select id="cg-channel" value={form.channel} onChange={(e) => setForm({ ...form, channel: e.target.value as C.CampaignChannel })}>

@@ -3,7 +3,7 @@ import { and, asc, eq, hrAttendance, hrEmployees, hrRosterEntries, hrShifts, inA
 import { hr as contracts } from '@hms/shared';
 import { DbService } from '../../common/db/db.service';
 import { currentContext } from '../../common/context/request-context';
-import { conflict, notFound } from '../../common/errors/errors';
+import { badRequest, conflict, notFound } from '../../common/errors/errors';
 import { EmployeesService } from './employees.service';
 import { requireFacility, RosterService, toShift } from './roster.service';
 import { addDays, istInstant, monthRange, shiftMinutes, todayIST } from './hr.util';
@@ -67,6 +67,9 @@ export class AttendanceService {
         const checkIn = working && r.checkIn ? istInstant(date, r.checkIn) : null;
         let checkOut = working && r.checkOut ? istInstant(date, r.checkOut) : null;
         if (checkIn && checkOut && checkOut <= checkIn) checkOut = new Date(checkOut.getTime() + 86_400_000);
+        const soon = Date.now() + 5 * 60_000;
+        if (checkIn && checkIn.getTime() > soon) throw badRequest('future_time', `${emp.fullName}: in time cannot be in the future`);
+        if (checkOut && checkOut.getTime() > soon) throw badRequest('future_time', `${emp.fullName}: out time cannot be in the future`);
         const shift = (await this.roster.entryFor(tx, emp.id, date))?.shift ?? null;
         const times = computeTimes(date, shift, checkIn, checkOut);
         const values = {

@@ -70,8 +70,10 @@ beforeAll(async () => {
   expect(store.statusCode, store.body).toBe(201);
   storeId = store.json().id;
 
-  const patients = await app.inject({ method: 'GET', url: '/api/v1/patients', headers: bearer(pharmacist) });
-  patientId = patients.json().items[0].id;
+  // A patient of our own: an admitted patient's medicines would go on the IPD bill instead.
+  const patient = await app.inject({ method: 'POST', url: '/api/v1/patients', headers: bearer(admin), payload: { firstName: 'Counter', lastName: `Buyer${run}`, gender: 'male', ageYears: 40, mobile: '9876500001' } });
+  expect(patient.statusCode, patient.body).toBe(201);
+  patientId = patient.json().id;
 });
 afterAll(() => app.close());
 
@@ -286,6 +288,94 @@ describe('stock, FEFO sales and returns', () => {
   });
 });
 
+describe('medicines for admitted patients', () => {
+  let inpatient: string;
+  let admissionId: string;
+  let item: { id: string; name: string };
+  const api = (token: string, method: string, url: string, payload?: unknown) =>
+    app.inject({ method, url: `/api/v1${url}`, headers: { ...bearer(token), 'x-facility-id': facilityId }, payload } as Parameters<typeof app.inject>[0]);
+  const ipdBill = async () => (await api(admin, 'GET', `/ipd/admissions/${admissionId}/bill`)).json();
+  const pharmacyCharges = async () =>
+    (await ipdBill()).charges.filter((c: { sourceModule: string }) => c.sourceModule === 'pharmacy') as { id: string; qty: number; amount: number; status: string; invoiceNumber: string | null }[];
+
+  beforeAll(async () => {
+    const ward = await api(admin, 'POST', '/ipd/wards', { code: `PW${run}`.slice(0, 20), name: `Pharm ward ${run}`, wardType: 'general', defaultDailyRate: 1000 });
+    expect(ward.statusCode, ward.body).toBe(201);
+    const [bed] = (await api(admin, 'POST', '/ipd/beds/bulk', { wardId: ward.json().id, prefix: 'P', from: 1, to: 1 })).json();
+    const p = await api(admin, 'POST', '/patients', { firstName: 'Ward', lastName: `Patient${run}`, gender: 'female', ageYears: 60, mobile: '9876500002' });
+    inpatient = p.json().id;
+    const doctorId = (await login(app, 'doctor@demo.hms')).user.id;
+    const adm = await api(admin, 'POST', '/ipd/admissions', { patientId: inpatient, bedId: bed.id, doctorId, reason: 'Pneumonia' });
+    expect(adm.statusCode, adm.body).toBe(201);
+    admissionId = adm.json().id;
+    item = await newItem({ gstRate: 12 });
+    await stockUp(item.id, [{ batchNo: 'IPD1', expiryDate: daysFromNow(300), mrp: 56, qty: 50 }]);
+  });
+  afterAll(() => api(admin, 'PUT', '/billing/rules', { facilityId, replace: true, rules: {} }));
+
+  it('puts the medicines on the IPD bill (no invoice, nothing collected) under the default rule', async () => {
+    const res = await call(pharmacist, 'POST', '/sales', { storeId, patientId: inpatient, paymentMode: 'cash', lines: [{ itemId: item.id, qty: 3, discountPct: 10 }] });
+    expect(res.statusCode, res.body).toBe(201);
+    expect(res.json()).toMatchObject({ onIpdBill: true, admissionId, invoiceId: null, paymentMode: null, total: 151.2 });
+    const charges = await pharmacyCharges();
+    expect(charges).toEqual([expect.objectContaining({ qty: 3, amount: 151.2, status: 'pending', priceIncludesTax: true, taxRate: 12, unitPrice: 56, itemId: item.id })]);
+    // Charges from pharmacy are reversed in pharmacy (a return), not cancelled on the IPD screen.
+    const cancel = await api(admin, 'POST', `/ipd/admissions/${admissionId}/charges/${charges[0]!.id}/cancel`, { reason: 'Not given' });
+    expect(cancel.statusCode).toBe(409);
+    expect(cancel.json().error.code).toBe('cancel_at_source');
+  });
+
+  it('a return of a line still on the running bill reduces the charge; no money moves', async () => {
+    const sale = (await call(pharmacist, 'GET', `/sales?q=${encodeURIComponent('')}`)).json().items.find((s: { admissionId: string | null }) => s.admissionId === admissionId);
+    const detail = (await call(pharmacist, 'GET', `/sales/${sale.id}`)).json();
+    const r = await call(pharmacist, 'POST', `/sales/${sale.id}/returns`, { reason: 'Stopped', lines: [{ saleLineId: detail.lines[0].id, qty: 1 }] });
+    expect(r.statusCode, r.body).toBe(201);
+    expect(r.json()).toMatchObject({ refundAmount: 0, refundMode: null, creditNoteNumber: null });
+    expect(await pharmacyCharges()).toEqual([expect.objectContaining({ qty: 2, amount: 100.8, status: 'pending' })]);
+  });
+
+  it("follows the hospital's rule: a separate pharmacy bill per issue", async () => {
+    expect((await api(admin, 'PUT', '/billing/rules', { facilityId, rules: { ipdPharmacy: 'separate' } })).statusCode).toBe(200);
+    const res = await call(pharmacist, 'POST', '/sales', { storeId, patientId: inpatient, paymentMode: 'credit', lines: [{ itemId: item.id, qty: 1 }] });
+    expect(res.statusCode, res.body).toBe(201);
+    expect(res.json()).toMatchObject({ onIpdBill: false, admissionId: null, paymentMode: 'credit', invoiceId: expect.any(String) });
+    expect(await pharmacyCharges()).toHaveLength(1);
+    await api(admin, 'PUT', '/billing/rules', { facilityId, replace: true, rules: {} });
+  });
+
+  it('the IPD final bill includes the medicines; the sale gets the bill number; later returns are credited on it', async () => {
+    const fin = await api(admin, 'POST', `/ipd/admissions/${admissionId}/bill/finalize`, {});
+    expect(fin.statusCode, fin.body).toBe(201);
+    const inv = (await api(admin, 'GET', `/billing/invoices/${fin.json().invoiceId}`)).json();
+    expect(inv.lines.some((l: { description: string; itemId: string }) => l.itemId === item.id)).toBe(true);
+    expect(await pharmacyCharges()).toEqual([expect.objectContaining({ status: 'billed', invoiceNumber: inv.number })]);
+
+    // The worker hands billing.charges.billed to pharmacy (twice: delivery is at least once).
+    const rows = await app.get(DbService).asTenant({ tenantId }, async (tx) =>
+      (await tx.execute<{ id: string; payload: Record<string, unknown>; created_at: string }>(
+        sql`select id, payload, created_at from audit.outbox where topic = 'billing.charges.billed' and payload->>'invoiceId' = ${inv.id}`,
+      )).rows,
+    );
+    expect(rows).toHaveLength(1);
+    const event = { id: rows[0]!.id, tenantId, topic: 'billing.charges.billed', payload: rows[0]!.payload, createdAt: new Date(rows[0]!.created_at).toISOString() };
+    await app.get(EventBus).dispatch(event);
+    await app.get(EventBus).dispatch(event);
+    const sale = (await call(pharmacist, 'GET', '/sales')).json().items.find((s: { admissionId: string | null }) => s.admissionId === admissionId);
+    expect(sale).toMatchObject({ invoiceId: inv.id, invoiceNumber: inv.number, onIpdBill: true });
+
+    const detail = (await call(pharmacist, 'GET', `/sales/${sale.id}`)).json();
+    const r = await call(pharmacist, 'POST', `/sales/${sale.id}/returns`, { reason: 'Unused at discharge', lines: [{ saleLineId: detail.lines[0].id, qty: 1 }] });
+    expect(r.statusCode, r.body).toBe(201);
+    expect(r.json()).toMatchObject({ refundAmount: 50.4, creditNoteNumber: expect.any(String) });
+    expect((await api(admin, 'GET', `/billing/invoices/${inv.id}`)).json().creditedAmount).toBe(50.4);
+  });
+
+  it('counter sales for patients who are not admitted are unchanged', async () => {
+    const res = await call(pharmacist, 'POST', '/sales', { storeId, patientId, paymentMode: 'cash', lines: [{ itemId: item.id, qty: 1 }] });
+    expect(res.json()).toMatchObject({ onIpdBill: false, admissionId: null, invoiceId: expect.any(String), paymentMode: 'cash' });
+  });
+});
+
 describe('prescription dispense queue', () => {
   it('queues EMR prescriptions once, matches items, dispenses partially then fully and publishes dispense.completed', async () => {
     const item = await newItem();
@@ -402,5 +492,104 @@ describe('pharmacy access control', () => {
     const mine = await db.asTenant({ tenantId }, (tx) => pharmacy.getStore(storeId, tx));
     expect(mine).toMatchObject({ id: storeId, facilityId, name: `Pharmacy ${run}`, type: expect.any(String), isActive: true });
     await expect(db.asTenant({ tenantId: randomUUID() }, (tx) => pharmacy.getStore(storeId, tx))).rejects.toThrow();
+  });
+});
+
+describe('pharmacy validation', () => {
+  const msg = (res: { json: () => { error: { message: string } } }) => res.json().error.message;
+
+  it('only accepts GST slabs on drugs and GRN lines (PHA-41)', async () => {
+    const bad = await call(pharmacist, 'POST', '/items', { code: `GST${run}`, name: 'Seven percent drug', gstRate: 7 });
+    expect(bad.statusCode).toBe(400);
+    expect(msg(bad)).toContain('Use a GST slab: 0, 0.1, 0.25, 3, 5, 12, 18, 28 or 40');
+    const ok = await newItem({ gstRate: 12 });
+    const upd = await call(pharmacist, 'PATCH', `/items/${ok.id}`, { gstRate: 7 });
+    expect(upd.statusCode).toBe(400);
+    const grn = await call(pharmacist, 'POST', '/grns', {
+      storeId,
+      supplierName: 'Slab Pharma',
+      lines: [{ itemId: ok.id, batchNo: 'S1', expiryDate: daysFromNow(300), mrp: 10, qty: 1, gstRate: 7 }],
+    });
+    expect(grn.statusCode).toBe(400);
+    expect(msg(grn)).toContain('Use a GST slab');
+  });
+
+  it('refuses a patient sale of a legacy non-slab item with a clear message, before any stock moves', async () => {
+    const item = await newItem();
+    await stockUp(item.id, [{ batchNo: 'L7', expiryDate: daysFromNow(200), mrp: 10, qty: 5 }]);
+    await app.get(DbService).asTenant({ tenantId }, (tx) => tx.execute(sql`update inventory.items set gst_rate = 7 where id = ${item.id}`));
+    const sale = await call(pharmacist, 'POST', '/sales', { storeId, patientId, lines: [{ itemId: item.id, qty: 1 }] });
+    expect(sale.statusCode).toBe(400);
+    expect(sale.json().error.code).toBe('gst_rate_not_slab');
+    expect(msg(sale)).toMatch(/GST 7%.*pick a GST slab/);
+    expect(await stockOf(item.id)).toBe(5);
+    const walkIn = await call(pharmacist, 'POST', '/sales', { storeId, lines: [{ itemId: item.id, qty: 1 }] });
+    expect(walkIn.statusCode, walkIn.body).toBe(201);
+  });
+
+  it('keeps fields that a partial update does not send', async () => {
+    const item = await newItem({ gstRate: 12, schedule: 'H', unit: 'strip', packSize: 10, reorderLevel: 7 });
+    const off = await call(pharmacist, 'PATCH', `/items/${item.id}`, { isActive: false });
+    expect(off.statusCode, off.body).toBe(200);
+    expect(off.json()).toMatchObject({ isActive: false, gstRate: 12, schedule: 'H', unit: 'strip', packSize: 10, reorderLevel: 7 });
+  });
+
+  it('checks batch expiry, invoice date and MRP when receiving stock', async () => {
+    const item = await newItem();
+    const line = { itemId: item.id, batchNo: 'E1', mrp: 10, qty: 5 };
+    const expired = await call(pharmacist, 'POST', '/grns', { storeId, supplierName: 'Exp Pharma', lines: [{ ...line, expiryDate: daysFromNow(-3) }] });
+    expect(expired.statusCode).toBe(400);
+    expect(msg(expired)).toContain('already expired');
+    const future = await call(pharmacist, 'POST', '/grns', {
+      storeId,
+      supplierName: 'Exp Pharma',
+      invoiceDate: daysFromNow(5),
+      lines: [{ ...line, expiryDate: daysFromNow(300) }],
+    });
+    expect(future.statusCode).toBe(400);
+    expect(msg(future)).toContain('Invoice date cannot be in the future');
+    const zeroMrp = await call(pharmacist, 'POST', '/stock/opening', { storeId, lines: [{ ...line, mrp: 0, expiryDate: daysFromNow(300) }] });
+    expect(zeroMrp.statusCode).toBe(400);
+    expect(msg(zeroMrp)).toContain('MRP must be more than 0');
+    const aboveMrp = await call(pharmacist, 'POST', '/stock/opening', { storeId, lines: [{ ...line, saleRate: 11, expiryDate: daysFromNow(300) }] });
+    expect(aboveMrp.statusCode).toBe(400);
+    expect(msg(aboveMrp)).toContain('Sale rate cannot be more than MRP');
+    const badDate = await call(pharmacist, 'POST', '/stock/opening', { storeId, lines: [{ ...line, expiryDate: '2026-02-30' }] });
+    expect(badDate.statusCode).toBe(400);
+    // Opening stock may still record already-expired units (to write them off).
+    const oldStock = await call(pharmacist, 'POST', '/stock/opening', { storeId, lines: [{ ...line, expiryDate: daysFromNow(-3) }] });
+    expect(oldStock.statusCode, oldStock.body).toBe(201);
+    const good = await call(pharmacist, 'POST', '/grns', {
+      storeId,
+      supplierName: 'Exp Pharma',
+      supplierGstin: '',
+      invoiceDate: daysFromNow(-1),
+      lines: [{ ...line, expiryDate: daysFromNow(300) }],
+    });
+    expect(good.statusCode, good.body).toBe(201);
+  });
+
+  it('checks walk-in mobile, credit sales and expiry write-off sign', async () => {
+    const item = await newItem();
+    await stockUp(item.id, [{ batchNo: 'W1', expiryDate: daysFromNow(200), mrp: 10, qty: 5 }]);
+    const bad = await call(pharmacist, 'POST', '/sales', { storeId, customerMobile: '12345', lines: [{ itemId: item.id, qty: 1 }] });
+    expect(bad.statusCode).toBe(400);
+    expect(msg(bad)).toContain('Enter a 10-digit Indian mobile number');
+    const credit = await call(pharmacist, 'POST', '/sales', { storeId, paymentMode: 'credit', lines: [{ itemId: item.id, qty: 1 }] });
+    expect(credit.statusCode).toBe(400);
+    expect(msg(credit)).toContain('Credit sales need a registered patient');
+    const ok = await call(pharmacist, 'POST', '/sales', { storeId, customerMobile: '+91 98100-12345', lines: [{ itemId: item.id, qty: 1, discountPct: 10 }] });
+    expect(ok.statusCode, ok.body).toBe(201);
+    expect(ok.json().customerMobile).toBe('9810012345');
+    const badDisc = await call(pharmacist, 'POST', '/sales', { storeId, lines: [{ itemId: item.id, qty: 1, discountPct: 120 }] });
+    expect(badDisc.statusCode).toBe(400);
+
+    const batch = (await call(pharmacist, 'GET', `/stores/${storeId}/items/${item.id}/batches`)).json()[0];
+    const plus = await call(pharmacist, 'POST', '/stock/adjustments', { storeId, batchId: batch.batchId, qtyChange: 5, type: 'expiry_writeoff', reason: 'Expired' });
+    expect(plus.statusCode).toBe(400);
+    expect(msg(plus)).toContain('use a negative quantity');
+    const range = await call(pharmacist, 'GET', `/sales?from=${daysFromNow(1)}&to=${daysFromNow(-1)}`);
+    expect(range.statusCode).toBe(400);
+    expect(msg(range)).toContain('End date is before start date');
   });
 });

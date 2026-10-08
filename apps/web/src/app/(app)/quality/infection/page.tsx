@@ -5,6 +5,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { Loader2, Pencil, Plus } from 'lucide-react';
 import { quality as Q } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { firstError, validate, type FieldErrors } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -157,9 +158,16 @@ function CaseForm({ initial, onDone }: { initial?: Q.HaiCase; onDone: () => void
   const [status, setStatus] = React.useState<Q.HaiStatus | ''>(initial?.status ?? 'suspected');
   const [invalid, setInvalid] = React.useState<string | null>(null);
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setF({ ...f, [k]: e.target.value });
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const save = useMutation({
-    mutationFn: () => {
-      const common = {
+    mutationFn: (b: Q.CreateHai | Q.UpdateHai) => (initial ? api.quality.hai.update(initial.id, b as Q.UpdateHai) : api.quality.hai.create(b as Q.CreateHai)),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['quality'] });
+      onDone();
+    },
+  });
+  const body = (): Q.CreateHai | Q.UpdateHai => {
+    const common = {
         infectionType: f.infectionType as Q.HaiType,
         ward: f.ward,
         onsetDate: f.onsetDate,
@@ -168,23 +176,11 @@ function CaseForm({ initial, onDone }: { initial?: Q.HaiCase; onDone: () => void
         cultureRef: f.cultureRef,
         notes: f.notes,
         status: status || 'suspected',
-      };
-      return initial
-        ? api.quality.hai.update(initial.id, { ...common, deviceInsertedOn: f.deviceInsertedOn || null })
-        : api.quality.hai.create({ ...common, patientId: patient!.id, deviceInsertedOn: f.deviceInsertedOn || undefined });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['quality'] });
-      onDone();
-    },
-  });
-  const validate = (): string | null => {
-    if (!patient) return 'Pick the patient';
-    if (!f.infectionType) return 'Pick the infection type';
-    if (!f.onsetDate) return 'Onset date is required';
-    if (f.onsetDate > todayIST()) return 'Onset date cannot be in the future';
-    if (f.deviceInsertedOn && f.deviceInsertedOn > f.onsetDate) return 'Device insertion / surgery date must be on or before the onset date';
-    return null;
+    };
+    // On edit an emptied device / surgery date is cleared; patient and case number stay.
+    return initial
+      ? { ...common, deviceInsertedOn: f.deviceInsertedOn || null }
+      : { ...common, patientId: patient?.id ?? '', deviceInsertedOn: f.deviceInsertedOn || undefined };
   };
   return (
     <Card>
@@ -196,9 +192,11 @@ function CaseForm({ initial, onDone }: { initial?: Q.HaiCase; onDone: () => void
           className="grid gap-4 sm:grid-cols-3"
           onSubmit={(e) => {
             e.preventDefault();
-            const problem = validate();
-            setInvalid(problem);
-            if (!problem) save.mutate();
+            const b = body();
+            const { errors: found } = validate(initial ? Q.updateHaiSchema : Q.createHaiSchema, b);
+            setErrors(found ?? {});
+            setInvalid(firstError(found));
+            if (!found) save.mutate(b);
           }}
         >
           <div className="sm:col-span-3">
@@ -216,11 +214,11 @@ function CaseForm({ initial, onDone }: { initial?: Q.HaiCase; onDone: () => void
           <Field id="hai-type" label="Infection *">
             <EnumSelect id="hai-type" value={f.infectionType} onChange={(v) => setF({ ...f, infectionType: v })} options={Q.HAI_TYPES} labels={HAI_LABELS} placeholder="Choose…" />
           </Field>
-          <Field id="hai-onset" label="Onset date *">
+          <Field id="hai-onset" label="Onset date *" error={errors.onsetDate}>
             <Input id="hai-onset" type="date" required max={todayIST()} value={f.onsetDate} onChange={set('onsetDate')} />
           </Field>
-          <Field id="hai-device" label={f.infectionType === 'ssi' ? 'Surgery date' : 'Device inserted on'}>
-            <Input id="hai-device" type="date" max={f.onsetDate} value={f.deviceInsertedOn} onChange={set('deviceInsertedOn')} />
+          <Field id="hai-device" label={f.infectionType === 'ssi' ? 'Surgery date' : 'Device inserted on'} error={errors.deviceInsertedOn}>
+            <Input id="hai-device" type="date" max={f.onsetDate || todayIST()} value={f.deviceInsertedOn} onChange={set('deviceInsertedOn')} />
           </Field>
           <Field id="hai-ward" label="Ward">
             <Input id="hai-ward" maxLength={80} value={f.ward} onChange={set('ward')} />
@@ -262,25 +260,26 @@ function Census() {
   const blank = { day: todayIST(), ward: 'All', patientDays: '', catheterDays: '', centralLineDays: '', ventilatorDays: '', surgeries: '' };
   const [f, setF] = React.useState(blank);
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value });
+  const [errors, setErrors] = React.useState<FieldErrors>({});
+  const censusBody = (): Q.CensusInput => ({
+    day: f.day,
+    ward: f.ward || 'All',
+    patientDays: f.patientDays || 0,
+    catheterDays: f.catheterDays || 0,
+    centralLineDays: f.centralLineDays || 0,
+    ventilatorDays: f.ventilatorDays || 0,
+    surgeries: f.surgeries || 0,
+  });
   const save = useMutation({
-    mutationFn: () =>
-      api.quality.census.save({
-        day: f.day,
-        ward: f.ward || 'All',
-        patientDays: Number(f.patientDays || 0),
-        catheterDays: Number(f.catheterDays || 0),
-        centralLineDays: Number(f.centralLineDays || 0),
-        ventilatorDays: Number(f.ventilatorDays || 0),
-        surgeries: Number(f.surgeries || 0),
-      }),
+    mutationFn: (body: Q.CensusInput) => api.quality.census.save(body),
     onSuccess: () => {
       setF({ ...blank, day: f.day });
       queryClient.invalidateQueries({ queryKey: ['quality'] });
     },
   });
   const num = (k: keyof typeof f, label: string) => (
-    <Field id={`c-${k}`} label={label}>
-      <Input id={`c-${k}`} type="number" min={0} value={f[k]} onChange={set(k)} />
+    <Field id={`c-${k}`} label={label} error={errors[k]}>
+      <Input id={`c-${k}`} type="number" min={0} max={100000} step={1} value={f[k]} onChange={set(k)} />
     </Field>
   );
   return (
@@ -297,10 +296,13 @@ function Census() {
           className="grid gap-3 sm:grid-cols-4 lg:grid-cols-8"
           onSubmit={(e) => {
             e.preventDefault();
-            save.mutate();
+            const b = censusBody();
+            const { errors: found } = validate(Q.censusInputSchema, b);
+            setErrors(found ?? {});
+            if (!found) save.mutate(b);
           }}
         >
-          <Field id="c-day" label="Day">
+          <Field id="c-day" label="Day" error={errors.day}>
             <Input id="c-day" type="date" max={todayIST()} value={f.day} onChange={set('day')} />
           </Field>
           <Field id="c-ward" label="Ward">

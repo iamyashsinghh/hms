@@ -125,7 +125,7 @@ export class OrgService {
     const c = ctx();
     return this.db.tx(async (tx) => {
       const [dup] = await tx.select({ id: setupDepartments.id }).from(setupDepartments).where(eq(setupDepartments.code, input.code)).limit(1);
-      if (dup) throw conflict('duplicate_code', `S.Department code ${input.code} is already used`);
+      if (dup) throw conflict('duplicate_code', `Department code ${input.code} is already used`);
       if (input.facilityId) await this.findFacility(tx, input.facilityId).catch(() => {
         throw badRequest('invalid_facility', 'Facility not found');
       });
@@ -150,10 +150,10 @@ export class OrgService {
     const c = ctx();
     return this.db.tx(async (tx) => {
       const [cur] = await tx.select().from(setupDepartments).where(eq(setupDepartments.id, id)).limit(1);
-      if (!cur) throw notFound('S.Department');
+      if (!cur) throw notFound('Department');
       if (input.code && input.code !== cur.code) {
         const [dup] = await tx.select({ id: setupDepartments.id }).from(setupDepartments).where(eq(setupDepartments.code, input.code)).limit(1);
-        if (dup) throw conflict('duplicate_code', `S.Department code ${input.code} is already used`);
+        if (dup) throw conflict('duplicate_code', `Department code ${input.code} is already used`);
       }
       if (input.facilityId) await this.findFacility(tx, input.facilityId).catch(() => {
         throw badRequest('invalid_facility', 'Facility not found');
@@ -193,7 +193,7 @@ export class OrgService {
     const c = ctx();
     return this.db.tx(async (tx) => {
       const [dup] = await tx.select({ id: setupSpecializations.id }).from(setupSpecializations).where(eq(setupSpecializations.code, input.code)).limit(1);
-      if (dup) throw conflict('duplicate_code', `S.Specialization code ${input.code} is already used`);
+      if (dup) throw conflict('duplicate_code', `Specialization code ${input.code} is already used`);
       const [row] = await tx.insert(setupSpecializations).values({ tenantId: c.tenantId, code: input.code, name: input.name }).returning();
       return specializationDto(row!);
     });
@@ -210,7 +210,7 @@ export class OrgService {
         })
         .where(eq(setupSpecializations.id, id))
         .returning();
-      if (!row) throw notFound('S.Specialization');
+      if (!row) throw notFound('Specialization');
       return specializationDto(row);
     });
   }

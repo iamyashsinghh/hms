@@ -3,9 +3,11 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { config } from 'dotenv';
 import { Client } from 'pg';
-import { DEMO_PASSWORD, provisionTenant, upsertUser } from '@hms/db';
+import { DEMO_PASSWORD, provisionTenant, sql, upsertUser } from '@hms/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { DbService } from '../src/common/db/db.service';
 import { EventBus } from '../src/common/events/event-bus';
+import { ChargesService } from '../src/modules/billing/charges.service';
 import { bearer, bootApp, login } from './helpers';
 
 let app: NestFastifyApplication;
@@ -67,7 +69,7 @@ async function registerPatient(mobile: string, firstName = 'Portal') {
   return res.json() as { id: string; uhid: string };
 }
 
-function emit(topic: string, payload: Record<string, unknown>, id = randomUUID(), tenantId = demoTenantId) {
+function emit(topic: string, payload: Record<string, unknown>, id: string = randomUUID(), tenantId = demoTenantId) {
   return app.get(EventBus).dispatch({ id, tenantId, topic, payload, createdAt: new Date().toISOString() });
 }
 
@@ -324,6 +326,40 @@ describe('portal: records from other modules and online payment', () => {
     expect(bills[0]).toMatchObject({ paid: '500.00', due: '0.00', status: 'paid' });
   });
 
+  it('shows charges not billed yet, then the bill the desk made from them', async () => {
+    const mobile = randomMobile();
+    const patient = await registerPatient(mobile, 'Charges');
+    const s = await patientLogin(mobile);
+    const me = (await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: bearer(reception) })).json();
+    const facilityId = me.facilities[0].id as string;
+    const db = app.get(DbService);
+    const charges = app.get(ChargesService);
+    const inTenant = <T>(fn: (tx: Parameters<Parameters<DbService['asTenant']>[1]>[0]) => Promise<T>) => db.asTenant({ tenantId: demoTenantId }, fn);
+    const ref = randomUUID();
+    const lab = await inTenant((tx) => charges.postCharge(tx, { patientId: patient.id, facilityId, source: { module: 'lab', refId: ref }, description: 'CBC', unitPrice: 350, taxRate: 0 }));
+    await inTenant((tx) => charges.postCharge(tx, { patientId: patient.id, facilityId, source: { module: 'ops', refId: ref }, description: 'Ambulance', unitPrice: 800, taxRate: 0 }));
+
+    const pending = await app.inject({ method: 'GET', url: '/api/v1/portal/bills/pending', headers: bearer(s.accessToken) });
+    expect(pending.statusCode, pending.body).toBe(200);
+    expect(pending.json()).toEqual([expect.objectContaining({ patientId: patient.id, count: 2, total: '1150.00' })]);
+
+    // The desk bills the lab charge (sourceModule 'billing' on the invoice) and takes part of it.
+    const inv = await inTenant((tx) => charges.billCharges(tx, { patientId: patient.id, chargeIds: [lab.id], payNow: { mode: 'cash', amount: 100 } }));
+    const events = await inTenant(async (tx) => {
+      const r = await tx.execute<{ id: string; topic: string; payload: Record<string, unknown>; created_at: string }>(
+        sql`select id, topic, payload, created_at from audit.outbox where payload->>'invoiceId' = ${inv.id} order by created_at, id`,
+      );
+      return r.rows;
+    });
+    expect(events.map((e) => e.topic)).toEqual(expect.arrayContaining(['billing.invoice.finalized', 'billing.payment.received']));
+    for (const e of events) await emit(e.topic, e.payload, e.id);
+
+    const bills = (await app.inject({ method: 'GET', url: '/api/v1/portal/bills', headers: bearer(s.accessToken) })).json();
+    expect(bills).toEqual([expect.objectContaining({ invoiceId: inv.id, number: inv.number, total: '350.00', paid: '100.00', due: '250.00', status: 'partially_paid' })]);
+    const after = (await app.inject({ method: 'GET', url: '/api/v1/portal/bills/pending', headers: bearer(s.accessToken) })).json();
+    expect(after).toEqual([expect.objectContaining({ count: 1, total: '800.00' })]);
+  });
+
   it("never shows one family's or one hospital's records to another", async () => {
     const mobile = randomMobile();
     const patient = await registerPatient(mobile, 'Private');
@@ -349,5 +385,56 @@ describe('portal: records from other modules and online payment', () => {
     expect(cityInbox.json().items.find((i: { patientId: string }) => i.patientId === patient.id)).toBeUndefined();
     const cityFeedback = await app.inject({ method: 'GET', url: '/api/v1/portal/staff/feedback', headers: bearer(cityAdmin) });
     expect(cityFeedback.json().items.every((f: { patientName: string }) => f.patientName !== '')).toBe(true);
+  });
+});
+
+describe('portal: input validation', () => {
+  it('checks family member details, booking dates and feedback ratings', async () => {
+    const s = await patientLogin(randomMobile());
+    const h = bearer(s.accessToken);
+    const add = (payload: Record<string, unknown>) => app.inject({ method: 'POST', url: '/api/v1/portal/family', headers: h, payload });
+
+    const futureDob = await add({ firstName: 'Baby', gender: 'female', dateOfBirth: '2999-01-01', relation: 'child' });
+    expect(futureDob.statusCode).toBe(400);
+    expect(futureDob.json().error.message).toContain('Date of birth cannot be in the future');
+    const digits = await add({ firstName: 'R2D2', gender: 'male', ageYears: 4, relation: 'child' });
+    expect(digits.statusCode).toBe(400);
+    expect(digits.json().error.message).toContain('First name can only have letters');
+    const noAge = await add({ firstName: 'Nobody', gender: 'male', relation: 'child' });
+    expect(noAge.statusCode).toBe(400);
+    expect(noAge.json().error.message).toContain('Enter date of birth or age');
+    const old = await add({ firstName: 'Old', gender: 'male', ageYears: 151, relation: 'parent' });
+    expect(old.statusCode).toBe(400);
+    expect(old.json().error.message).toContain('Age cannot be more than 150');
+    const me = await add({ firstName: 'Valid', lastName: "D'Souza", gender: 'female', dateOfBirth: '1990-05-01', relation: 'self' });
+    expect(me.statusCode).toBe(201);
+
+    const yesterday = new Date(Date.now() - 86_400_000 * 2).toISOString().slice(0, 10);
+    const pastSlots = await app.inject({ method: 'GET', url: `/api/v1/portal/doctors/${HOSPITAL.doctorId}/slots?date=${yesterday}`, headers: h });
+    expect(pastSlots.statusCode).toBe(400);
+    expect(pastSlots.json().error.message).toContain('Pick today or a later date');
+    const farDay = new Date(Date.now() + 90 * 86_400_000).toISOString().slice(0, 10);
+    const farSlots = await app.inject({ method: 'GET', url: `/api/v1/portal/doctors/${HOSPITAL.doctorId}/slots?date=${farDay}`, headers: h });
+    expect(farSlots.statusCode).toBe(400);
+    expect(farSlots.json().error.message).toContain('days ahead');
+
+    const pastBooking = await app.inject({
+      method: 'POST',
+      url: '/api/v1/portal/appointments',
+      headers: h,
+      payload: { patientId: me.json().id, doctorId: HOSPITAL.doctorId, slotStart: '2020-01-01T10:00:00+05:30' },
+    });
+    expect(pastBooking.statusCode).toBe(400);
+    expect(pastBooking.json().error.message).toContain('This time has already passed');
+
+    const badRating = await app.inject({ method: 'POST', url: '/api/v1/portal/feedback', headers: h, payload: { patientId: me.json().id, rating: 6 } });
+    expect(badRating.statusCode).toBe(400);
+    expect(badRating.json().error.message).toContain('Pick a rating from 1 to 5 stars');
+  });
+
+  it('rejects a bad mobile at sign-in', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/v1/portal/auth/otp/request', payload: { tenantCode: HOSPITAL.code, mobile: '12345' } });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toContain('Enter a 10-digit Indian mobile number');
   });
 });

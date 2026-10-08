@@ -29,6 +29,15 @@ export class SetupService {
     return this.staff.getDoctor(tx, userId);
   }
 
+  /**
+   * Makes sure the doctor's consultation / follow-up fee services exist in the billing master at the current
+   * fees (S.doctorFeeServiceCodes). Setup does this on every staff profile save; front office calls it at
+   * check-in so doctors whose fees were set before the services existed are covered too.
+   */
+  syncDoctorFeeServicesInTx(tx: Tx, userId: string): Promise<void> {
+    return this.staff.syncFeeServices(tx, userId);
+  }
+
   /** Bookable slots on a date (YYYY-MM-DD) in hospital time; empty on leave days. */
   getDoctorSchedule(userId: string, date: string, facilityId?: string): Promise<S.DoctorSlot[]> {
     return this.staff.getDoctorSchedule(userId, date, facilityId);

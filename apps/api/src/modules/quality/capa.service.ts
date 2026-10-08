@@ -112,7 +112,10 @@ export class CapaService {
       if (input.correctiveAction !== undefined) patch.correctiveAction = input.correctiveAction || null;
       if (input.preventiveAction !== undefined) patch.preventiveAction = input.preventiveAction || null;
       if (input.ownerId !== undefined) patch.ownerId = input.ownerId;
-      if (input.dueDate) patch.dueDate = input.dueDate;
+      if (input.dueDate && input.dueDate !== row.dueDate) {
+        if (input.dueDate < istDate()) throw badRequest('due_in_past', 'Due date cannot be in the past');
+        patch.dueDate = input.dueDate;
+      }
 
       if (to !== row.status) {
         patch.status = to;

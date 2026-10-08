@@ -2,6 +2,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createPool, DEMO_PASSWORD, provisionTenant, sql } from '@hms/db';
+import type { billing, radiology } from '@hms/shared';
 import { DbService } from '../src/common/db/db.service';
 import { EventBus } from '../src/common/events/event-bus';
 import { bearer, bootApp, login } from './helpers';
@@ -38,10 +39,14 @@ async function newOrder(token = reception, extra: object = {}) {
   return res.json();
 }
 
-/** A far-future slot unique to this run so repeated runs never clash on the shared demo hospital. */
+/**
+ * A future slot for this run (slots may be booked at most a year ahead). Each run makes its own
+ * machine, so runs never clash; the day still varies so a run never lands on a past time.
+ */
 const slotBase = (() => {
-  const base = new Date(Date.UTC(2030 + (Date.now() % 60), 0, 1, 4, 0, 0));
-  base.setUTCDate(base.getUTCDate() + (Math.floor(Date.now() / 1000) % 300));
+  const base = new Date();
+  base.setUTCHours(4, 0, 0, 0);
+  base.setUTCDate(base.getUTCDate() + 2 + (Math.floor(Date.now() / 1000) % 300));
   return base.getTime();
 })();
 function slot(minutesFromBase: number) {
@@ -166,7 +171,8 @@ describe('radiology order to report', () => {
   it('refuses to book a slot in the past', async () => {
     const res = await inject('POST', `/radiology/orders/${order.id}/schedule`, reception, { scheduledAt: '2020-01-01T10:00:00+05:30' });
     expect(res.statusCode).toBe(400);
-    expect(res.json().error.code).toBe('slot_in_past');
+    // The shared schema refuses it before the service's own slot_in_past check.
+    expect(res.json().error.message).toContain('Slot time cannot be in the past');
   });
 
   it('does not edit a cancelled order', async () => {
@@ -325,6 +331,155 @@ describe('radiology orders from EMR', () => {
   });
 });
 
+describe('radiology charges on the patient account', () => {
+  const s = Math.random().toString(36).slice(2, 6).toUpperCase();
+  const svcCode = `RSV${suffix}${s}`.slice(0, 40);
+  let svcTestId: string;
+  let ownTestId: string;
+  let pid: string;
+
+  async function charges(orderId: string) {
+    const res = await inject('GET', `/billing/charges?patientId=${pid}&sourceModule=radiology&pageSize=500`, admin);
+    expect(res.statusCode, res.body).toBe(200);
+    return (res.json().items as billing.Charge[]).filter((c) => c.sourceRef === orderId);
+  }
+  const setRules = (rules: Partial<billing.BillingRules>) => inject('PUT', '/billing/rules', admin, { rules });
+  const resetRules = () => inject('PUT', '/billing/rules', admin, { replace: true, rules: {} });
+  const order = async (test: string, extra: object = {}) => {
+    const res = await inject('POST', '/radiology/orders', reception, { patientId: pid, testId: test, ...extra });
+    expect(res.statusCode, res.body).toBe(201);
+    return res.json() as radiology.RadiologyOrder;
+  };
+
+  /** Runs the billing.charges.billed event of an invoice through the bus, as the worker would. */
+  async function deliverBilled(invoiceId: string) {
+    const rows = await app.get(DbService).asTenant({ tenantId }, async (tx) => {
+      const r = await tx.execute<{ payload: Record<string, unknown> }>(
+        sql`select payload from audit.outbox where topic = 'billing.charges.billed' and payload->>'invoiceId' = ${invoiceId}`,
+      );
+      return r.rows;
+    });
+    expect(rows).toHaveLength(1);
+    const event = { id: randomUUID(), tenantId, topic: 'billing.charges.billed', payload: rows[0]!.payload, createdAt: new Date().toISOString() };
+    await app.get(EventBus).dispatch(event);
+    await app.get(EventBus).dispatch({ ...event, id: randomUUID() });
+  }
+
+  beforeAll(async () => {
+    await resetRules();
+    pid = await newPatient();
+    const svc = await inject('POST', '/billing/services', admin, { code: svcCode, name: `CT head ${s}`, category: 'radiology', basePrice: 2500, taxRate: 0 });
+    expect(svc.statusCode, svc.body).toBe(201);
+    let res = await inject('POST', '/radiology/tests', admin, { code: `CTH-${suffix}${s}`, name: `CT head ${s}`, modalityId, serviceCode: svcCode, durationMinutes: 15 });
+    expect(res.statusCode, res.body).toBe(201);
+    svcTestId = res.json().id;
+    res = await inject('POST', '/radiology/tests', admin, { code: `XRC-${suffix}${s}`, name: `X-ray chest ${s}`, modalityId, price: 400, taxRate: 5, durationMinutes: 10 });
+    expect(res.statusCode, res.body).toBe(201);
+    ownTestId = res.json().id;
+  });
+  afterAll(() => resetRules());
+
+  it('posts the charge when ordered (the default rule), priced from the service or the test', async () => {
+    const a = await order(svcTestId);
+    expect(a).toMatchObject({ paymentState: 'pending', payFirst: true, invoiceId: null });
+    expect(await charges(a.id)).toMatchObject([{ status: 'pending', sourceLine: svcTestId, serviceCode: svcCode, unitPrice: 2500, description: `CT head ${s}` }]);
+    const b = await order(ownTestId);
+    expect(await charges(b.id)).toMatchObject([{ status: 'pending', sourceLine: ownTestId, serviceCode: null, unitPrice: 400, taxRate: 5, amount: 420 }]);
+  });
+
+  it('moves the charge when the study is changed, and keeps the bill number once billed at the desk', async () => {
+    const o = await order(ownTestId);
+    let res = await inject('PATCH', `/radiology/orders/${o.id}`, reception, { testId: svcTestId });
+    expect(res.statusCode, res.body).toBe(200);
+    const posted = await charges(o.id);
+    expect(posted.map((c) => [c.sourceLine, c.status])).toEqual([
+      [ownTestId, 'cancelled'],
+      [svcTestId, 'pending'],
+    ]);
+
+    const bill = await inject('POST', '/billing/charges/bill', admin, { patientId: pid, chargeIds: [posted[1]!.id] });
+    expect(bill.statusCode, bill.body).toBe(201);
+    const inv = bill.json() as billing.Invoice;
+    // Billed but the event has not arrived yet: the study can no longer be changed.
+    res = await inject('PATCH', `/radiology/orders/${o.id}`, reception, { testId: ownTestId });
+    expect(res.statusCode).toBe(409);
+    await deliverBilled(inv.id);
+    const after = (await inject('GET', `/radiology/orders/${o.id}`, reception)).json().order as radiology.RadiologyOrder;
+    expect(after).toMatchObject({ invoiceId: inv.id, invoiceNo: inv.number, paymentState: 'unpaid' });
+    const list = (await inject('GET', `/radiology/orders?patientId=${pid}&pageSize=200`, reception)).json().items as radiology.RadiologyOrder[];
+    expect(list.find((x) => x.id === o.id)?.paymentState).toBe('unpaid');
+  });
+
+  it('charges when the scan is done when the hospital says so, and bills through the old endpoint', async () => {
+    expect((await setRules({ radiologyChargeAt: 'scan_done' })).statusCode).toBe(200);
+    try {
+      const o = await order(ownTestId);
+      expect(o.paymentState).toBe('none');
+      expect(await charges(o.id)).toHaveLength(0);
+      let res = await inject('POST', `/radiology/orders/${o.id}/complete`, radiologist, {});
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().paymentState).toBe('pending');
+      expect((await charges(o.id)).map((c) => c.status)).toEqual(['pending']);
+
+      // Bill now before the scan: the charge is posted and billed at once, and paid.
+      const p = await order(svcTestId);
+      res = await inject('POST', `/radiology/orders/${p.id}/bill`, billingClerk, { payNow: { mode: 'cash', amount: 2500 } });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json()).toMatchObject({ paymentState: 'paid' });
+      expect(res.json().invoiceNo).toMatch(/^INV/);
+      const [c] = await charges(p.id);
+      expect(c).toMatchObject({ status: 'billed', invoiceId: res.json().invoiceId });
+      // The scan later does not charge again.
+      await inject('POST', `/radiology/orders/${p.id}/complete`, radiologist, {});
+      expect(await charges(p.id)).toHaveLength(1);
+    } finally {
+      await resetRules();
+    }
+  });
+
+  it('cancelling reverses the charge (cancelled if pending, credit note suggested if billed)', async () => {
+    const o = await order(ownTestId);
+    let res = await inject('POST', `/radiology/orders/${o.id}/cancel`, reception, { reason: 'Patient refused' });
+    expect(res.statusCode, res.body).toBe(200);
+    expect((await charges(o.id)).map((c) => c.status)).toEqual(['cancelled']);
+
+    const billed = await order(ownTestId);
+    res = await inject('POST', `/radiology/orders/${billed.id}/bill`, billingClerk, {});
+    expect(res.statusCode, res.body).toBe(200);
+    res = await inject('POST', `/radiology/orders/${billed.id}/cancel`, reception, { reason: 'Wrong side ordered' });
+    expect(res.statusCode, res.body).toBe(200);
+    const [c] = await charges(billed.id);
+    expect(c).toMatchObject({ status: 'billed' });
+    expect(c!.reversalRequestedAt).toBeTruthy();
+  });
+
+  it('charges a consultation order on the OPD visit once a test is picked', async () => {
+    const visitId = randomUUID();
+    const enc = (await inject('POST', '/emr/encounters', doctor, { patientId: pid, visitId })).json();
+    await inject('PATCH', `/emr/encounters/${enc.id}`, doctor, { notes: { chiefComplaints: 'Cough' } });
+    await inject('PUT', `/emr/encounters/${enc.id}/orders`, doctor, {
+      orders: [
+        { kind: 'radiology', name: `X-ray chest ${s}` },
+        { kind: 'radiology', name: `Unlisted view ${s}` },
+      ],
+    });
+    expect((await inject('POST', `/emr/encounters/${enc.id}/sign`, doctor)).statusCode).toBe(200);
+    const event = { id: randomUUID(), tenantId, topic: 'emr.encounter.signed', payload: { encounterId: enc.id, patientId: pid, doctorId }, createdAt: new Date().toISOString() };
+    await app.get(EventBus).dispatch(event);
+    await app.get(EventBus).dispatch({ ...event, id: randomUUID() });
+    const items = ((await inject('GET', `/radiology/orders?patientId=${pid}&pageSize=200`, reception)).json().items as radiology.RadiologyOrder[]).filter(
+      (o) => o.encounterId === enc.id,
+    );
+    const matched = items.find((o) => o.testId === ownTestId)!;
+    const unmatched = items.find((o) => o.testId === null)!;
+    expect(await charges(matched.id)).toMatchObject([{ status: 'pending', visitId, account: 'opd', doctorId, unitPrice: 400 }]);
+    expect(await charges(unmatched.id)).toHaveLength(0);
+    const res = await inject('PATCH', `/radiology/orders/${unmatched.id}`, reception, { testId: svcTestId });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(await charges(unmatched.id)).toMatchObject([{ status: 'pending', visitId, unitPrice: 2500 }]);
+  });
+});
+
 describe('radiology plan check and hospital isolation', () => {
   it('blocks hospitals whose plan has no radiology', async () => {
     // City is on the Starter plan, which does not include radiology.
@@ -371,5 +526,50 @@ describe('radiology plan check and hospital isolation', () => {
         tx.execute(sql`insert into radiology.modalities (tenant_id, code, name, kind) values (${tenantId}, 'HACK', 'x', 'XR')`),
       ),
     ).rejects.toThrow();
+  });
+});
+
+describe('radiology validations', () => {
+  const msg = (res: { json: () => { error: { message: string } } }) => res.json().error.message;
+
+  it('keeps slot length between 5 and 480 minutes and GST sensible', async () => {
+    for (const durationMinutes of [2, 500]) {
+      const res = await inject('POST', '/radiology/tests', admin, { code: `V-${durationMinutes}-${suffix}`, name: 'Slot check', modalityId, price: 100, durationMinutes });
+      expect(res.statusCode).toBe(400);
+      expect(msg(res)).toContain('Slot length must be between 5 and 480 minutes');
+    }
+    const gst = await inject('POST', '/radiology/tests', admin, { code: `V-GST-${suffix}`, name: 'GST check', modalityId, price: 100, taxRate: 7 });
+    expect(msg(gst)).toContain('Use a GST slab');
+    const noMachine = await inject('POST', '/radiology/tests', admin, { code: `V-NM-${suffix}`, name: 'No machine', price: 100 });
+    expect(msg(noMachine)).toContain('Pick the machine');
+    const ae = await inject('POST', '/radiology/modalities', admin, { code: `VAE${suffix}`.slice(0, 20), name: 'AE check', kind: 'XR', aeTitle: 'BAD\\AE' });
+    expect(msg(ae)).toContain('no backslash');
+  });
+
+  it('refuses a slot in the past or more than a year ahead', async () => {
+    const order = await newOrder();
+    const past = await inject('POST', `/radiology/orders/${order.id}/schedule`, reception, { scheduledAt: new Date(Date.now() - 3 * 3_600_000).toISOString() });
+    expect(past.statusCode).toBe(400);
+    expect(msg(past)).toContain('Slot time cannot be in the past');
+    const far = await inject('POST', `/radiology/orders/${order.id}/schedule`, reception, { scheduledAt: new Date(Date.now() + 400 * 86_400_000).toISOString() });
+    expect(msg(far)).toContain('at most a year ahead');
+    const ok = await inject('POST', `/radiology/orders/${order.id}/schedule`, reception, { scheduledAt: slot(1500) });
+    expect(ok.statusCode).toBe(200);
+  });
+
+  it('checks the PACS link and study UID', async () => {
+    const order = await newOrder();
+    await inject('POST', `/radiology/orders/${order.id}/start`, reception);
+    const bad = await inject('POST', `/radiology/orders/${order.id}/complete`, radiologist, { imagesUrl: 'not a url' });
+    expect(bad.statusCode).toBe(400);
+    expect(msg(bad)).toContain('Enter a valid link starting with http:// or https://');
+    const ftp = await inject('POST', `/radiology/orders/${order.id}/complete`, radiologist, { imagesUrl: 'javascript:alert(1)' });
+    expect(ftp.statusCode).toBe(400);
+    const uid = await inject('POST', `/radiology/orders/${order.id}/complete`, radiologist, { studyUid: 'abc' });
+    expect(msg(uid)).toContain('Study UID is digits separated by dots');
+    const ok = await inject('POST', `/radiology/orders/${order.id}/complete`, radiologist, { studyUid: '1.2.3.4', imagesUrl: 'https://pacs.example/1' });
+    expect(ok.statusCode).toBe(200);
+    const cancel = await inject('POST', `/radiology/orders/${(await newOrder()).id}/cancel`, reception, { reason: 'no' });
+    expect(msg(cancel)).toContain('A reason needs at least 3 characters');
   });
 });

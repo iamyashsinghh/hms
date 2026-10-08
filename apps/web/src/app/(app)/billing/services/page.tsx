@@ -5,6 +5,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { Loader2, Plus, Search } from 'lucide-react';
 import { billing as B } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
 import { BulkImportButton } from '@/components/bulk-import';
 import { PageHeader } from '@/components/page-header';
@@ -51,26 +52,40 @@ export default function ServicesPage() {
     enabled: !!form && form.category === 'package',
   });
 
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const save = useMutation({
-    mutationFn: (f: Form) => {
-      const body = {
-        name: f.name,
-        category: f.category,
-        hsnSac: f.hsnSac || undefined,
-        basePrice: Number(f.basePrice || 0),
-        taxRate: Number(f.taxRate),
-        isActive: f.isActive,
-        packageItems: f.category === 'package' ? f.packageItems.map((serviceId) => ({ serviceId, qty: 1 })) : undefined,
-      };
-      return f.id ? api.billing.services.update(f.id, body) : api.billing.services.create({ ...body, code: f.code });
-    },
+    mutationFn: (req: { id?: string; update?: B.UpdateService; create?: B.CreateService }) =>
+      req.id ? api.billing.services.update(req.id, req.update!) : api.billing.services.create(req.create!),
     onSuccess: () => {
       setForm(null);
       queryClient.invalidateQueries({ queryKey: ['billing', 'services'] });
     },
   });
 
+  /** Same rules as the server, shown on the fields before anything is sent. */
+  const submit = (f: Form) => {
+    const body = {
+      name: f.name,
+      category: f.category,
+      hsnSac: f.hsnSac.trim() || undefined,
+      basePrice: f.basePrice.trim() === '' ? undefined : f.basePrice,
+      taxRate: Number(f.taxRate),
+      isActive: f.isActive,
+      packageItems: f.category === 'package' ? f.packageItems.map((serviceId) => ({ serviceId, qty: 1 })) : undefined,
+    };
+    if (f.id) {
+      const r = validate(B.updateServiceSchema, body);
+      setErrors(r.errors ?? {});
+      if (r.data) save.mutate({ id: f.id, update: r.data });
+    } else {
+      const r = validate(B.createServiceSchema, { ...body, code: f.code });
+      setErrors(r.errors ?? {});
+      if (r.data) save.mutate({ create: r.data });
+    }
+  };
+
   const edit = async (s: B.Service) => {
+    setErrors({});
     const full = s.category === 'package' ? await api.billing.services.get(s.id) : s;
     setForm({
       id: s.id,
@@ -95,7 +110,12 @@ export default function ServicesPage() {
         actions={
           <Can permission="billing.service.manage">
             <BulkImportButton noun="services" columns={B.SERVICE_IMPORT_COLUMNS} run={(req) => api.billing.services.import(req)} invalidate={[['billing', 'services']]} />
-            <Button onClick={() => setForm({ ...blank })}>
+            <Button
+              onClick={() => {
+                setErrors({});
+                setForm({ ...blank });
+              }}
+            >
               <Plus /> Add service
             </Button>
           </Can>
@@ -112,17 +132,17 @@ export default function ServicesPage() {
               className="grid gap-4 sm:grid-cols-3"
               onSubmit={(e) => {
                 e.preventDefault();
-                save.mutate(form);
+                submit(form);
               }}
             >
               <div className="sm:col-span-3">
                 <ErrorBox error={save.error ? errorMessage(save.error) : null} />
               </div>
-              <Field id="code" label="Code *">
-                <Input id="code" value={form.code} disabled={!!form.id} onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase() })} placeholder="e.g. CONS-GEN" required />
+              <Field id="code" label="Code *" error={errors.code}>
+                <Input id="code" maxLength={40} value={form.code} disabled={!!form.id} onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase() })} placeholder="e.g. CONS-GEN" required />
               </Field>
-              <Field id="name" label="Name *" className="sm:col-span-2">
-                <Input id="name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+              <Field id="name" label="Name *" className="sm:col-span-2" error={errors.name}>
+                <Input id="name" maxLength={200} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
               </Field>
               <Field id="category" label="Category">
                 <Select id="category" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value as B.ServiceCategory })}>
@@ -133,7 +153,7 @@ export default function ServicesPage() {
                   ))}
                 </Select>
               </Field>
-              <Field id="price" label="Base price (₹) *">
+              <Field id="price" label="Base price (₹) *" error={errors.basePrice}>
                 <Input id="price" type="number" min={0} step="0.01" value={form.basePrice} onChange={(e) => setForm({ ...form, basePrice: e.target.value })} required />
               </Field>
               <Field id="tax" label="GST %">
@@ -145,8 +165,8 @@ export default function ServicesPage() {
                   ))}
                 </Select>
               </Field>
-              <Field id="hsn" label="HSN / SAC">
-                <Input id="hsn" inputMode="numeric" value={form.hsnSac} onChange={(e) => setForm({ ...form, hsnSac: e.target.value })} placeholder="e.g. 999312" />
+              <Field id="hsn" label="HSN / SAC" error={errors.hsnSac}>
+                <Input id="hsn" inputMode="numeric" maxLength={8} value={form.hsnSac} onChange={(e) => setForm({ ...form, hsnSac: e.target.value })} placeholder="e.g. 999312" />
               </Field>
               <label className="flex items-center gap-2 pt-7 text-sm">
                 <input type="checkbox" checked={form.isActive} onChange={(e) => setForm({ ...form, isActive: e.target.checked })} /> Active

@@ -8,6 +8,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Archive, ArrowLeft, CheckCircle2, ExternalLink, FilePlus2, Loader2, Printer } from 'lucide-react';
 import { quality as Q } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { NoAccess } from '@/components/no-access';
 import { Button, buttonVariants } from '@/components/ui/button';
@@ -125,16 +126,9 @@ function DraftEditor({ d, onSaved }: { d: Q.QualityDocument; onSaved: (d: Q.Qual
     reviewDue: d.reviewDue ?? '',
   });
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setF({ ...f, [k]: e.target.value });
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const save = useMutation({
-    mutationFn: () =>
-      api.quality.documents.update(d.id, {
-        title: f.title,
-        department: f.department,
-        content: f.content,
-        fileUrl: f.fileUrl || undefined,
-        effectiveFrom: f.effectiveFrom || undefined,
-        reviewDue: f.reviewDue || undefined,
-      }),
+    mutationFn: (body: Q.UpdateDocument) => api.quality.documents.update(d.id, body),
     onSuccess: onSaved,
   });
   return (
@@ -147,26 +141,36 @@ function DraftEditor({ d, onSaved }: { d: Q.QualityDocument; onSaved: (d: Q.Qual
           className="grid gap-4 sm:grid-cols-2"
           onSubmit={(e) => {
             e.preventDefault();
-            save.mutate();
+            const body: Q.UpdateDocument = {
+              title: f.title,
+              department: f.department,
+              content: f.content,
+              fileUrl: f.fileUrl || undefined,
+              effectiveFrom: f.effectiveFrom || undefined,
+              reviewDue: f.reviewDue || undefined,
+            };
+            const { errors: found } = validate(Q.updateDocumentSchema, body);
+            setErrors(found ?? {});
+            if (!found) save.mutate(body);
           }}
         >
           <div className="sm:col-span-2">
-            <ErrorBox error={save.error} />
+            <ErrorBox error={Object.keys(errors).length ? 'Please correct the highlighted fields' : save.error} />
           </div>
-          <Field id="title" label="Title" className="sm:col-span-2">
-            <Input id="title" required value={f.title} onChange={set('title')} />
+          <Field id="title" label="Title" className="sm:col-span-2" error={errors.title}>
+            <Input id="title" required maxLength={200} value={f.title} onChange={set('title')} />
           </Field>
           <Field id="department" label="Department">
             <Input id="department" value={f.department} onChange={set('department')} />
           </Field>
-          <Field id="fileUrl" label="File link (optional)" hint="Link to a PDF in your document storage">
+          <Field id="fileUrl" label="File link (optional)" hint="Link to a PDF in your document storage" error={errors.fileUrl}>
             <Input id="fileUrl" type="url" value={f.fileUrl} onChange={set('fileUrl')} />
           </Field>
           <Field id="effectiveFrom" label="Effective from" hint="Defaults to the approval date">
             <Input id="effectiveFrom" type="date" value={f.effectiveFrom} onChange={set('effectiveFrom')} />
           </Field>
-          <Field id="reviewDue" label="Review due" hint="Defaults to one year after it takes effect">
-            <Input id="reviewDue" type="date" value={f.reviewDue} onChange={set('reviewDue')} />
+          <Field id="reviewDue" label="Review due" hint="Defaults to one year after it takes effect" error={errors.reviewDue}>
+            <Input id="reviewDue" type="date" min={f.effectiveFrom || undefined} value={f.reviewDue} onChange={set('reviewDue')} />
           </Field>
           <Field id="content" label="Content" className="sm:col-span-2">
             <Textarea id="content" rows={18} value={f.content} onChange={set('content')} />

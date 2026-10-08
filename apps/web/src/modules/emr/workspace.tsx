@@ -3,14 +3,16 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Loader2, Plus, Save, Star, Trash2, X } from 'lucide-react';
-import { emr as E, type emr } from '@hms/shared';
+import { emr as E, todayIso, type billing, type emr } from '@hms/shared';
 import { api, ApiError, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { formatINR, useDebounced } from '@/modules/billing/ui';
 import { Textarea, TIMING_LABEL, formatTime, vitalsLine } from './ui';
 
 type Enc = emr.Encounter;
@@ -46,6 +48,10 @@ function SectionCard({ title, actions, children }: { title: string; actions?: Re
 
 const numOrUndef = (v: string) => (v.trim() === '' ? undefined : Number(v));
 
+function FieldMsg({ msg }: { msg?: string }) {
+  return msg ? <p className="mt-1 text-xs text-destructive">{msg}</p> : null;
+}
+
 // ---------- vitals ----------
 
 const VITAL_FIELDS: { key: keyof emr.VitalsInput; label: string; step?: string }[] = [
@@ -64,6 +70,7 @@ const VITAL_FIELDS: { key: keyof emr.VitalsInput; label: string; step?: string }
 export function VitalsCard({ enc, editable }: { enc: Enc; editable: boolean }) {
   const canWrite = usePermission('emr.vitals.write');
   const [form, setForm] = React.useState<Record<string, string>>({});
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const save = useEncounterMutation(enc.id, (body: emr.VitalsInput) => api.emr.addVitals(enc.id, body));
   const latest = enc.vitals.at(-1);
 
@@ -71,10 +78,15 @@ export function VitalsCard({ enc, editable }: { enc: Enc; editable: boolean }) {
     const body: Record<string, number> = {};
     for (const f of VITAL_FIELDS) {
       const n = numOrUndef(form[f.key] ?? '');
-      if (n !== undefined && !Number.isNaN(n)) body[f.key] = n;
+      if (n !== undefined) body[f.key] = n;
     }
-    if (!Object.keys(body).length) return;
-    save.mutate(body as emr.VitalsInput, { onSuccess: () => setForm({}) });
+    const checked = validate(E.vitalsInputSchema, body);
+    if (checked.errors) {
+      setErrors(checked.errors);
+      return;
+    }
+    setErrors({});
+    save.mutate(checked.data, { onSuccess: () => setForm({}) });
   };
 
   return (
@@ -98,11 +110,15 @@ export function VitalsCard({ enc, editable }: { enc: Enc; editable: boolean }) {
                   id={`v-${f.key}`}
                   type="number"
                   step={f.step ?? '1'}
+                  min={E.VITAL_LIMITS[f.key as keyof typeof E.VITAL_LIMITS][0]}
+                  max={E.VITAL_LIMITS[f.key as keyof typeof E.VITAL_LIMITS][1]}
                   inputMode="decimal"
                   value={form[f.key] ?? ''}
                   onChange={(e) => setForm((s) => ({ ...s, [f.key]: e.target.value }))}
+                  aria-invalid={!!errors[f.key]}
                   className="mt-1"
                 />
+                <FieldMsg msg={errors[f.key]} />
               </div>
             ))}
           </div>
@@ -110,6 +126,7 @@ export function VitalsCard({ enc, editable }: { enc: Enc; editable: boolean }) {
             <Button size="sm" variant="outline" onClick={submit} disabled={save.isPending}>
               <Plus /> Add reading
             </Button>
+            {errors._form && <p className="text-sm text-destructive">{errors._form}</p>}
             <ErrorLine error={save.error} />
           </div>
         </>
@@ -135,6 +152,9 @@ export function NotesCard({ enc, editable }: { enc: Enc; editable: boolean }) {
   const [followUpDate, setFollowUpDate] = React.useState(enc.followUpDate ?? '');
   const [followUpNotes, setFollowUpNotes] = React.useState(enc.followUpNotes ?? '');
   const save = useEncounterMutation(enc.id, (body: emr.UpdateEncounter) => api.emr.update(enc.id, body));
+  // A new or changed follow-up date must be today or later (an old one may stay as it is).
+  const followUpError =
+    followUpDate && followUpDate !== (enc.followUpDate ?? '') && followUpDate < todayIso() ? 'Follow-up date cannot be in the past' : null;
   const dirty =
     JSON.stringify(notes) !== JSON.stringify(enc.notes) || followUpDate !== (enc.followUpDate ?? '') || followUpNotes !== (enc.followUpNotes ?? '');
 
@@ -162,7 +182,7 @@ export function NotesCard({ enc, editable }: { enc: Enc; editable: boolean }) {
       actions={
         <Button
           size="sm"
-          disabled={!dirty || save.isPending}
+          disabled={!dirty || save.isPending || !!followUpError}
           onClick={() => {
             const allNotes = Object.fromEntries(NOTE_FIELDS.map((f) => [f.key, notes[f.key] ?? ''])) as emr.EncounterNotes;
             save.mutate({ notes: allNotes, followUpDate: followUpDate || null, followUpNotes: followUpNotes || null });
@@ -191,14 +211,16 @@ export function NotesCard({ enc, editable }: { enc: Enc; editable: boolean }) {
             id="fu-date"
             type="date"
             className="mt-1.5"
-            min={new Date(Date.parse(enc.createdAt) + 330 * 60_000).toISOString().slice(0, 10)}
+            min={todayIso()}
             value={followUpDate}
+            aria-invalid={!!followUpError}
             onChange={(e) => setFollowUpDate(e.target.value)}
           />
+          <FieldMsg msg={followUpError ?? undefined} />
         </div>
         <div className="sm:col-span-2">
           <Label htmlFor="fu-notes">Follow-up instructions</Label>
-          <Input id="fu-notes" className="mt-1.5" value={followUpNotes} onChange={(e) => setFollowUpNotes(e.target.value)} />
+          <Input id="fu-notes" className="mt-1.5" maxLength={1000} value={followUpNotes} onChange={(e) => setFollowUpNotes(e.target.value)} />
         </div>
       </div>
       <ErrorLine error={save.error} />
@@ -293,7 +315,7 @@ export function DiagnosesCard({ enc, editable }: { enc: Enc; editable: boolean }
               if (free.trim()) add({ description: free.trim() });
             }}
           >
-            <Input placeholder="Or type a diagnosis" value={free} onChange={(e) => setFree(e.target.value)} />
+            <Input placeholder="Or type a diagnosis" maxLength={300} value={free} onChange={(e) => setFree(e.target.value)} />
             <Button type="submit" variant="outline" size="icon" aria-label="Add">
               <Plus />
             </Button>
@@ -341,6 +363,8 @@ export function PrescriptionCard({ enc, editable }: { enc: Enc; editable: boolea
   const [lines, setLines] = React.useState<LineDraft[]>(initial);
   const [notes, setNotes] = React.useState(enc.prescription?.notes ?? '');
   const [conflicts, setConflicts] = React.useState<emr.AllergyConflict[]>([]);
+  /** Errors by displayed line index ("3.dose") plus "notes" / "_form". */
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const save = useEncounterMutation(enc.id, (body: emr.PrescriptionInput) => api.emr.setPrescription(enc.id, body));
   const qc = useQueryClient();
   const { data: favourites } = useQuery({ queryKey: ['emr', 'favourites'], queryFn: () => api.emr.favourites(), enabled: editing });
@@ -361,8 +385,20 @@ export function PrescriptionCard({ enc, editable }: { enc: Enc; editable: boolea
 
   const submit = () => {
     setConflicts([]);
-    const body = { lines: lines.filter((l) => l.drugName.trim()).map(stripDraft), notes: notes || undefined };
-    save.mutate(body, {
+    // Lines with no medicine name are dropped; keep their screen positions to show errors on the right line.
+    const kept = lines.map((l, i) => [l, i] as const).filter(([l]) => l.drugName.trim());
+    const checked = validate(E.prescriptionInputSchema, { lines: kept.map(([l]) => stripDraft(l)), notes: notes || undefined });
+    if (checked.errors) {
+      const mapped: FieldErrors = {};
+      for (const [key, msg] of Object.entries(checked.errors)) {
+        const m = /^lines\.(\d+)\.(.+)$/.exec(key);
+        mapped[m ? `${kept[Number(m[1])]?.[1]}.${m[2]}` : key] ??= msg;
+      }
+      setErrors(mapped);
+      return;
+    }
+    setErrors({});
+    save.mutate(checked.data, {
       onError: (err) => {
         if (err instanceof ApiError && err.code === 'allergy_conflict') {
           setConflicts((err.details as { conflicts: emr.AllergyConflict[] }).conflicts);
@@ -430,24 +466,31 @@ export function PrescriptionCard({ enc, editable }: { enc: Enc; editable: boolea
       <div className="space-y-3">
         {lines.map((l, i) => {
           const conflict = conflicts.find((c) => c.line === i);
+          const lineErrors = Object.entries(errors)
+            .filter(([k]) => k.startsWith(`${i}.`))
+            .map(([, m]) => m);
           return (
             <div key={l._key} className={`rounded-md border p-3 ${conflict ? 'border-destructive' : ''}`}>
               <div className="grid gap-2 sm:grid-cols-12">
-                <Input className="sm:col-span-4" placeholder="Medicine (brand / generic + strength)" value={l.drugName} onChange={(e) => set(i, { drugName: e.target.value })} />
-                <Input className="sm:col-span-2" placeholder="Dose" value={l.dose} onChange={(e) => set(i, { dose: e.target.value })} />
+                <Input className="sm:col-span-4" placeholder="Medicine (brand / generic + strength)" maxLength={200} value={l.drugName} onChange={(e) => set(i, { drugName: e.target.value })} />
+                <Input className="sm:col-span-2" placeholder="Dose" maxLength={50} aria-invalid={!!errors[`${i}.dose`]} value={l.dose} onChange={(e) => set(i, { dose: e.target.value })} />
                 <Input
                   className="sm:col-span-2"
                   list="emr-frequencies"
                   placeholder="1-0-1 / BD"
+                  maxLength={30}
+                  aria-invalid={!!errors[`${i}.frequency`]}
                   value={l.frequency}
                   onChange={(e) => set(i, { frequency: e.target.value })}
                 />
-                <Input className="sm:col-span-1" type="number" min={0} placeholder="Days" value={l.days ?? ''} onChange={(e) => set(i, { days: numOrUndef(e.target.value) })} />
+                <Input className="sm:col-span-1" type="number" min={0} max={365} step={1} placeholder="Days" aria-invalid={!!errors[`${i}.days`]} value={l.days ?? ''} onChange={(e) => set(i, { days: numOrUndef(e.target.value) })} />
                 <Input
                   className="sm:col-span-1"
                   type="number"
                   min={0}
+                  max={10000}
                   placeholder="Qty"
+                  aria-invalid={!!errors[`${i}.qty`]}
                   value={l.qty ?? ''}
                   onChange={(e) => set(i, { qty: numOrUndef(e.target.value), _qtyTouched: e.target.value !== '' })}
                 />
@@ -468,8 +511,9 @@ export function PrescriptionCard({ enc, editable }: { enc: Enc; editable: boolea
                     </option>
                   ))}
                 </Select>
-                <Input className="sm:col-span-7" placeholder="Instructions" value={l.instructions ?? ''} onChange={(e) => set(i, { instructions: e.target.value })} />
+                <Input className="sm:col-span-7" placeholder="Instructions" maxLength={500} value={l.instructions ?? ''} onChange={(e) => set(i, { instructions: e.target.value })} />
               </div>
+              {lineErrors.length > 0 && <p className="mt-2 text-xs text-destructive">{lineErrors.join(' · ')}</p>}
               {(conflict || l.allergyOverrideReason !== undefined) && (
                 <div className="mt-2 space-y-1">
                   {conflict && (
@@ -478,7 +522,8 @@ export function PrescriptionCard({ enc, editable }: { enc: Enc; editable: boolea
                     </p>
                   )}
                   <Input
-                    placeholder="Reason to prescribe despite allergy"
+                    placeholder="Reason to prescribe despite allergy (at least 3 characters)"
+                    maxLength={300}
                     value={l.allergyOverrideReason ?? ''}
                     onChange={(e) => set(i, { allergyOverrideReason: e.target.value })}
                   />
@@ -519,8 +564,11 @@ export function PrescriptionCard({ enc, editable }: { enc: Enc; editable: boolea
       </div>
       <div>
         <Label htmlFor="rx-notes">Rx notes</Label>
-        <Input id="rx-notes" className="mt-1.5" value={notes} onChange={(e) => setNotes(e.target.value)} />
+        <Input id="rx-notes" className="mt-1.5" maxLength={2000} value={notes} onChange={(e) => setNotes(e.target.value)} />
+        <FieldMsg msg={errors.notes} />
       </div>
+      {errors._form && <p className="text-sm text-destructive">{errors._form}</p>}
+      {errors.lines && <p className="text-sm text-destructive">{errors.lines}</p>}
       {save.error && !conflicts.length ? <ErrorLine error={save.error} /> : null}
       {saveFav.error ? <ErrorLine error={saveFav.error} /> : null}
     </SectionCard>
@@ -529,13 +577,64 @@ export function PrescriptionCard({ enc, editable }: { enc: Enc; editable: boolea
 
 // ---------- orders ----------
 
-export function OrdersCard({ enc, editable }: { enc: Enc; editable: boolean }) {
-  const [rows, setRows] = React.useState<emr.OrderInput[]>(() =>
-    enc.orders.map((o) => ({ kind: o.kind, name: o.name, code: o.code ?? undefined, priority: o.priority, notes: o.notes ?? undefined })),
+type OrderDraft = { kind: emr.OrderInput['kind']; name: string; priority: 'routine' | 'urgent' };
+
+const toInput = (o: emr.Order): emr.OrderInput => ({
+  kind: o.kind,
+  name: o.name,
+  code: o.code ?? undefined,
+  serviceCode: o.serviceCode ?? undefined,
+  priority: o.priority,
+  notes: o.notes ?? undefined,
+});
+
+/** Procedure search over the billing service master (category "procedure"), so the procedure has a price. */
+function ProcedureSearch({ value, onChange, onPick }: { value: string; onChange: (v: string) => void; onPick: (s: billing.Service) => void }) {
+  const canSearch = usePermission('billing.service.read');
+  const term = useDebounced(value.trim(), 250);
+  const { data } = useQuery({
+    queryKey: ['billing', 'services', 'procedure', term],
+    queryFn: () => api.billing.services.list({ category: 'procedure', q: term, active: 'true', pageSize: 10 }),
+    enabled: canSearch && term.length >= 2,
+    staleTime: 60_000,
+  });
+  const hits = term.length >= 2 ? (data?.items ?? []) : [];
+  return (
+    <div className="relative sm:col-span-4">
+      <Input placeholder="Search procedures (e.g. dressing)" maxLength={200} value={value} onChange={(e) => onChange(e.target.value)} />
+      {hits.length > 0 && (
+        <ul className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-md border bg-card shadow-lg">
+          {hits.map((s) => (
+            <li key={s.id}>
+              <button type="button" className="flex w-full justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-muted" onClick={() => onPick(s)}>
+                <span>
+                  {s.name} <span className="font-mono text-xs text-muted-foreground">{s.code}</span>
+                </span>
+                <span className="tabular-nums text-muted-foreground">{formatINR(s.basePrice)}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
-  const [draft, setDraft] = React.useState<{ kind: emr.OrderInput['kind']; name: string; priority: 'routine' | 'urgent' }>({ kind: 'lab', name: '', priority: 'routine' });
+}
+
+export function OrdersCard({ enc, editable }: { enc: Enc; editable: boolean }) {
+  const [rows, setRows] = React.useState<emr.OrderInput[]>(() => enc.orders.map(toInput));
+  const [draft, setDraft] = React.useState<OrderDraft>({ kind: 'lab', name: '', priority: 'routine' });
   const save = useEncounterMutation(enc.id, (body: emr.OrdersInput) => api.emr.setOrders(enc.id, body));
-  const dirty = rows.length !== enc.orders.length || rows.some((r, i) => r.name !== enc.orders[i]?.name || r.priority !== enc.orders[i]?.priority);
+  const cancel = useEncounterMutation(enc.id, ({ orderId, reason }: { orderId: string; reason: string }) => api.emr.cancelOrder(enc.id, orderId, { reason }));
+  const canWrite = usePermission('emr.encounter.write');
+  const dirty =
+    rows.length !== enc.orders.length ||
+    rows.some((r, i) => r.name !== enc.orders[i]?.name || r.priority !== enc.orders[i]?.priority || (r.serviceCode ?? null) !== enc.orders[i]?.serviceCode);
+  const add = (row: emr.OrderInput) => {
+    setRows((r) => [...r, row]);
+    setDraft((d) => ({ ...d, name: '' }));
+  };
+  // Once signed the orders are fixed; show the server's copy with each line's progress.
+  const shown: (emr.OrderInput & { id?: string; status?: string })[] = editable ? rows : enc.orders.map((o) => ({ ...toInput(o), id: o.id, status: o.status }));
 
   return (
     <SectionCard
@@ -548,16 +647,34 @@ export function OrdersCard({ enc, editable }: { enc: Enc; editable: boolean }) {
         )
       }
     >
-      {rows.length === 0 && <p className="text-sm text-muted-foreground">No orders.</p>}
+      {shown.length === 0 && <p className="text-sm text-muted-foreground">No orders.</p>}
       <ul className="space-y-1.5 text-sm">
-        {rows.map((o, i) => (
-          <li key={i} className="flex items-center gap-2">
+        {shown.map((o, i) => (
+          <li key={o.id ?? i} className="flex flex-wrap items-center gap-2">
             <Badge variant="secondary">{o.kind}</Badge>
-            <span>{o.name}</span>
+            <span className={o.status === 'cancelled' ? 'line-through' : undefined}>{o.name}</span>
+            {o.serviceCode && <span className="font-mono text-xs text-muted-foreground">{o.serviceCode}</span>}
+            {o.kind === 'procedure' && !o.serviceCode && <span className="text-xs text-muted-foreground">(not in the service list, not charged)</span>}
             {o.priority === 'urgent' && <Badge variant="destructive">Urgent</Badge>}
+            {o.status && o.status !== 'ordered' && <Badge variant="outline">{o.status.replace('_', ' ')}</Badge>}
             {editable && (
               <Button size="icon" variant="ghost" aria-label="Remove" onClick={() => setRows((r) => r.filter((_, j) => j !== i))}>
                 <X />
+              </Button>
+            )}
+            {!editable && enc.status === 'completed' && canWrite && o.id && o.kind === 'procedure' && o.status === 'ordered' && (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={cancel.isPending}
+                onClick={() => {
+                  const reason = window.prompt('Why is this procedure not being done?');
+                  if (reason === null) return;
+                  if (reason.trim().length >= 3) cancel.mutate({ orderId: o.id!, reason: reason.trim() });
+                  else window.alert('Give a reason of at least 3 characters');
+                }}
+              >
+                Cancel
               </Button>
             )}
           </li>
@@ -569,8 +686,7 @@ export function OrdersCard({ enc, editable }: { enc: Enc; editable: boolean }) {
           onSubmit={(e) => {
             e.preventDefault();
             if (!draft.name.trim()) return;
-            setRows((r) => [...r, { ...draft, name: draft.name.trim() }]);
-            setDraft((d) => ({ ...d, name: '' }));
+            add({ ...draft, name: draft.name.trim() });
           }}
         >
           <Select className="sm:col-span-3" value={draft.kind} onChange={(e) => setDraft((d) => ({ ...d, kind: e.target.value as typeof d.kind }))}>
@@ -580,7 +696,15 @@ export function OrdersCard({ enc, editable }: { enc: Enc; editable: boolean }) {
               </option>
             ))}
           </Select>
-          <Input className="sm:col-span-4" placeholder="Test / scan / procedure (e.g. CBC)" value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} />
+          {draft.kind === 'procedure' ? (
+            <ProcedureSearch
+              value={draft.name}
+              onChange={(name) => setDraft((d) => ({ ...d, name }))}
+              onPick={(s) => add({ kind: 'procedure', name: s.name, serviceCode: s.code, priority: draft.priority })}
+            />
+          ) : (
+            <Input className="sm:col-span-4" placeholder="Test / scan (e.g. CBC)" maxLength={200} value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} />
+          )}
           <Select className="sm:col-span-3" value={draft.priority} onChange={(e) => setDraft((d) => ({ ...d, priority: e.target.value as 'routine' | 'urgent' }))}>
             <option value="routine">Routine</option>
             <option value="urgent">Urgent</option>
@@ -590,7 +714,7 @@ export function OrdersCard({ enc, editable }: { enc: Enc; editable: boolean }) {
           </Button>
         </form>
       )}
-      <ErrorLine error={save.error} />
+      <ErrorLine error={save.error ?? cancel.error} />
     </SectionCard>
   );
 }
@@ -614,7 +738,7 @@ export function AddendaCard({ enc }: { enc: Enc }) {
       ))}
       {canWrite && (
         <>
-          <Textarea rows={2} placeholder="Add a correction or later finding. Signed notes cannot be edited." value={text} onChange={(e) => setText(e.target.value)} />
+          <Textarea rows={2} maxLength={4000} placeholder="Add a correction or later finding. Signed notes cannot be edited." value={text} onChange={(e) => setText(e.target.value)} />
           <div className="flex items-center gap-3">
             <Button size="sm" variant="outline" disabled={!text.trim() || save.isPending} onClick={() => save.mutate({ text: text.trim() }, { onSuccess: () => setText('') })}>
               <Plus /> Add addendum

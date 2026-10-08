@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { ipd as I } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { firstError, validate, type FieldErrors } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -36,13 +37,14 @@ export function VitalsTab({ admissionId, active }: Props) {
   const { data, error } = useQuery({ queryKey: key, queryFn: () => api.ipd.vitals.list(admissionId) });
   const empty = { temperatureC: '', pulse: '', respRate: '', bpSystolic: '', bpDiastolic: '', spo2: '', painScore: '', bloodSugar: '', notes: '' };
   const [form, setForm] = React.useState(empty);
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const save = useSave(key, (body: I.VitalsInput) => api.ipd.vitals.record(admissionId, body), () => setForm(empty));
   const set = (k: keyof typeof empty) => (e: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, [k]: e.target.value });
   const numOrUndef = (v: string) => (v === '' ? undefined : Number(v));
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
-    save.mutate({
+    const body: I.VitalsInput = {
       temperatureC: numOrUndef(form.temperatureC),
       pulse: numOrUndef(form.pulse),
       respRate: numOrUndef(form.respRate),
@@ -52,7 +54,11 @@ export function VitalsTab({ admissionId, active }: Props) {
       painScore: numOrUndef(form.painScore),
       bloodSugar: numOrUndef(form.bloodSugar),
       notes: form.notes || undefined,
-    });
+    };
+    const { errors: found } = validate(I.vitalsInputSchema, body);
+    setErrors(found ?? {});
+    if (found) return;
+    save.mutate(body);
   }
 
   const fields: [keyof typeof empty, string, string][] = [
@@ -77,7 +83,7 @@ export function VitalsTab({ admissionId, active }: Props) {
             <CardContent>
               <form onSubmit={submit} className="grid gap-3 sm:grid-cols-4">
                 {fields.map(([k, label, step]) => (
-                  <Field key={k} id={`v-${k}`} label={label}>
+                  <Field key={k} id={`v-${k}`} label={label} error={errors[k]}>
                     <Input id={`v-${k}`} type="number" step={step} inputMode="decimal" value={form[k]} onChange={set(k)} />
                   </Field>
                 ))}
@@ -90,7 +96,7 @@ export function VitalsTab({ admissionId, active }: Props) {
                   </Button>
                 </div>
                 <div className="sm:col-span-4">
-                  <ErrorBox error={save.error ? errorMessage(save.error) : null} />
+                  <ErrorBox error={errors._form ?? (save.error ? errorMessage(save.error) : null)} />
                 </div>
               </form>
             </CardContent>
@@ -206,7 +212,14 @@ export function IntakeOutputTab({ admissionId, active }: Props) {
   const [direction, setDirection] = React.useState<'intake' | 'output'>('intake');
   const [category, setCategory] = React.useState('oral');
   const [volume, setVolume] = React.useState('');
+  const [volumeError, setVolumeError] = React.useState<string | null>(null);
   const save = useSave(key, (body: I.IntakeOutputInput) => api.ipd.intakeOutput.record(admissionId, body), () => setVolume(''));
+  function add() {
+    const body: I.IntakeOutputInput = { direction, category: category as I.IntakeOutputInput['category'], volumeMl: volume };
+    const { errors } = validate(I.intakeOutputInputSchema, body);
+    setVolumeError(firstError(errors));
+    if (!errors) save.mutate(body);
+  }
 
   return (
     <div className="space-y-6">
@@ -237,14 +250,14 @@ export function IntakeOutputTab({ admissionId, active }: Props) {
                   ))}
                 </Select>
               </Field>
-              <Field id="io-vol" label="Volume (ml)">
-                <Input id="io-vol" type="number" min={0} value={volume} onChange={(e) => setVolume(e.target.value)} />
+              <Field id="io-vol" label="Volume (ml)" error={volumeError ?? undefined}>
+                <Input id="io-vol" type="number" min={0} max={20000} step={1} inputMode="numeric" value={volume} onChange={(e) => setVolume(e.target.value)} />
               </Field>
               <div className="flex items-end">
                 <Button
                   className="w-full"
                   disabled={save.isPending || volume === ''}
-                  onClick={() => save.mutate({ direction, category: category as I.IntakeOutputInput['category'], volumeMl: Number(volume) })}
+                  onClick={add}
                 >
                   Add
                 </Button>
@@ -327,6 +340,7 @@ export function MedicationsTab({ admissionId, active }: Props) {
   const { data, error } = useQuery({ queryKey: key, queryFn: () => api.ipd.medications.list(admissionId) });
   const empty = { drugName: '', dose: '', route: 'oral' as I.MedRoute, frequency: '', instructions: '', isPrn: false };
   const [form, setForm] = React.useState(empty);
+  const [orderErrors, setOrderErrors] = React.useState<FieldErrors>({});
   const order = useSave(key, (body: I.MedicationOrderInput) => api.ipd.medications.order(admissionId, body), () => setForm(empty));
   const give = useSave(key, (v: { orderId: string; status: I.AdministrationStatus }) => api.ipd.medications.administer(admissionId, v.orderId, { status: v.status }));
   const stop = useSave(key, (v: { orderId: string; reason: string }) => api.ipd.medications.stop(admissionId, v.orderId, { reason: v.reason }));
@@ -344,13 +358,16 @@ export function MedicationsTab({ admissionId, active }: Props) {
               className="grid gap-3 sm:grid-cols-6"
               onSubmit={(e) => {
                 e.preventDefault();
-                order.mutate({ ...form, instructions: form.instructions || undefined });
+                const body: I.MedicationOrderInput = { ...form, instructions: form.instructions || undefined };
+                const { errors: found } = validate(I.medicationOrderInputSchema, body);
+                setOrderErrors(found ?? {});
+                if (!found) order.mutate(body);
               }}
             >
-              <Field id="m-drug" label="Drug" className="sm:col-span-2">
+              <Field id="m-drug" label="Drug" className="sm:col-span-2" error={orderErrors.drugName}>
                 <Input id="m-drug" value={form.drugName} onChange={(e) => setForm({ ...form, drugName: e.target.value })} required maxLength={200} />
               </Field>
-              <Field id="m-dose" label="Dose">
+              <Field id="m-dose" label="Dose" error={orderErrors.dose}>
                 <Input id="m-dose" value={form.dose} onChange={(e) => setForm({ ...form, dose: e.target.value })} required placeholder="500 mg" maxLength={100} />
               </Field>
               <Field id="m-route" label="Route">
@@ -362,7 +379,7 @@ export function MedicationsTab({ admissionId, active }: Props) {
                   ))}
                 </Select>
               </Field>
-              <Field id="m-freq" label="Frequency">
+              <Field id="m-freq" label="Frequency" error={orderErrors.frequency}>
                 <Input id="m-freq" value={form.frequency} onChange={(e) => setForm({ ...form, frequency: e.target.value })} required placeholder="BD, TDS, Q8H…" maxLength={50} />
               </Field>
               <div className="flex items-end">

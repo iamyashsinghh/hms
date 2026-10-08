@@ -21,7 +21,7 @@ import {
   sql,
   type Tx,
 } from '@hms/db';
-import type { inventory, Paginated, pharmacy } from '@hms/shared';
+import { todayIso, type inventory, type Paginated, type pharmacy } from '@hms/shared';
 import type { z } from 'zod';
 import { DbService } from '../../common/db/db.service';
 import { currentContext } from '../../common/context/request-context';
@@ -238,8 +238,10 @@ export class InventoryPurchaseService {
         patch.vendorName = vendor.name;
       }
       if (input.expectedDate !== undefined) {
-        if (input.expectedDate !== po.expectedDate) assertExpectedDate(input.expectedDate);
-        patch.expectedDate = input.expectedDate || null;
+        const next = input.expectedDate || null;
+        // Only a changed date is checked, so an older draft can still be saved as it was.
+        if (next && next !== po.expectedDate && next < todayIso()) throw badRequest('expected_date_past', 'Expected delivery date cannot be in the past');
+        patch.expectedDate = next;
       }
       if (input.terms !== undefined) patch.terms = input.terms || null;
       if (input.notes !== undefined) patch.notes = input.notes || null;
@@ -418,6 +420,9 @@ export class InventoryPurchaseService {
         if (!line) throw badRequest('unknown_po_line', 'A line does not belong to this purchase order');
         const total = (asked.get(line.id) ?? 0) + l.qty;
         asked.set(line.id, total);
+        if (l.mrp !== undefined && toPaise(l.mrp) < toPaise(line.rate)) {
+          throw badRequest('mrp_below_rate', `${line.itemName}: MRP ${l.mrp.toFixed(2)} is below the purchase rate ${num(line.rate).toFixed(2)}`);
+        }
         const pending = line.qty - line.receivedQty;
         if (total > pending) {
           throw conflict('over_receipt', `${line.itemName}: only ${pending} ${line.unit} pending on ${po.number}, got ${total}`);

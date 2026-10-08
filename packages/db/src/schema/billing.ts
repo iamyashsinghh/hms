@@ -252,3 +252,70 @@ export const billingCreditNotes = pg.table(
     uniqueIndex('billing_credit_notes_number_uq').on(t.tenantId, t.number),
   ],
 );
+
+/** What a patient owes, posted by any department; pending until billed into one invoice. */
+export const billingCharges = pg.table(
+  'charges',
+  {
+    tenantId: tenantIdColumn(),
+    id: idColumn(),
+    facilityId: uuid('facility_id').notNull(),
+    patientId: uuid('patient_id').notNull(),
+    account: text('account').notNull().default('opd'),
+    visitId: uuid('visit_id'),
+    admissionId: uuid('admission_id'),
+    sourceModule: text('source_module').notNull(),
+    sourceRef: text('source_ref').notNull(),
+    sourceLine: text('source_line').notNull().default(''),
+    serviceId: uuid('service_id'),
+    serviceCode: text('service_code'),
+    itemId: uuid('item_id'),
+    description: text('description').notNull(),
+    hsnSac: text('hsn_sac'),
+    qty: numeric('qty', { precision: 12, scale: 3 }).notNull(),
+    unitPrice: money('unit_price').notNull(),
+    priceIncludesTax: boolean('price_includes_tax').notNull().default(false),
+    taxRate: numeric('tax_rate', { precision: 5, scale: 2 }).notNull().default('0'),
+    discount: money('discount').notNull().default('0'),
+    doctorId: uuid('doctor_id'),
+    chargeDate: date('charge_date', { mode: 'string' }).notNull().default(sql`current_date`),
+    status: text('status').notNull().default('pending'),
+    invoiceId: uuid('invoice_id'),
+    invoiceLineNo: integer('invoice_line_no'),
+    cancelReason: text('cancel_reason'),
+    cancelledAt: ts('cancelled_at'),
+    cancelledBy: uuid('cancelled_by'),
+    reversalRequestedAt: ts('reversal_requested_at'),
+    reversalReason: text('reversal_reason'),
+    reversalDoneAt: ts('reversal_done_at'),
+    notes: text('notes'),
+    ...actorColumns(),
+    ...timestamps(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tenantId, t.id] }),
+    foreignKey({ columns: [t.tenantId, t.facilityId], foreignColumns: [facilities.tenantId, facilities.id] }),
+    foreignKey({ columns: [t.tenantId, t.patientId], foreignColumns: [patients.tenantId, patients.id] }),
+    foreignKey({ columns: [t.tenantId, t.serviceId], foreignColumns: [billingServices.tenantId, billingServices.id] }),
+    foreignKey({ columns: [t.tenantId, t.invoiceId], foreignColumns: [billingInvoices.tenantId, billingInvoices.id] }),
+    uniqueIndex('billing_charges_source_uq').on(t.tenantId, t.sourceModule, t.sourceRef, t.sourceLine),
+    index('billing_charges_patient_idx').on(t.tenantId, t.patientId, t.status, t.createdAt),
+  ],
+);
+
+/** Billing rules: one row for the hospital (facilityId null) and optional branch overrides. */
+export const billingRuleSets = pg.table(
+  'rule_sets',
+  {
+    tenantId: tenantIdColumn(),
+    id: idColumn(),
+    facilityId: uuid('facility_id'),
+    rules: jsonb('rules').$type<Record<string, unknown>>().notNull().default({}),
+    ...actorColumns(),
+    ...timestamps(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tenantId, t.id] }),
+    foreignKey({ columns: [t.tenantId, t.facilityId], foreignColumns: [facilities.tenantId, facilities.id] }),
+  ],
+);

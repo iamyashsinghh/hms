@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { defineModule } from '../manifest';
 import { patchSchema } from '../patch';
 import { paginationQuerySchema } from '../common';
+import { emailAddress, indianMobile, isoDate, pan as panNumber, pastOrTodayDate, todayIso } from '../validation';
 
 /**
  * Referral & CRM: permissions and API contracts (Zod schemas + types).
@@ -45,14 +46,39 @@ export const crmModule = defineModule({
 // ---------- shared bits ----------
 
 const money = z.coerce
-  .number()
-  .min(0)
-  .max(99_999_999_999.99)
+  .number({ error: 'Enter an amount' })
+  .refine(Number.isFinite, 'Enter an amount')
+  .min(0, 'Amount cannot be negative')
+  .max(99_999_999_999.99, 'Amount is too large')
   .refine((v) => Math.abs(Math.round(v * 100) - v * 100) < 1e-6, 'At most 2 decimal places');
-const text = (max: number) => z.string().trim().min(1).max(max);
-const optText = (max: number) => z.string().trim().max(max).nullish().transform((v) => (v ? v : null));
-const mobile = z.string().trim().regex(/^[6-9]\d{9}$/, 'Enter a 10-digit Indian mobile number');
-const date = z.iso.date();
+const text = (max: number, label = 'this field') =>
+  z
+    .string({ error: `Enter ${label}` })
+    .trim()
+    .min(1, `Enter ${label}`)
+    .max(max, `Enter at most ${max} characters`);
+const optText = (max: number) => z.string().trim().max(max, `Enter at most ${max} characters`).nullish().transform((v) => (v ? v : null));
+/** Accepts +91 / 0 prefixes and spaces; stores 10 digits. */
+const mobile = indianMobile;
+/** Empty form fields count as "not given". */
+const blank = <T extends z.ZodType>(s: T) => z.union([z.literal('').transform(() => null), s]);
+const email = emailAddress;
+const date = isoDate;
+const age = z.coerce
+  .number({ error: 'Enter the age in years' })
+  .int('Age must be whole years')
+  .min(0, 'Age cannot be negative')
+  .max(130, 'Age cannot be more than 130');
+/** Today in India time, as the start of a date-time comparison. */
+const startOfTodayMs = () => Date.parse(`${todayIso()}T00:00:00+05:30`);
+/** A next-call time: today or later (earlier today is allowed, so "call back now" works). */
+const followUpTime = z.iso
+  .datetime({ offset: true, error: 'Enter a valid date and time' })
+  .refine((v) => Date.parse(v) >= startOfTodayMs(), 'Next follow-up cannot be in the past')
+  .refine((v) => Date.parse(v) <= Date.now() + 366 * 86_400_000, 'Next follow-up cannot be more than a year ahead');
+const dueDate = date
+  .refine((d) => d >= todayIso(), 'Due date cannot be in the past')
+  .refine((d) => d <= todayIso(3 * 366), 'Due date cannot be more than 3 years ahead');
 
 export const REFERRER_TYPES = ['doctor', 'hospital', 'clinic', 'agent', 'corporate', 'staff', 'other'] as const;
 export const RULE_SCOPES = ['all', 'frontoffice', 'emr', 'billing', 'pharmacy', 'lab', 'radiology', 'ipd'] as const;
@@ -96,19 +122,13 @@ export type FollowUpStatus = (typeof FOLLOW_UP_STATUSES)[number];
 
 export const referrerInputSchema = z.object({
   type: z.enum(REFERRER_TYPES).default('doctor'),
-  name: text(200),
-  mobile: mobile.nullish().transform((v) => v ?? null),
-  email: z.email().nullish().transform((v) => v ?? null),
+  name: text(200, 'the name'),
+  mobile: blank(mobile.nullish()).transform((v) => v ?? null),
+  email: blank(email.nullish()).transform((v) => v ?? null),
   organization: optText(200),
   city: optText(100),
   registrationNo: optText(50),
-  pan: z
-    .string()
-    .trim()
-    .toUpperCase()
-    .regex(/^[A-Z]{5}[0-9]{4}[A-Z]$/, 'Enter a valid PAN')
-    .nullish()
-    .transform((v) => v ?? null),
+  pan: blank(panNumber.nullish()).transform((v) => v ?? null),
   notes: optText(1000),
   isActive: z.boolean().default(true),
 });
@@ -162,8 +182,8 @@ export const commissionRuleInputSchema = z
       .max(40)
       .nullish()
       .transform((v) => (v ? v : null)),
-    rateType: z.enum(RATE_TYPES),
-    rate: money,
+    rateType: z.enum(RATE_TYPES, { error: 'Pick % of bill or a flat amount' }),
+    rate: money.refine((v) => v > 0, 'Rate must be more than 0'),
     effectiveFrom: date.optional(),
     effectiveTo: date.nullish().transform((v) => v ?? null),
     isActive: z.boolean().default(true),
@@ -191,9 +211,11 @@ export interface CommissionRule {
 // ---------- referrals ----------
 
 export const referralInputSchema = z.object({
-  patientId: z.uuid(),
-  referrerId: z.uuid(),
-  referredOn: date.optional(),
+  patientId: z.uuid({ error: 'Pick a patient' }),
+  referrerId: z.uuid({ error: 'Pick a referrer' }),
+  referredOn: pastOrTodayDate('Referral date')
+    .refine((d) => d >= todayIso(-366), 'Referral date cannot be more than a year ago')
+    .optional(),
   /** Last bill date that earns commission. Defaults to referredOn + DEFAULT_REFERRAL_DAYS. */
   validUntil: date.nullish(),
   leadId: z.uuid().optional(),
@@ -273,7 +295,8 @@ export const createStatementSchema = z
     periodTo: date,
     notes: optText(1000),
   })
-  .refine((s) => s.periodTo >= s.periodFrom, { message: 'End date is before the start date', path: ['periodTo'] });
+  .refine((s) => s.periodTo >= s.periodFrom, { message: 'End date is before the start date', path: ['periodTo'] })
+  .refine((s) => s.periodTo <= todayIso(), { message: 'A statement cannot cover future dates', path: ['periodTo'] });
 export type CreateStatement = z.input<typeof createStatementSchema>;
 
 export const payStatementSchema = z.object({
@@ -314,17 +337,17 @@ export interface CommissionStatementDetail extends CommissionStatement {
 
 export const leadInputSchema = z
   .object({
-    name: text(200),
-    mobile: mobile.nullish().transform((v) => v ?? null),
-    email: z.email().nullish().transform((v) => v ?? null),
+    name: text(200, 'the name'),
+    mobile: blank(mobile.nullish()).transform((v) => v ?? null),
+    email: blank(email.nullish()).transform((v) => v ?? null),
     gender: z.enum(['male', 'female', 'other']).nullish().transform((v) => v ?? null),
-    ageYears: z.coerce.number().int().min(0).max(130).nullish().transform((v) => v ?? null),
+    ageYears: blank(age.nullish()).transform((v) => v ?? null),
     city: optText(100),
     source: z.enum(LEAD_SOURCES).default('walk_in'),
     interest: optText(200),
     notes: optText(2000),
     assignedTo: z.uuid().nullish().transform((v) => v ?? null),
-    nextFollowUpAt: z.iso.datetime({ offset: true }).nullish().transform((v) => v ?? null),
+    nextFollowUpAt: blank(followUpTime.nullish()).transform((v) => v ?? null),
     referrerId: z.uuid().nullish().transform((v) => v ?? null),
     campId: z.uuid().nullish().transform((v) => v ?? null),
   })
@@ -332,17 +355,17 @@ export const leadInputSchema = z
 export type LeadInput = z.input<typeof leadInputSchema>;
 
 export const updateLeadSchema = z.object({
-  name: text(200).optional(),
-  mobile: mobile.nullish(),
-  email: z.email().nullish(),
+  name: text(200, 'the name').optional(),
+  mobile: blank(mobile.nullish()),
+  email: blank(email.nullish()),
   gender: z.enum(['male', 'female', 'other']).nullish(),
-  ageYears: z.coerce.number().int().min(0).max(130).nullish(),
+  ageYears: blank(age.nullish()),
   city: optText(100).optional(),
   source: z.enum(LEAD_SOURCES).optional(),
   interest: optText(200).optional(),
   notes: optText(2000).optional(),
   assignedTo: z.uuid().nullish(),
-  nextFollowUpAt: z.iso.datetime({ offset: true }).nullish(),
+  nextFollowUpAt: blank(followUpTime.nullish()),
   referrerId: z.uuid().nullish(),
   campId: z.uuid().nullish(),
 });
@@ -361,14 +384,20 @@ export type LeadQuery = z.input<typeof leadQuerySchema>;
 
 export const leadActivityInputSchema = z.object({
   type: z.enum(['note', 'call', 'message', 'visit']),
-  note: text(2000),
+  note: text(2000, 'a note'),
   /** Optionally move the lead on (not to converted/lost; use those endpoints). */
   status: z.enum(['new', 'contacted', 'qualified']).optional(),
-  nextFollowUpAt: z.iso.datetime({ offset: true }).nullish(),
+  /** Earlier today is allowed so a call can be logged as due now. */
+  nextFollowUpAt: blank(
+    z.iso
+      .datetime({ offset: true, error: 'Enter a valid date and time' })
+      .refine((v) => Date.parse(v) <= Date.now() + 366 * 86_400_000, 'Next follow-up cannot be more than a year ahead')
+      .nullish(),
+  ),
 });
 export type LeadActivityInput = z.input<typeof leadActivityInputSchema>;
 
-export const loseLeadSchema = z.object({ reason: text(500) });
+export const loseLeadSchema = z.object({ reason: text(500, 'a reason') });
 export type LoseLead = z.input<typeof loseLeadSchema>;
 
 /**
@@ -380,11 +409,11 @@ export const convertLeadSchema = z
     patientId: z.uuid().optional(),
     register: z
       .object({
-        firstName: text(100),
+        firstName: text(100, 'the first name').regex(/^[\p{L}\p{M}][\p{L}\p{M} .'-]*$/u, "First name can only have letters, spaces and . ' -"),
         lastName: optText(100).optional(),
-        gender: z.enum(['male', 'female', 'other']),
-        ageYears: z.coerce.number().int().min(0).max(130).optional(),
-        mobile: mobile.optional(),
+        gender: z.enum(['male', 'female', 'other'], { error: 'Pick a gender' }),
+        ageYears: blank(age.optional().nullable()).transform((v) => v ?? undefined),
+        mobile: blank(mobile.optional().nullable()).transform((v) => v ?? undefined),
       })
       .optional(),
   })
@@ -436,34 +465,62 @@ export interface LeadDetail extends Lead {
 
 // ---------- camps ----------
 
+/** Camps can be recorded up to a year after they happened and planned up to two years ahead. */
+const campDate = date
+  .refine((d) => d >= todayIso(-366), 'Camp date cannot be more than a year ago')
+  .refine((d) => d <= todayIso(2 * 366), 'Camp date cannot be more than 2 years ahead');
+const targetCount = z.coerce.number({ error: 'Enter a number' }).int('Target must be a whole number').min(0, 'Target cannot be negative').max(1_000_000, 'Target is too large');
+/** Longest a single camp may run, in days. */
+export const MAX_CAMP_DAYS = 90;
+
+/** Problems with a camp's dates, status and money (fields may be missing on an update). */
+export function campIssues(c: { startsOn?: string | null; endsOn?: string | null; status?: string | null; budget?: number | null; spent?: number | null }): { path: string; message: string }[] {
+  const out: { path: string; message: string }[] = [];
+  if (c.startsOn && c.endsOn) {
+    if (c.endsOn < c.startsOn) out.push({ path: 'endsOn', message: 'End date is before the start date' });
+    else if ((Date.parse(c.endsOn) - Date.parse(c.startsOn)) / 86_400_000 + 1 > MAX_CAMP_DAYS) out.push({ path: 'endsOn', message: `A camp can run at most ${MAX_CAMP_DAYS} days` });
+  }
+  const today = todayIso();
+  if ((c.status === 'ongoing' || c.status === 'completed') && c.startsOn && c.startsOn > today) {
+    out.push({ path: 'status', message: `A camp cannot be ${c.status} before its start date` });
+  }
+  return out;
+}
+const checkCamp = (c: Parameters<typeof campIssues>[0], ctx: z.RefinementCtx) => {
+  for (const i of campIssues(c)) ctx.addIssue({ code: 'custom', path: [i.path], message: i.message });
+};
+
 export const campInputSchema = z
   .object({
-    name: text(200),
+    name: text(200, 'the camp name'),
     type: z.enum(CAMP_TYPES).default('health_camp'),
     facilityId: z.uuid().nullish().transform((v) => v ?? null),
     location: optText(300),
-    startsOn: date,
-    endsOn: date,
-    targetCount: z.coerce.number().int().min(0).nullish().transform((v) => v ?? null),
-    budget: money.nullish().transform((v) => v ?? null),
-    spent: money.nullish().transform((v) => v ?? null),
+    startsOn: campDate,
+    endsOn: campDate,
+    targetCount: blank(targetCount.nullish()).transform((v) => v ?? null),
+    budget: blank(money.nullish()).transform((v) => v ?? null),
+    spent: blank(money.nullish()).transform((v) => v ?? null),
     notes: optText(2000),
   })
-  .refine((c) => c.endsOn >= c.startsOn, { message: 'End date is before the start date', path: ['endsOn'] });
+  .superRefine(checkCamp);
 export type CampInput = z.input<typeof campInputSchema>;
 
-export const updateCampSchema = z.object({
-  name: text(200).optional(),
-  type: z.enum(CAMP_TYPES).optional(),
-  location: optText(300).optional(),
-  startsOn: date.optional(),
-  endsOn: date.optional(),
-  status: z.enum(CAMP_STATUSES).optional(),
-  targetCount: z.coerce.number().int().min(0).nullish(),
-  budget: money.nullish(),
-  spent: money.nullish(),
-  notes: optText(2000).optional(),
-});
+export const updateCampSchema = z
+  .object({
+    name: text(200, 'the camp name').optional(),
+    type: z.enum(CAMP_TYPES).optional(),
+    location: optText(300).optional(),
+    /** Old camps keep their dates on edit; only the order and length are checked here. */
+    startsOn: date.optional(),
+    endsOn: date.optional(),
+    status: z.enum(CAMP_STATUSES).optional(),
+    targetCount: blank(targetCount.nullish()),
+    budget: blank(money.nullish()),
+    spent: blank(money.nullish()),
+    notes: optText(2000).optional(),
+  })
+  .superRefine(checkCamp);
 export type UpdateCamp = z.input<typeof updateCampSchema>;
 
 export const campQuerySchema = paginationQuerySchema.extend({ status: z.enum(CAMP_STATUSES).optional() });
@@ -499,9 +556,9 @@ export const campaignAudienceSchema = z.object({
 export type CampaignAudience = z.infer<typeof campaignAudienceSchema>;
 
 export const campaignInputSchema = z.object({
-  name: text(200),
-  channel: z.enum(CAMPAIGN_CHANNELS),
-  message: text(1000),
+  name: text(200, 'the campaign name'),
+  channel: z.enum(CAMPAIGN_CHANNELS, { error: 'Pick a channel' }),
+  message: text(1000, 'the message'),
   audience: campaignAudienceSchema.default({}),
 });
 export type CampaignInput = z.input<typeof campaignInputSchema>;
@@ -528,7 +585,7 @@ export const followUpInputSchema = z
   .object({
     patientId: z.uuid().optional(),
     leadId: z.uuid().optional(),
-    dueDate: date,
+    dueDate,
     type: z.enum(FOLLOW_UP_TYPES).default('revisit'),
     reason: optText(1000),
     assignedTo: z.uuid().nullish().transform((v) => v ?? null),
@@ -537,7 +594,7 @@ export const followUpInputSchema = z
 export type FollowUpInput = z.input<typeof followUpInputSchema>;
 
 export const updateFollowUpSchema = z.object({
-  dueDate: date.optional(),
+  dueDate: dueDate.optional(),
   type: z.enum(FOLLOW_UP_TYPES).optional(),
   reason: optText(1000).optional(),
   assignedTo: z.uuid().nullish(),

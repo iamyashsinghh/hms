@@ -15,6 +15,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { expiryLabel } from '@/modules/pharmacy/format';
+import type { ipd } from '@hms/shared';
+import { AdmittedPatientPicker } from '@/modules/inventory/admitted-patient-picker';
 import { Notice, StatusBadge } from '@/modules/inventory/ui';
 
 export default function IndentPage({ params }: { params: Promise<{ id: string }> }) {
@@ -25,6 +27,9 @@ export default function IndentPage({ params }: { params: Promise<{ id: string }>
   const canIssue = usePermission('inventory.indent.issue');
   const queryClient = useQueryClient();
   const [qty, setQty] = React.useState<Record<string, string>>({});
+  const [qtyError, setQtyError] = React.useState<string | null>(null);
+  /** Issued for an admitted patient: consumables used on them (charged per the hospital's billing rules). */
+  const [forPatient, setForPatient] = React.useState<ipd.AdmissionSummary | null>(null);
 
   const indent = useQuery({ queryKey: ['inventory', 'indents', id], queryFn: () => api.inventory.indents.get(id), enabled: canRead });
   const data = indent.data;
@@ -36,6 +41,7 @@ export default function IndentPage({ params }: { params: Promise<{ id: string }>
 
   const onDone = () => {
     setQty({});
+    setForPatient(null);
     queryClient.invalidateQueries({ queryKey: ['inventory', 'indents'] });
     queryClient.invalidateQueries({ queryKey: ['pharmacy'] });
   };
@@ -50,6 +56,7 @@ export default function IndentPage({ params }: { params: Promise<{ id: string }>
   const issue = useMutation({
     mutationFn: () =>
       api.inventory.indents.issue(id, {
+        admissionId: forPatient?.id,
         lines: entries()
           .filter(([, q]) => Number(q) > 0)
           .map(([indentLineId, q]) => ({ indentLineId, qty: Number(q) })),
@@ -70,6 +77,17 @@ export default function IndentPage({ params }: { params: Promise<{ id: string }>
   if (indent.error || !data) return <p className="text-sm text-destructive">{errorMessage(indent.error)}</p>;
   const lines = data.lines ?? [];
   const error = decide.error ?? issue.error ?? other.error;
+  /** Whole numbers from 0 up to what was asked for (approve) or is still pending (issue). */
+  const checkQty = (): string | null => {
+    for (const l of data.lines ?? []) {
+      const raw = valueOf(l).trim();
+      const n = Number(raw || 0);
+      const max = mode === 'approve' ? l.requestedQty : l.pendingQty;
+      if (!Number.isInteger(n) || n < 0) return `${l.itemName}: enter a whole number of ${l.unit}`;
+      if (n > max) return `${l.itemName}: cannot ${mode === 'approve' ? 'approve more than the' : 'issue more than the'} ${max} ${mode === 'approve' ? 'asked for' : 'pending'}`;
+    }
+    return null;
+  };
 
   return (
     <>
@@ -99,7 +117,7 @@ export default function IndentPage({ params }: { params: Promise<{ id: string }>
         </div>
       </div>
       {issue.data && <Notice>Issued. Stock has moved to {data.toStoreName}.</Notice>}
-      {error && <Notice tone="error">{errorMessage(error)}</Notice>}
+      {(qtyError || error) && <Notice tone="error">{qtyError ?? errorMessage(error)}</Notice>}
 
       <Card className="mb-6">
         <CardHeader>
@@ -146,6 +164,7 @@ export default function IndentPage({ params }: { params: Promise<{ id: string }>
                         className="w-24"
                         type="number"
                         min={0}
+                        step={1}
                         max={mode === 'approve' ? l.requestedQty : l.pendingQty}
                         disabled={mode === 'issue' && l.pendingQty === 0}
                         aria-label={`${mode === 'approve' ? 'Approve' : 'Issue'} qty of ${l.itemName}`}
@@ -163,16 +182,37 @@ export default function IndentPage({ params }: { params: Promise<{ id: string }>
               <Button variant="outline" disabled={decide.isPending} onClick={() => decide.mutate(false)}>
                 Reject
               </Button>
-              <Button disabled={decide.isPending} onClick={() => decide.mutate(true)}>
+              <Button disabled={decide.isPending} onClick={() => {
+                  const problem = checkQty();
+                  setQtyError(problem);
+                  if (!problem) decide.mutate(true);
+                }}>
                 {decide.isPending && <Loader2 className="animate-spin" />}
                 Approve
               </Button>
             </div>
           )}
           {mode === 'issue' && (
-            <div className="flex items-center justify-end gap-4">
+            <div className="space-y-1">
+              <label htmlFor="issue-patient" className="text-sm font-medium">
+                For a patient <span className="font-normal text-muted-foreground">(optional)</span>
+              </label>
+              <div className="max-w-xl">
+                <AdmittedPatientPicker value={forPatient} onChange={setForPatient} />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Consumables used on an admitted patient go on their IPD bill at the sale rate, unless the hospital treats them as its own cost.
+              </p>
+            </div>
+          )}
+          {mode === 'issue' && (
+            <div className="flex flex-wrap items-center justify-end gap-4">
               <span className="text-xs text-muted-foreground">Batches are picked first-expiry-first-out from {data.fromStoreName}.</span>
-              <Button disabled={issue.isPending || !entries().some(([, q]) => Number(q) > 0)} onClick={() => issue.mutate()}>
+              <Button disabled={issue.isPending || !entries().some(([, q]) => Number(q) > 0)} onClick={() => {
+                  const problem = checkQty();
+                  setQtyError(problem);
+                  if (!problem) issue.mutate();
+                }}>
                 {issue.isPending && <Loader2 className="animate-spin" />}
                 Issue stock
               </Button>
@@ -201,7 +241,14 @@ export default function IndentPage({ params }: { params: Promise<{ id: string }>
               {data.issues.flatMap((iss) =>
                 iss.lines.map((l, i) => (
                   <TableRow key={l.id}>
-                    <TableCell className="font-mono text-xs">{i === 0 ? iss.number : ''}</TableCell>
+                    <TableCell className="text-xs">
+                      {i === 0 && (
+                        <>
+                          <span className="font-mono">{iss.number}</span>
+                          {iss.patientName && <div className="text-muted-foreground">For {iss.patientName}</div>}
+                        </>
+                      )}
+                    </TableCell>
                     <TableCell>{i === 0 ? formatDate(iss.createdAt) : ''}</TableCell>
                     <TableCell>{lines.find((x) => x.id === l.indentLineId)?.itemName}</TableCell>
                     <TableCell className="font-mono text-xs">{l.batchNo}</TableCell>

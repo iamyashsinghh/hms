@@ -35,6 +35,8 @@ import { AuditService } from '../../common/db/audit.service';
 import { OutboxService } from '../../common/events/outbox.service';
 import { currentContext } from '../../common/context/request-context';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../common/errors/errors';
+import { BillingService } from '../billing/billing.service';
+import { ChargesService } from '../billing/charges.service';
 import { PatientsService } from '../patients/patients.service';
 import { SetupService } from '../setup/setup.service';
 import {
@@ -52,6 +54,14 @@ import { matchAllergies } from './allergy';
 
 const num = (v: string | null): number | null => (v === null ? null : Number(v));
 const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
+/** Follow-up dates: today or later, and not absurdly far ahead. */
+function checkFollowUpDate(date: string): void {
+  if (date < today()) throw badRequest('invalid_follow_up', 'Follow-up date cannot be in the past');
+  const limit = new Date(`${today()}T00:00:00Z`);
+  limit.setUTCFullYear(limit.getUTCFullYear() + 2);
+  if (date > limit.toISOString().slice(0, 10)) throw badRequest('follow_up_too_far', 'Follow-up date can be at most 2 years ahead');
+}
 
 /** Payload of frontoffice.visit.checked_in (owned by frontoffice; see PARALLEL_PLAN.md section 4). */
 export interface VisitCheckedIn {
@@ -102,6 +112,8 @@ export class EmrService {
     private readonly outbox: OutboxService,
     private readonly patients: PatientsService,
     private readonly setup: SetupService,
+    private readonly billing: BillingService,
+    private readonly charges: ChargesService,
   ) {}
 
   /** Runs a transaction and turns the database's sign-lock errors into a clean 409. */
@@ -187,10 +199,9 @@ export class EmrService {
       const values: Partial<EncounterRow> = { ...startIfWaiting(enc), updatedBy: currentContext()!.userId };
       if (input.notes !== undefined) values.notes = clean({ ...(enc.notes as EncounterNotes), ...input.notes });
       if (input.followUpDate !== undefined) {
-        // A follow-up is after the visit, never before the day of the consultation (IST).
-        if (input.followUpDate && input.followUpDate < istDay(enc.createdAt)) {
-          throw badRequest('invalid_follow_up', 'Follow-up date cannot be before the consultation date');
-        }
+        // Only a new or changed date is checked, so re-saving notes on an older consultation still works.
+        // Today or later also means never before the day of the consultation (IST).
+        if (input.followUpDate && input.followUpDate !== enc.followUpDate) checkFollowUpDate(input.followUpDate);
         values.followUpDate = input.followUpDate;
       }
       if (input.followUpNotes !== undefined) values.followUpNotes = input.followUpNotes || null;
@@ -249,6 +260,10 @@ export class EmrService {
     const parsed = emr.ordersInputSchema.parse(input);
     return this.mutate(id, { doctorOnly: true }, async (tx, enc) => {
       const tenantId = currentContext()!.tenantId!;
+      // A procedure picked from the service master must still be a billable service.
+      for (const code of new Set(parsed.orders.flatMap((o) => (o.kind === 'procedure' && o.serviceCode ? [o.serviceCode] : [])))) {
+        if (!(await this.serviceExists(tx, code))) throw badRequest('unknown_service', `Unknown or inactive service: ${code}`, { missing: [code] });
+      }
       await this.repo.replaceOrders(
         tx,
         id,
@@ -260,6 +275,7 @@ export class EmrService {
           kind: o.kind,
           code: o.code ?? null,
           name: o.name,
+          serviceCode: o.kind === 'procedure' ? (o.serviceCode ?? null) : null,
           priority: o.priority,
           notes: o.notes ?? null,
         })),
@@ -361,6 +377,7 @@ export class EmrService {
         followUpNotes: enc.followUpNotes,
       };
       await this.outbox.publish(tx, 'emr.encounter.signed', { ...signedEvent });
+      await this.postProcedureCharges(tx, signed);
       if (rx) {
         const [lines, names] = await Promise.all([this.repo.lines(tx, [rx.id]), this.repo.userNames(tx, [rx.doctorId])]);
         const event: PrescriptionCreatedEvent = {
@@ -381,6 +398,30 @@ export class EmrService {
         await this.outbox.publish(tx, 'emr.prescription.created', { ...event });
       }
       return signed;
+    });
+  }
+
+  /**
+   * Cancels a procedure order of a signed consultation (not done after all). Its pending charge is
+   * cancelled; a charge already billed is flagged for a credit note on the billing desk. Before signing,
+   * the doctor simply removes the line.
+   */
+  cancelOrder(id: string, orderId: string, input: emr.CancelOrder): Promise<Encounter> {
+    const d = emr.cancelOrderSchema.parse(input);
+    return this.tx(async (tx) => {
+      const ctx = currentContext()!;
+      const enc = await this.repo.findEncounter(tx, id, true);
+      if (!enc) throw notFound('Consultation');
+      if (enc.status !== 'completed') throw conflict('encounter_not_signed', 'Remove the order from the consultation until it is signed');
+      if (enc.doctorId !== ctx.userId) throw forbidden('Only the consulting doctor can cancel this order');
+      const order = await this.repo.findOrder(tx, orderId);
+      if (!order || order.encounterId !== id) throw notFound('Order');
+      if (order.kind !== 'procedure') throw badRequest('not_a_procedure', 'Lab and radiology orders are cancelled in the lab or radiology');
+      if (order.status === 'cancelled') return this.fullDto(tx, enc);
+      if (order.status === 'completed') throw conflict('order_completed', 'This procedure is already done');
+      await this.repo.setOrderStatus(tx, order.id, 'cancelled');
+      await this.charges.cancelBySource(tx, { module: 'emr', refId: id, line: order.id }, d.reason);
+      return this.fullDto(tx, enc);
     });
   }
 
@@ -649,6 +690,37 @@ export class EmrService {
     });
   }
 
+  /**
+   * Signing posts each procedure picked from the service master as a charge on the patient's account
+   * (on the consultation's OPD visit). Free-text procedures have no price and are left alone, as is a
+   * service deactivated since it was picked. Idempotent per order line.
+   */
+  private async postProcedureCharges(tx: Tx, enc: EncounterRow): Promise<void> {
+    const orders = (await this.repo.orders(tx, [enc.id])).filter((o) => o.kind === 'procedure' && o.serviceCode && o.status !== 'cancelled');
+    for (const o of orders) {
+      if (!(await this.serviceExists(tx, o.serviceCode!))) continue;
+      await this.charges.postCharge(tx, {
+        patientId: enc.patientId,
+        facilityId: enc.facilityId,
+        ...(enc.visitId ? { visitId: enc.visitId } : {}),
+        source: { module: 'emr', refId: enc.id, line: o.id },
+        serviceCode: o.serviceCode!,
+        doctorId: enc.doctorId,
+        ...(o.notes ? { notes: o.notes.slice(0, 300) } : {}),
+      });
+    }
+  }
+
+  private serviceExists(tx: Tx, code: string): Promise<boolean> {
+    return this.billing.getServicePrice(code, null, tx).then(
+      () => true,
+      (e: unknown) => {
+        if (e instanceof AppError && e.getStatus() === 404) return false;
+        throw e;
+      },
+    );
+  }
+
   private touch(tx: Tx, enc: EncounterRow): Promise<EncounterRow> {
     return this.repo.updateEncounter(tx, enc.id, { ...startIfWaiting(enc), updatedBy: currentContext()!.userId });
   }
@@ -788,7 +860,7 @@ function toDiagnosis(d: DiagnosisRow): Diagnosis {
 }
 
 function toOrder(o: OrderRow): Order {
-  return { id: o.id, kind: o.kind as Order['kind'], code: o.code, name: o.name, priority: o.priority as Order['priority'], notes: o.notes, status: o.status };
+  return { id: o.id, kind: o.kind as Order['kind'], code: o.code, name: o.name, serviceCode: o.serviceCode, priority: o.priority as Order['priority'], notes: o.notes, status: o.status };
 }
 
 function toPrescription(rx: PrescriptionRow, lines: PrescriptionLineRow[]): Prescription {
@@ -852,9 +924,4 @@ function toCertificate(c: CertificateRow, names: Map<string, string>): Certifica
     remarks: c.remarks,
     issuedAt: iso(c.issuedAt),
   };
-}
-
-/** Calendar date (YYYY-MM-DD) in India time. */
-function istDay(at: string | Date): string {
-  return new Date(new Date(at).getTime() + 330 * 60_000).toISOString().slice(0, 10);
 }

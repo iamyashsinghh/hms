@@ -1,5 +1,5 @@
 import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
-import { importRequestSchema, inventory, type ImportResult, type Paginated } from '@hms/shared';
+import { importRequestSchema, inventory, type ImportResult, type ipd, type Paginated } from '@hms/shared';
 import type { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
@@ -183,6 +183,13 @@ export class InventoryIndentsController {
   @RequirePermissions('inventory.indent.read')
   list(@Query(new ZodPipe(inventory.indentQuerySchema)) q: Out<typeof inventory.indentQuerySchema>): Promise<Paginated<inventory.Indent>> {
     return this.indents.list(q);
+  }
+
+  /** Admitted patients, to issue consumables for one of them. */
+  @Get('admitted-patients')
+  @RequirePermissions('inventory.indent.issue')
+  admittedPatients(@Query('q') q?: string): Promise<Paginated<ipd.AdmissionSummary>> {
+    return this.indents.admittedPatients(q?.slice(0, 100));
   }
 
   @Get(':id')

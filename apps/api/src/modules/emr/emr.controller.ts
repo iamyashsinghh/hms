@@ -102,6 +102,17 @@ export class EmrController {
     return this.emr.setOrders(id, body);
   }
 
+  @Post('encounters/:id/orders/:orderId/cancel')
+  @HttpCode(200)
+  @RequirePermissions('emr.encounter.write')
+  cancelOrder(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Body(new ZodPipe(emr.cancelOrderSchema)) body: Out<typeof emr.cancelOrderSchema>,
+  ): Promise<Encounter> {
+    return this.emr.cancelOrder(id, orderId, body);
+  }
+
   @Put('encounters/:id/prescription')
   @RequirePermissions('emr.prescription.write')
   prescription(@Param('id', ParseUUIDPipe) id: string, @Body(new ZodPipe(emr.prescriptionInputSchema)) body: Out<typeof emr.prescriptionInputSchema>): Promise<Encounter> {

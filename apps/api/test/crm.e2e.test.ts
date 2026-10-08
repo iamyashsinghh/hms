@@ -3,6 +3,7 @@ import { sql } from '@hms/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DbService } from '../src/common/db/db.service';
 import { EventBus } from '../src/common/events/event-bus';
+import { ChargesService } from '../src/modules/billing/charges.service';
 import { pickRule } from '../src/modules/crm/referrals.service';
 import { bearer, bootApp, login } from './helpers';
 
@@ -258,6 +259,39 @@ describe('referrals and commission', () => {
     expect(st.json().error.code).toBe('nothing_to_pay');
   });
 
+  it('accrues on a bill made from patient-account charges, with each line keeping its department', async () => {
+    const lab = await call(admin, 'POST', '/crm/commission-rules', { referrerId, appliesTo: 'lab', rateType: 'percent', rate: 20, effectiveFrom: today() });
+    expect(lab.statusCode, lab.body).toBe(201);
+    try {
+      const facility = facilityId;
+      const ref = crypto.randomUUID();
+      const charge = await app.get(DbService).asTenant({ tenantId }, (tx) =>
+        app.get(ChargesService).postCharge(tx, { patientId, facilityId: facility, source: { module: 'lab', refId: ref }, description: `Lipid profile ${tag}`, unitPrice: 1000, taxRate: 0 }),
+      );
+      const bill = await call(clerk, 'POST', '/billing/charges/bill', {
+        patientId,
+        chargeIds: [charge.id],
+        extraLines: [{ description: 'Report courier', unitPrice: 500, taxRate: 0 }],
+      });
+      expect(bill.statusCode, bill.body).toBe(201);
+      const id = bill.json().id;
+      expect(bill.json().sourceModule).toBe('billing');
+      await dispatch('billing.invoice.finalized', 'invoiceId', id);
+      await dispatch('billing.invoice.finalized', 'invoiceId', id);
+      const rows = (await call(admin, 'GET', `/crm/commissions?referrerId=${referrerId}&pageSize=50`)).json().items.filter(
+        (c: { invoiceId: string }) => c.invoiceId === id,
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ kind: 'accrual', baseAmount: 1500, amount: 250 });
+      expect(rows[0].breakdown.map((l: { description: string; commission: number }) => [l.description, l.commission])).toEqual([
+        [`Lipid profile ${tag}`, 200],
+        ['Report courier', 50],
+      ]);
+    } finally {
+      await call(admin, 'PUT', `/crm/commission-rules/${lab.json().id}`, { referrerId, appliesTo: 'lab', rateType: 'percent', rate: 20, effectiveFrom: today(), isActive: false });
+    }
+  });
+
   it('ignores a partial billing.invoice.finalized payload', async () => {
     const bus = app.get(EventBus);
     const env = { id: crypto.randomUUID(), tenantId, topic: 'billing.invoice.finalized', createdAt: new Date().toISOString() };
@@ -424,6 +458,70 @@ describe('hospital isolation', () => {
   });
 });
 
+describe('validation', () => {
+  const addDays = (d: string, n: number) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+  const msg = (res: { json: () => unknown }) => {
+    const e = (res.json() as { error: { message: string; details?: unknown } }).error;
+    return [e.message, ...(Array.isArray(e.details) ? (e.details as { message: string }[]).map((d) => d.message) : [])].join(' | ');
+  };
+
+  it('checks enquiry contact details and next-call time', async () => {
+    const bad = await call(reception, 'POST', '/crm/leads', { name: 'Bad Mobile', mobile: '12345' });
+    expect(bad.statusCode).toBe(400);
+    expect(msg(bad)).toContain('Enter a 10-digit Indian mobile number');
+
+    const blanks = await call(reception, 'POST', '/crm/leads', { name: 'Blanks', mobile: '', email: '' });
+    expect(msg(blanks)).toContain('Give a mobile number or an email');
+
+    const past = await call(reception, 'POST', '/crm/leads', { name: 'Past Call', mobile: uniqueMobile(41), nextFollowUpAt: new Date(Date.now() - 3 * 86_400_000).toISOString() });
+    expect(past.statusCode).toBe(400);
+    expect(msg(past)).toContain('Next follow-up cannot be in the past');
+
+    const ok = await call(reception, 'POST', '/crm/leads', { name: `Plus Ninety One ${tag}`, mobile: `+91 ${uniqueMobile(42)}`, ageYears: '' });
+    expect(ok.statusCode, ok.body).toBe(201);
+    expect(ok.json().mobile).toMatch(/^\d{10}$/);
+  });
+
+  it('checks referrers, rules, camps, follow-ups and statements', async () => {
+    const pan = await call(admin, 'POST', '/crm/referrers', { name: 'Dr Bad Pan', pan: '12345' });
+    expect(pan.statusCode).toBe(400);
+    expect(msg(pan)).toContain('valid PAN');
+
+    const zero = await call(admin, 'POST', '/crm/commission-rules', { rateType: 'flat', rate: 0 });
+    expect(zero.statusCode).toBe(400);
+    expect(msg(zero)).toContain('Rate must be more than 0');
+
+    const long = await call(admin, 'POST', '/crm/camps', { name: `Long camp ${tag}`, startsOn: today(), endsOn: addDays(today(), 120) });
+    expect(long.statusCode).toBe(400);
+    expect(msg(long)).toContain('at most 90 days');
+    const future = await call(admin, 'POST', '/crm/camps', { name: `Future camp ${tag}`, startsOn: addDays(today(), 10), endsOn: addDays(today(), 11) });
+    expect(future.statusCode, future.body).toBe(201);
+    const early = await call(admin, 'PATCH', `/crm/camps/${future.json().id}`, { status: 'completed' });
+    expect(early.statusCode).toBe(400);
+    expect(msg(early)).toContain('cannot be completed before its start date');
+
+    const p = await call(reception, 'POST', '/patients', { firstName: 'Valid', lastName: `Check${tag}`, gender: 'female', ageYears: 40 });
+    expect(p.statusCode, p.body).toBe(201);
+    const fu = await call(reception, 'POST', '/crm/follow-ups', { patientId: p.json().id, dueDate: addDays(today(), -1) });
+    expect(fu.statusCode).toBe(400);
+    expect(msg(fu)).toContain('Due date cannot be in the past');
+    const fuOk = await call(reception, 'POST', '/crm/follow-ups', { patientId: p.json().id, dueDate: addDays(today(), 2) });
+    expect(fuOk.statusCode, fuOk.body).toBe(201);
+    const move = await call(reception, 'PATCH', `/crm/follow-ups/${fuOk.json().id}`, { dueDate: addDays(today(), -2) });
+    expect(move.statusCode).toBe(400);
+
+    const ref = await call(admin, 'POST', '/crm/referrers', { name: `Dr Valid ${tag}`, mobile: '', email: '' });
+    expect(ref.statusCode, ref.body).toBe(201);
+    const futureRef = await call(admin, 'POST', '/crm/referrals', { patientId: p.json().id, referrerId: ref.json().id, referredOn: addDays(today(), 3) });
+    expect(futureRef.statusCode).toBe(400);
+    expect(msg(futureRef)).toContain('Referral date cannot be in the future');
+
+    const ahead = await call(admin, 'POST', '/crm/statements', { referrerId: ref.json().id, periodFrom: today(), periodTo: addDays(today(), 5) });
+    expect(ahead.statusCode).toBe(400);
+    expect(msg(ahead)).toContain('cannot cover future dates');
+  });
+});
+
 describe('editing CRM records', () => {
   let staffId: string;
   let cityUserId: string;
@@ -441,7 +539,7 @@ describe('editing CRM records', () => {
   });
 
   it('edits an enquiry and assigns it to a staff member', async () => {
-    const lead = (await call(reception, 'POST', '/crm/leads', { name: `Edit ${tag}`, mobile: uniqueMobile(40) })).json();
+    const lead = (await call(reception, 'POST', '/crm/leads', { name: `Edit ${tag}`, mobile: uniqueMobile(43) })).json();
     const res = await call(reception, 'PATCH', `/crm/leads/${lead.id}`, { name: `Edited ${tag}`, interest: 'Cardiology', ageYears: 44, assignedTo: staffId });
     expect(res.statusCode, res.body).toBe(200);
     expect(res.json()).toMatchObject({ name: `Edited ${tag}`, interest: 'Cardiology', ageYears: 44, assignedTo: staffId });
@@ -463,11 +561,12 @@ describe('editing CRM records', () => {
   });
 
   it('edits and reschedules a pending follow-up, not a closed one', async () => {
-    const lead = (await call(reception, 'POST', '/crm/leads', { name: `FU edit ${tag}`, mobile: uniqueMobile(41) })).json();
+    const lead = (await call(reception, 'POST', '/crm/leads', { name: `FU edit ${tag}`, mobile: uniqueMobile(44) })).json();
     const fu = (await call(reception, 'POST', '/crm/follow-ups', { leadId: lead.id, dueDate: today() })).json();
-    const res = await call(reception, 'PATCH', `/crm/follow-ups/${fu.id}`, { dueDate: '2031-02-03', type: 'call', reason: 'Call back', assignedTo: staffId });
+    const later = new Date(Date.parse(`${today()}T00:00:00Z`) + 400 * 86_400_000).toISOString().slice(0, 10);
+    const res = await call(reception, 'PATCH', `/crm/follow-ups/${fu.id}`, { dueDate: later, type: 'call', reason: 'Call back', assignedTo: staffId });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json()).toMatchObject({ dueDate: '2031-02-03', type: 'call', reason: 'Call back', assignedTo: staffId });
+    expect(res.json()).toMatchObject({ dueDate: later, type: 'call', reason: 'Call back', assignedTo: staffId });
     expect(res.json().assignedToName).toBeTruthy();
 
     expect((await call(reception, 'PATCH', `/crm/follow-ups/${fu.id}`, { dueDate: '2020-01-01' })).statusCode).toBe(400);

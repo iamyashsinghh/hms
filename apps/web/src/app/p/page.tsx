@@ -3,7 +3,9 @@
 import * as React from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft, Loader2 } from 'lucide-react';
+import { portal } from '@hms/shared';
 import { errorMessage } from '@/lib/api';
+import { firstError, validate } from '@/lib/validate';
 import { Logo } from '@/components/logo';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -30,7 +32,8 @@ function PatientLogin() {
   const sendCode = async (e?: React.FormEvent) => {
     e?.preventDefault();
     setError(null);
-    if (!/^[6-9]\d{9}$/.test(mobile)) return setError('Enter a 10-digit mobile number');
+    const check = validate(portal.otpRequestSchema, { tenantCode, mobile });
+    if (check.errors) return setError(firstError(check.errors));
     setBusy(true);
     try {
       const res = await patientApi.portal.auth.requestOtp({ tenantCode, mobile });
@@ -50,6 +53,8 @@ function PatientLogin() {
   const verify = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    const check = validate(portal.otpVerifySchema, { tenantCode, mobile, otp });
+    if (check.errors) return setError(firstError(check.errors));
     setBusy(true);
     try {
       await signIn({ tenantCode, mobile, otp });
@@ -93,6 +98,7 @@ function PatientLogin() {
                 <Input
                   id="tenantCode"
                   autoCapitalize="none"
+                  maxLength={63}
                   placeholder="e.g. demo"
                   value={tenantCode}
                   onChange={(e) => setTenantCode(e.target.value.trim())}

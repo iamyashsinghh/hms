@@ -4,8 +4,9 @@ import * as React from 'react';
 import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react';
-import { GENDERS, createPatientSchema, type CreatePatient, type Patient, frontoffice as fo } from '@hms/shared';
+import { GENDERS, createPatientSchema, todayIso, type Patient, frontoffice as fo } from '@hms/shared';
 import { api } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
 import { genderLabel } from '@/lib/format';
 import { PageHeader } from '@/components/page-header';
@@ -16,6 +17,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input, Select } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { DoctorSelect, ErrorBox, PatientPicker, useDebounced } from '@/modules/frontoffice/ui';
+import { BillLink, CheckInCollect, RegistrationCollect } from '@/modules/frontoffice/billing';
 
 type Form = {
   firstName: string;
@@ -27,6 +29,17 @@ type Form = {
   abhaNumber: string;
   city: string;
 };
+/** Form field -> schema path of its error. */
+const ERROR_KEY: Record<keyof Form, string> = {
+  firstName: 'firstName',
+  lastName: 'lastName',
+  gender: 'gender',
+  dateOfBirth: 'dateOfBirth',
+  ageYears: 'ageYears',
+  mobile: 'mobile',
+  abhaNumber: 'abhaNumber',
+  city: 'address.city',
+};
 const EMPTY: Form = { firstName: '', lastName: '', gender: 'male', dateOfBirth: '', ageYears: '', mobile: '', abhaNumber: '', city: '' };
 
 export default function FrontDeskRegisterPage() {
@@ -36,9 +49,15 @@ export default function FrontDeskRegisterPage() {
   const [form, setForm] = React.useState<Form>(EMPTY);
   const [created, setCreated] = React.useState<Patient | null>(null);
   const [confirmed, setConfirmed] = React.useState(false);
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const set = (k: keyof Form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     setForm((f) => ({ ...f, [k]: e.target.value }));
     setConfirmed(false);
+    setErrors((errs) => {
+      const rest = { ...errs };
+      delete rest[ERROR_KEY[k]];
+      return rest;
+    });
   };
 
   const probe = useDebounced(
@@ -60,24 +79,31 @@ export default function FrontDeskRegisterPage() {
   const strong = (dupes.data ?? []).filter((d) => d.score >= 60);
 
   const create = useMutation({
-    mutationFn: () => {
-      const body: CreatePatient = createPatientSchema.parse({
-        firstName: form.firstName,
-        lastName: form.lastName || undefined,
-        gender: form.gender,
-        dateOfBirth: form.dateOfBirth || undefined,
-        ageYears: !form.dateOfBirth && form.ageYears ? Number(form.ageYears) : undefined,
-        mobile: form.mobile || undefined,
-        abhaNumber: form.abhaNumber ? form.abhaNumber.replace(/[-\s]/g, '') : undefined,
-        address: form.city ? { city: form.city } : undefined,
-      });
-      return api.patients.create(body);
-    },
+    mutationFn: (body: Parameters<typeof api.patients.create>[0]) => api.patients.create(body),
     onSuccess: (p) => {
       setCreated(p);
       queryClient.invalidateQueries({ queryKey: ['patients'] });
     },
   });
+  const submit = () => {
+    const r = validate(createPatientSchema, {
+      firstName: form.firstName,
+      lastName: form.lastName || undefined,
+      gender: form.gender,
+      dateOfBirth: form.dateOfBirth || undefined,
+      ageYears: !form.dateOfBirth && form.ageYears.trim() ? Number(form.ageYears) : undefined,
+      mobile: form.mobile || undefined,
+      abhaNumber: form.abhaNumber || undefined,
+      address: form.city.trim() ? { city: form.city } : undefined,
+    });
+    if (r.errors) {
+      setErrors(r.errors);
+      return;
+    }
+    setErrors({});
+    create.mutate(r.data);
+  };
+  const err = (k: keyof Form) => (errors[ERROR_KEY[k]] ? <p className="mt-1 text-xs text-destructive">{errors[ERROR_KEY[k]]}</p> : null);
 
   if (!canCreate) return <NoAccess />;
 
@@ -95,6 +121,10 @@ export default function FrontDeskRegisterPage() {
               <div className="font-mono text-sm text-muted-foreground">UHID {created.uhid}</div>
             </div>
           </CardContent>
+          {/* Registration fee, when the hospital charges one (billing rules). */}
+          <CardContent className="pt-0 empty:hidden">
+            <RegistrationCollect patientId={created.id} />
+          </CardContent>
         </Card>
         <QuickToken patient={created} />
         <div className="mt-6 flex gap-2">
@@ -103,16 +133,18 @@ export default function FrontDeskRegisterPage() {
             onClick={() => {
               setCreated(null);
               setForm(EMPTY);
+              setErrors({});
             }}
           >
             Register another
           </Button>
-          <Link href="/frontoffice/appointments" className={buttonVariants({ variant: 'outline' })}>
+          <Link href={`/frontoffice/appointments?patientId=${created.id}`} className={buttonVariants({ variant: 'outline' })}>
             Book an appointment
           </Link>
           <Link href={`/patients/${created.id}`} className={buttonVariants({ variant: 'ghost' })}>
             Open patient
           </Link>
+          <BillLink patientId={created.id} className={buttonVariants({ variant: 'ghost' })} />
         </div>
       </div>
     );
@@ -126,11 +158,13 @@ export default function FrontDeskRegisterPage() {
           <CardContent className="grid gap-4 pt-6 sm:grid-cols-2">
             <div>
               <Label htmlFor="firstName">First name *</Label>
-              <Input id="firstName" className="mt-1" value={form.firstName} onChange={set('firstName')} autoFocus />
+              <Input id="firstName" className="mt-1" maxLength={100} value={form.firstName} onChange={set('firstName')} aria-invalid={!!errors.firstName} autoFocus />
+              {err('firstName')}
             </div>
             <div>
               <Label htmlFor="lastName">Last name</Label>
-              <Input id="lastName" className="mt-1" value={form.lastName} onChange={set('lastName')} />
+              <Input id="lastName" className="mt-1" maxLength={100} value={form.lastName} onChange={set('lastName')} aria-invalid={!!errors.lastName} />
+              {err('lastName')}
             </div>
             <div>
               <Label htmlFor="gender">Gender *</Label>
@@ -144,23 +178,28 @@ export default function FrontDeskRegisterPage() {
             </div>
             <div>
               <Label htmlFor="mobile">Mobile</Label>
-              <Input id="mobile" type="tel" inputMode="numeric" className="mt-1" placeholder="10 digits" value={form.mobile} onChange={set('mobile')} />
+              <Input id="mobile" type="tel" inputMode="numeric" maxLength={14} className="mt-1" placeholder="10 digits" value={form.mobile} onChange={set('mobile')} aria-invalid={!!errors.mobile} />
+              {err('mobile')}
             </div>
             <div>
               <Label htmlFor="dob">Date of birth</Label>
-              <Input id="dob" type="date" className="mt-1" value={form.dateOfBirth} onChange={set('dateOfBirth')} />
+              <Input id="dob" type="date" className="mt-1" max={todayIso()} min={todayIso(-54_787)} value={form.dateOfBirth} onChange={set('dateOfBirth')} aria-invalid={!!errors.dateOfBirth} />
+              {err('dateOfBirth')}
             </div>
             <div>
               <Label htmlFor="age">Age (if DOB unknown)</Label>
-              <Input id="age" type="number" min={0} max={150} className="mt-1" value={form.ageYears} onChange={set('ageYears')} disabled={!!form.dateOfBirth} />
+              <Input id="age" type="number" inputMode="numeric" min={0} max={150} step={1} className="mt-1" value={form.ageYears} onChange={set('ageYears')} disabled={!!form.dateOfBirth} aria-invalid={!!errors.ageYears} />
+              {err('ageYears')}
             </div>
             <div>
               <Label htmlFor="abha">ABHA number</Label>
-              <Input id="abha" inputMode="numeric" className="mt-1" placeholder="14 digits, e.g. 91-1234-5678-9012" value={form.abhaNumber} onChange={set('abhaNumber')} />
+              <Input id="abha" inputMode="numeric" maxLength={17} className="mt-1" placeholder="14 digits, e.g. 91-1234-5678-9012" value={form.abhaNumber} onChange={set('abhaNumber')} aria-invalid={!!errors.abhaNumber} />
+              {err('abhaNumber')}
             </div>
             <div>
               <Label htmlFor="city">City</Label>
-              <Input id="city" className="mt-1" value={form.city} onChange={set('city')} />
+              <Input id="city" className="mt-1" maxLength={100} value={form.city} onChange={set('city')} aria-invalid={!!errors['address.city']} />
+              {err('city')}
             </div>
             <div className="sm:col-span-2">
               <ErrorBox error={create.error} />
@@ -172,7 +211,7 @@ export default function FrontDeskRegisterPage() {
               </label>
             )}
             <div className="flex justify-end sm:col-span-2">
-              <Button disabled={!form.firstName.trim() || create.isPending || (strong.length > 0 && !confirmed)} onClick={() => create.mutate()}>
+              <Button disabled={!form.firstName.trim() || create.isPending || (strong.length > 0 && !confirmed)} onClick={submit}>
                 {create.isPending && <Loader2 className="animate-spin" />}
                 Register patient
               </Button>
@@ -240,10 +279,15 @@ function QuickToken({ patient }: { patient: Patient }) {
         </CardHeader>
         <CardContent className="flex flex-wrap items-end gap-3">
           {walk.data ? (
-            <div className="text-center">
-              <div className="text-xs text-muted-foreground">Token with {walk.data.doctorName}</div>
-              <div className="text-5xl font-bold tabular-nums text-primary">{walk.data.tokenNo}</div>
-            </div>
+            <>
+              <div className="text-center">
+                <div className="text-xs text-muted-foreground">Token with {walk.data.doctorName}</div>
+                <div className="text-5xl font-bold tabular-nums text-primary">{walk.data.tokenNo}</div>
+              </div>
+              <div className="w-full">
+                <CheckInCollect visit={walk.data} />
+              </div>
+            </>
           ) : (
             <>
               <div className="w-64">
@@ -273,8 +317,9 @@ function AbhaCard() {
   const [patient, setPatient] = React.useState<Patient | null>(null);
   const [abha, setAbha] = React.useState('');
   const [address, setAddress] = React.useState('');
+  const [abhaError, setAbhaError] = React.useState<string | null>(null);
   const save = useMutation({
-    mutationFn: () => api.frontoffice.patients.captureAbha(patient!.id, { abhaNumber: abha, abhaAddress: address || undefined }),
+    mutationFn: (body: fo.AbhaCapture) => api.frontoffice.patients.captureAbha(patient!.id, body),
     onSuccess: (p) => {
       setPatient(p);
       setAbha('');
@@ -291,11 +336,17 @@ function AbhaCard() {
       <CardContent className="space-y-3">
         <PatientPicker value={patient} onChange={setPatient} />
         {patient?.abhaNumber && <p className="text-xs text-muted-foreground">Current ABHA: {patient.abhaNumber}</p>}
-        <Input placeholder="ABHA number (14 digits)" inputMode="numeric" value={abha} onChange={(e) => setAbha(e.target.value)} />
-        <Input placeholder="ABHA address, e.g. name@abdm (optional)" value={address} onChange={(e) => setAddress(e.target.value)} />
+        <Input placeholder="ABHA number (14 digits)" inputMode="numeric" maxLength={17} value={abha} onChange={(e) => setAbha(e.target.value)} />
+        <Input placeholder="ABHA address, e.g. name@abdm (optional)" maxLength={100} value={address} onChange={(e) => setAddress(e.target.value)} />
+        {abhaError && <p className="text-xs text-destructive">{abhaError}</p>}
         <ErrorBox error={save.error} />
         {save.isSuccess && <p className="text-xs text-primary">ABHA saved.</p>}
-        <Button className="w-full" disabled={!patient || abha.replace(/\D/g, '').length !== 14 || save.isPending} onClick={() => save.mutate()}>
+        <Button className="w-full" disabled={!patient || abha.replace(/\D/g, '').length !== 14 || save.isPending} onClick={() => {
+            const r = validate(fo.abhaCaptureSchema, { abhaNumber: abha, abhaAddress: address || undefined });
+            setAbhaError(r.errors ? (r.errors.abhaNumber ?? r.errors.abhaAddress ?? null) : null);
+            if (r.data) save.mutate(r.data);
+          }}
+        >
           Save ABHA
         </Button>
       </CardContent>

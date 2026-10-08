@@ -2,8 +2,10 @@ import { Injectable } from '@nestjs/common';
 import {
   and,
   asc,
+  billingCharges,
   count,
   desc,
+  emrEncounters,
   eq,
   inArray,
   labOrderItems,
@@ -263,6 +265,33 @@ export class LabRepository {
   }
 
   /** Staff display names (core user table, read-only). */
+  /** Charges already on the patient's account for these orders (any status), read-only. */
+  chargeLines(tx: Tx, orderIds: string[]) {
+    return orderIds.length
+      ? tx
+          .select({ orderId: billingCharges.sourceRef, line: billingCharges.sourceLine, status: billingCharges.status, admissionId: billingCharges.admissionId })
+          .from(billingCharges)
+          .where(and(eq(billingCharges.sourceModule, 'lab'), inArray(billingCharges.sourceRef, orderIds)))
+      : Promise.resolve([]);
+  }
+
+  /** OPD visit of the consultation an order came from. */
+  async encounterVisit(tx: Tx, encounterId: string): Promise<string | null> {
+    const [row] = await tx.select({ visitId: emrEncounters.visitId }).from(emrEncounters).where(eq(emrEncounters.id, encounterId)).limit(1);
+    return row?.visitId ?? null;
+  }
+
+  /** Stores the bill number on orders whose charges were billed (first bill wins). Returns how many changed. */
+  async setInvoice(tx: Tx, orderIds: string[], invoiceId: string, invoiceNo: string): Promise<number> {
+    if (!orderIds.length) return 0;
+    const rows = await tx
+      .update(labOrders)
+      .set({ invoiceId, invoiceNo })
+      .where(and(inArray(labOrders.id, orderIds), sql`${labOrders.invoiceId} is null`))
+      .returning({ id: labOrders.id });
+    return rows.length;
+  }
+
   async userNames(tx: Tx, ids: (string | null)[]): Promise<Map<string, string>> {
     const unique = [...new Set(ids.filter((i): i is string => !!i))];
     if (!unique.length) return new Map();

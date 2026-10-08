@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
 import { BLOOD_GROUPS, GENDERS } from './core';
+import { dateOfBirth, indianMobile, isoDate, personName, todayIso } from '../validation';
 
 /**
  * Patient Portal: permissions and API contracts (Zod schemas + types).
@@ -28,8 +29,8 @@ export const portalModule = defineModule({
   },
 });
 
-const mobile = z.string().trim().regex(/^[6-9]\d{9}$/, 'Enter a 10-digit Indian mobile number');
-const tenantCode = z.string().trim().toLowerCase().min(2).max(63);
+const mobile = indianMobile;
+const tenantCode = z.string({ error: 'Enter the hospital code' }).trim().toLowerCase().min(2, 'Enter the hospital code').max(63, 'Hospital code is too long');
 const client = z.enum(['web', 'mobile']).default('web');
 
 // ---------- Auth (patient OTP) ----------
@@ -51,7 +52,7 @@ export const otpVerifySchema = z.object({
   mobile,
   otp: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code'),
   client,
-  deviceName: z.string().max(100).optional(),
+  deviceName: z.string().max(100, 'Device name is too long').optional(),
 });
 export type OtpVerify = z.input<typeof otpVerifySchema>;
 
@@ -110,18 +111,23 @@ export interface PortalHospital {
 
 // ---------- Profile & family ----------
 
-export const updateAccountSchema = z.object({ name: z.string().trim().min(1).max(100) });
+export const updateAccountSchema = z.object({ name: personName('your name') });
 export type UpdateAccount = z.infer<typeof updateAccountSchema>;
 
 export const addFamilyMemberSchema = z
   .object({
-    firstName: z.string().trim().min(1).max(100),
-    lastName: z.string().trim().max(100).optional(),
-    gender: z.enum(GENDERS),
-    dateOfBirth: z.iso.date().optional(),
-    ageYears: z.number().int().min(0).max(150).optional(),
+    firstName: personName('first name'),
+    lastName: z
+      .string()
+      .trim()
+      .max(100, 'Last name can be at most 100 characters')
+      .regex(/^([\p{L}\p{M}][\p{L}\p{M} .'-]*)?$/u, "Last name can only have letters, spaces and . ' -")
+      .optional(),
+    gender: z.enum(GENDERS, { error: 'Pick a gender' }),
+    dateOfBirth: dateOfBirth.optional(),
+    ageYears: z.number({ error: 'Enter age in years' }).int('Age must be a whole number').min(0, 'Age cannot be negative').max(150, 'Age cannot be more than 150').optional(),
     bloodGroup: z.enum(BLOOD_GROUPS).optional(),
-    relation: z.enum(RELATIONS),
+    relation: z.enum(RELATIONS, { error: 'Pick a relation' }),
   })
   .refine((v) => v.dateOfBirth || v.ageYears !== undefined, { message: 'Enter date of birth or age', path: ['dateOfBirth'] });
 export type AddFamilyMember = z.infer<typeof addFamilyMemberSchema>;
@@ -139,7 +145,15 @@ export interface PortalDoctor {
 export const doctorQuerySchema = z.object({ facilityId: z.uuid().optional(), departmentId: z.uuid().optional() });
 export type DoctorQuery = { facilityId?: string; departmentId?: string };
 
-export const slotQuerySchema = z.object({ date: z.iso.date(), facilityId: z.uuid().optional() });
+/** Patients can book online from today up to this many days ahead. */
+export const PORTAL_MAX_BOOKING_DAYS = 60;
+
+export const slotQuerySchema = z.object({
+  date: isoDate
+    .refine((d) => d >= todayIso(), 'Pick today or a later date')
+    .refine((d) => d <= todayIso(PORTAL_MAX_BOOKING_DAYS), `You can book up to ${PORTAL_MAX_BOOKING_DAYS} days ahead`),
+  facilityId: z.uuid().optional(),
+});
 
 export interface PortalSlot {
   start: string;
@@ -156,8 +170,10 @@ export const bookAppointmentSchema = z.object({
   patientId: z.uuid(),
   doctorId: z.uuid(),
   facilityId: z.uuid().optional(),
-  slotStart: z.iso.datetime({ offset: true }),
-  reason: z.string().trim().max(500).optional(),
+  slotStart: z.iso
+    .datetime({ offset: true, error: 'Pick a time slot' })
+    .refine((v) => Date.parse(v) > Date.now(), 'This time has already passed'),
+  reason: z.string().trim().max(500, 'Reason can be at most 500 characters').optional(),
 });
 export type BookAppointment = z.infer<typeof bookAppointmentSchema>;
 
@@ -223,6 +239,18 @@ export interface PortalInvoice {
   issuedAt: string;
 }
 
+/**
+ * GET /portal/bills/pending: charges on a patient's account that the hospital has not billed yet
+ * (read-only; they are paid once the billing desk makes the bill). Only patients with something pending.
+ */
+export interface PortalPendingCharges {
+  patientId: string;
+  patientName: string;
+  count: number;
+  total: string;
+  oldestDate: string;
+}
+
 export interface PortalReport {
   id: string;
   reportId: string;
@@ -267,8 +295,8 @@ export type ConfirmPayment = z.infer<typeof confirmPaymentSchema>;
 
 export const createFeedbackSchema = z.object({
   patientId: z.uuid(),
-  rating: z.number().int().min(1).max(5),
-  comment: z.string().trim().max(2000).optional(),
+  rating: z.number({ error: 'Pick a rating from 1 to 5 stars' }).int('Pick a rating from 1 to 5 stars').min(1, 'Pick a rating from 1 to 5 stars').max(5, 'Pick a rating from 1 to 5 stars'),
+  comment: z.string().trim().max(2000, 'Comment can be at most 2000 characters').optional(),
   appointmentRequestId: z.uuid().optional(),
 });
 export type CreateFeedback = z.infer<typeof createFeedbackSchema>;
@@ -295,7 +323,7 @@ export type StaffBookingQuery = { status?: AppointmentStatus; date?: string; pag
 
 export const decideBookingSchema = z.object({
   decision: z.enum(['confirm', 'reject']),
-  note: z.string().trim().max(500).optional(),
+  note: z.string().trim().max(500, 'Note can be at most 500 characters').optional(),
 });
 export type DecideBooking = z.infer<typeof decideBookingSchema>;
 

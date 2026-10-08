@@ -1,11 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import type { Tx } from '@hms/db';
-import type { reports } from '@hms/shared';
+import { reports as R, type reports } from '@hms/shared';
 import { DbService } from '../../common/db/db.service';
 import { currentContext } from '../../common/context/request-context';
 import { forbidden } from '../../common/errors/errors';
 import { toCsv } from './csv';
-import { inOrder, ReportsRepository, type FacilityScope, type Range } from './reports.repository';
+import { inOrder, ReportsRepository, type FacilityScope, type Range, type UnbilledChargeRow } from './reports.repository';
 
 const TOP_N = 5;
 
@@ -17,6 +17,8 @@ const EXPORT_PERMISSION: Record<reports.ExportReport, string> = {
   'revenue-by-service': 'reports.revenue.read',
   'new-patients': 'reports.patient.read',
   'daily-summary': 'reports.dashboard.read',
+  // The day-end unbilled list is a billing-desk report, like the daily collection.
+  'unbilled-charges': 'reports.collection.read',
 };
 
 /** Read-only reports. Facility filters are limited to the facilities the caller has access to. */
@@ -82,6 +84,16 @@ export class ReportsService {
         () => this.repo.collectionRows(tx, r, scope),
       );
       return { date: day, timezone: tz, total: round(byMode.reduce((s, m) => s + m.amount, 0)), byMode, rows };
+    });
+  }
+
+  /** Day-end check: charges still on patients' accounts, by department, by age and by patient. */
+  unbilled(date?: string, facilityId?: string): Promise<reports.UnbilledChargesReport> {
+    const scope = callerScope(facilityId);
+    return this.db.tx(async (tx) => {
+      const tz = await this.repo.timezone(tx);
+      const day = date ?? (await this.repo.today(tx, tz));
+      return summarizeUnbilled(day, tz, await this.repo.unbilledCharges(tx, { from: day, to: day, tz }, scope));
     });
   }
 
@@ -186,6 +198,27 @@ export class ReportsService {
             filename,
             csv: toCsv(await this.repo.newPatientRows(tx, r, scope), ['registered', 'uhid', 'name', 'gender', 'age_years', 'mobile', 'facility']),
           };
+        case 'unbilled-charges': {
+          const day = { ...r, from: r.to };
+          return {
+            filename: `unbilled-charges_${r.to}.csv`,
+            csv: toCsv(
+              (await this.repo.unbilledCharges(tx, day, scope)).map((x) => ({
+                charge_date: x.chargeDate,
+                age_days: x.ageDays,
+                department: R.chargeSourceLabel(x.module),
+                uhid: x.uhid,
+                patient: x.patientName,
+                mobile: x.mobile,
+                account: x.account.toUpperCase(),
+                description: x.description,
+                qty: x.qty,
+                amount: x.amount.toFixed(2),
+              })),
+              ['charge_date', 'age_days', 'department', 'uhid', 'patient', 'mobile', 'account', 'description', 'qty', 'amount'],
+            ),
+          };
+        }
         case 'daily-summary':
           return {
             filename,
@@ -230,6 +263,7 @@ export class ReportsService {
       prevPatients,
       prevBilled,
       prevCollections,
+      unbilled,
     ] = await inOrder(
       () => this.repo.opdVisitCount(tx, r, scope),
       () => this.repo.newPatientCount(tx, r, scope),
@@ -246,7 +280,8 @@ export class ReportsService {
       () => this.repo.newPatientCount(tx, p, scope),
       () => this.repo.billed(tx, p, scope),
       () => this.repo.collections(tx, p, scope),
-      );
+      () => this.repo.unbilledCharges(tx, r, scope),
+    );
     return {
       date: day,
       timezone: tz,
@@ -263,6 +298,7 @@ export class ReportsService {
       pendingBills,
       topDoctors,
       topServices,
+      unbilledCharges: { ...summarizeUnbilled(day, tz, unbilled).total },
       previous: { date: prev, opdVisits: prevVisits, newPatients: prevPatients, billed: prevBilled, collections: prevCollections },
     };
   }
@@ -277,6 +313,52 @@ function callerScope(facilityId?: string): FacilityScope {
     return [facilityId];
   }
   return ctx.facilityIds;
+}
+
+/** Groups unbilled charge rows for the report (money summed in paise). */
+function summarizeUnbilled(date: string, timezone: string, rows: UnbilledChargeRow[]): reports.UnbilledChargesReport {
+  const paise = (n: number) => Math.round(n * 100);
+  const modules = new Map<string, { count: number; amount: number; patients: Set<string>; oldestDate: string }>();
+  const ages = R.UNBILLED_AGE_BUCKETS.map((b) => ({ key: b.key, label: b.label, count: 0, amount: 0 }));
+  const patients = new Map<string, reports.UnbilledChargesReport['byPatient'][number]>();
+  let total = 0;
+  for (const c of rows) {
+    const amt = paise(c.amount);
+    total += amt;
+    const m = modules.get(c.module) ?? { count: 0, amount: 0, patients: new Set<string>(), oldestDate: c.chargeDate };
+    m.count++;
+    m.amount += amt;
+    m.patients.add(c.patientId);
+    if (c.chargeDate < m.oldestDate) m.oldestDate = c.chargeDate;
+    modules.set(c.module, m);
+    const bucket = R.UNBILLED_AGE_BUCKETS.findIndex((b) => c.ageDays >= b.min && c.ageDays <= b.max);
+    const a = ages[bucket === -1 ? 0 : bucket]!;
+    a.count++;
+    a.amount += amt;
+    let p = patients.get(c.patientId);
+    if (!p) {
+      p = { patientId: c.patientId, uhid: c.uhid, patientName: c.patientName, mobile: c.mobile, count: 0, amount: 0, oldestDate: c.chargeDate, ageDays: c.ageDays, modules: [], accounts: [] };
+      patients.set(c.patientId, p);
+    }
+    p.count++;
+    p.amount += amt;
+    if (c.chargeDate < p.oldestDate) p.oldestDate = c.chargeDate;
+    p.ageDays = Math.max(p.ageDays, c.ageDays);
+    if (!p.modules.includes(c.module)) p.modules.push(c.module);
+    if (!p.accounts.includes(c.account)) p.accounts.push(c.account);
+  }
+  return {
+    date,
+    timezone,
+    total: { count: rows.length, patients: patients.size, amount: total / 100 },
+    byModule: [...modules.entries()]
+      .map(([module, m]) => ({ module, label: R.chargeSourceLabel(module), count: m.count, amount: m.amount / 100, patients: m.patients.size, oldestDate: m.oldestDate }))
+      .sort((x, y) => y.amount - x.amount || x.label.localeCompare(y.label)),
+    byAge: ages.map((a) => ({ ...a, amount: a.amount / 100 })),
+    byPatient: [...patients.values()]
+      .map((p) => ({ ...p, amount: p.amount / 100 }))
+      .sort((x, y) => x.oldestDate.localeCompare(y.oldestDate) || y.amount - x.amount),
+  };
 }
 
 function addDays(date: string, days: number): string {

@@ -32,6 +32,23 @@ describe('auth', () => {
     }
   });
 
+  it('explains missing or malformed login fields', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { tenantCode: '', identifier: '', password: '' } });
+    expect(res.statusCode).toBe(400);
+    const msg = res.json().error.message;
+    expect(msg).toContain('Enter your hospital code');
+    expect(msg).toContain('Enter your email or mobile number');
+    expect(msg).toContain('Enter your password');
+    const bad = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { tenantCode: 'de mo!', identifier: 'admin@demo.hms', password: 'x' } });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json().error.message).toContain('Hospital code has only letters, digits and -');
+  });
+
+  it('accepts a mobile number typed with +91 or spaces', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { tenantCode: 'Demo', identifier: '+91 90000 00002', password: DEMO.password, client: 'mobile' } });
+    expect(res.statusCode).toBe(200);
+  });
+
   it('web login sets an httpOnly refresh cookie and keeps the token out of the body', async () => {
     const res = await app.inject({
       method: 'POST',

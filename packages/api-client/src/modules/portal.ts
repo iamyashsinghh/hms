@@ -33,6 +33,8 @@ export const portalApi = (http: Http) => ({
 
   prescriptions: (q: portal.RecordQuery = {}) => http.get<portal.PortalPrescription[]>('/portal/prescriptions', q),
   bills: (q: portal.RecordQuery = {}) => http.get<portal.PortalInvoice[]>('/portal/bills', q),
+  /** Charges not billed yet (read-only). */
+  pendingCharges: (q: portal.RecordQuery = {}) => http.get<portal.PortalPendingCharges[]>('/portal/bills/pending', q),
   reports: (q: portal.RecordQuery = {}) => http.get<portal.PortalReport[]>('/portal/reports', q),
 
   createPaymentIntent: (body: portal.CreatePaymentIntent) => http.post<portal.PortalPaymentIntent>('/portal/payments/intents', body),

@@ -6,6 +6,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Trash2 } from 'lucide-react';
 import { pharmacy, type Patient } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -71,17 +72,9 @@ export default function NewSalePage() {
   const [amounts, setAmounts] = React.useState<Record<number, { amount: number; short: boolean }>>({});
   const onAmount = React.useCallback((key: number, amount: number, short: boolean) => setAmounts((a) => ({ ...a, [key]: { amount, short } })), []);
 
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const sell = useMutation({
-    mutationFn: () =>
-      api.pharmacy.sales.create({
-        storeId: storeId!,
-        patientId: patient?.id,
-        customerName: patient ? undefined : customer.name || undefined,
-        customerMobile: patient ? undefined : customer.mobile || undefined,
-        paymentMode,
-        prescriptionSeen: rxSeen,
-        lines: lines.map((l) => ({ itemId: l.item.id, qty: l.qty, discountPct: l.discountPct })),
-      }),
+    mutationFn: (body: pharmacy.CreateSale) => api.pharmacy.sales.create(body),
     onSuccess: (sale) => {
       queryClient.invalidateQueries({ queryKey: ['pharmacy'] });
       router.push(`/pharmacy/sales/${sale.id}`);
@@ -94,6 +87,21 @@ export default function NewSalePage() {
   const live = lines.map((l) => amounts[l.key]);
   const total = live.reduce((s, a) => s + (a?.amount ?? 0), 0);
   const short = live.some((a) => a?.short);
+  /** Items saved before GST slabs were enforced cannot be billed to a registered patient. */
+  const nonSlab = patient ? lines.find((l) => !pharmacy.isGstSlab(l.item.gstRate)) : undefined;
+  const complete = () => {
+    const r = validate(pharmacy.createSaleSchema, {
+      storeId,
+      patientId: patient?.id,
+      customerName: patient ? undefined : customer.name || undefined,
+      customerMobile: patient ? undefined : customer.mobile || undefined,
+      paymentMode,
+      prescriptionSeen: rxSeen,
+      lines: lines.map((l) => ({ itemId: l.item.id, qty: l.qty, discountPct: l.discountPct })),
+    });
+    setErrors(r.errors ?? {});
+    if (r.data) sell.mutate(r.data);
+  };
 
   return (
     <>
@@ -150,11 +158,20 @@ export default function NewSalePage() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <Label htmlFor="cname">Name</Label>
-                  <Input id="cname" className="mt-2" value={customer.name} onChange={(e) => setCustomer({ ...customer, name: e.target.value })} />
+                  <Input id="cname" className="mt-2" maxLength={120} value={customer.name} onChange={(e) => setCustomer({ ...customer, name: e.target.value })} />
                 </div>
                 <div>
                   <Label htmlFor="cmobile">Mobile</Label>
-                  <Input id="cmobile" className="mt-2" inputMode="numeric" value={customer.mobile} onChange={(e) => setCustomer({ ...customer, mobile: e.target.value })} />
+                  <Input
+                    id="cmobile"
+                    className="mt-2"
+                    inputMode="tel"
+                    maxLength={14}
+                    aria-invalid={!!errors.customerMobile}
+                    value={customer.mobile}
+                    onChange={(e) => setCustomer({ ...customer, mobile: e.target.value })}
+                  />
+                  {errors.customerMobile && <p className="mt-1 text-xs text-destructive">{errors.customerMobile}</p>}
                 </div>
               </div>
             )}
@@ -167,6 +184,10 @@ export default function NewSalePage() {
                   </option>
                 ))}
               </Select>
+              {errors.paymentMode && <p className="mt-1 text-xs text-destructive">{errors.paymentMode}</p>}
+              {patient && (
+                <p className="mt-1 text-xs text-muted-foreground">If this patient is admitted, the medicines go on their IPD bill (per the hospital&apos;s billing rules) and nothing is collected here.</p>
+              )}
             </div>
             {needsRx && (
               <label className="flex items-start gap-2 rounded-md border border-accent/40 bg-accent/10 p-3 text-sm">
@@ -179,9 +200,15 @@ export default function NewSalePage() {
               <span className="text-sm text-muted-foreground">Total (incl. GST)</span>
               <span className="text-2xl font-semibold tabular-nums">{inr(total)}</span>
             </div>
+            {nonSlab && (
+              <p className="text-sm text-destructive">
+                {nonSlab.item.name} has GST {nonSlab.item.gstRate}%, which is not a GST slab. Edit the drug and pick a slab before selling it to a
+                patient.
+              </p>
+            )}
             {short && <p className="text-sm text-destructive">Not enough stock for one or more lines.</p>}
             {sell.error && <p className="text-sm text-destructive">{errorMessage(sell.error)}</p>}
-            <Button className="w-full" size="lg" disabled={!storeId || !lines.length || short || !!blocked || (needsRx && !rxSeen) || sell.isPending} onClick={() => sell.mutate()}>
+            <Button className="w-full" size="lg" disabled={!storeId || !lines.length || short || !!blocked || !!nonSlab || (needsRx && !rxSeen) || sell.isPending} onClick={complete}>
               {sell.isPending && <Loader2 className="animate-spin" />} Complete sale
             </Button>
           </CardContent>

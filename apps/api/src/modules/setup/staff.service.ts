@@ -2,12 +2,15 @@ import { Injectable } from '@nestjs/common';
 import {
   and,
   asc,
+  billingServices,
   eq,
   facilities,
   inArray,
   iso,
+  setupDepartments,
   setupDoctorLeaves,
   setupDoctorSchedules,
+  setupSpecializations,
   setupStaffProfiles,
   sql,
   users,
@@ -15,7 +18,7 @@ import {
 } from '@hms/db';
 import { setup as S } from '@hms/shared';
 import { DbService } from '../../common/db/db.service';
-import { badRequest, notFound } from '../../common/errors/errors';
+import { badRequest, conflict, notFound } from '../../common/errors/errors';
 import { OutboxService } from '../../common/events/outbox.service';
 import { ctx, hhmm, money, num } from './setup.util';
 
@@ -112,6 +115,30 @@ export class StaffService {
     const c = ctx();
     const [user] = await tx.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1);
     if (!user) throw notFound('Staff member');
+    // A switched-off department/specialization is refused only when newly picked, so old profiles still save.
+    const [current] = await tx
+      .select({ departmentId: setupStaffProfiles.departmentId, specializationId: setupStaffProfiles.specializationId })
+      .from(setupStaffProfiles)
+      .where(eq(setupStaffProfiles.userId, userId))
+      .limit(1);
+    if (input.departmentId) {
+      const [d] = await tx.select({ isActive: setupDepartments.isActive }).from(setupDepartments).where(eq(setupDepartments.id, input.departmentId)).limit(1);
+      if (!d) throw badRequest('invalid_department', 'Department not found');
+      if (!d.isActive && current?.departmentId !== input.departmentId) throw badRequest('inactive_department', 'This department is switched off; pick an active one');
+    }
+    if (input.specializationId) {
+      const [sp] = await tx.select({ isActive: setupSpecializations.isActive }).from(setupSpecializations).where(eq(setupSpecializations.id, input.specializationId)).limit(1);
+      if (!sp) throw badRequest('invalid_specialization', 'Specialization not found');
+      if (!sp.isActive && current?.specializationId !== input.specializationId) throw badRequest('inactive_specialization', 'This specialization is switched off; pick an active one');
+    }
+    if (input.employeeCode) {
+      const [dup] = await tx
+        .select({ userId: setupStaffProfiles.userId })
+        .from(setupStaffProfiles)
+        .where(and(sql`lower(${setupStaffProfiles.employeeCode}) = lower(${input.employeeCode})`, sql`${setupStaffProfiles.userId} <> ${userId}`))
+        .limit(1);
+      if (dup) throw conflict('duplicate_employee_code', `Employee code ${input.employeeCode} is already given to another staff member`);
+    }
     const values = {
       staffType: input.staffType,
       employeeCode: input.employeeCode || null,
@@ -133,6 +160,50 @@ export class StaffService {
       .insert(setupStaffProfiles)
       .values({ ...values, tenantId: c.tenantId, userId, createdBy: c.userId })
       .onConflictDoUpdate({ target: [setupStaffProfiles.tenantId, setupStaffProfiles.userId], set: values });
+    await this.syncFeeServices(tx, userId);
+  }
+
+  // ---------- doctor fees → billing services ----------
+
+  /**
+   * Keeps the doctor's fees in the billing service master (S.doctorFeeServiceCodes), inside the caller's
+   * transaction, so the consultation charge posted at check-in is priced from there and payer price lists
+   * apply. A fee above 0 makes the service active at that price (name follows the doctor's name); a cleared
+   * or zero fee switches it off. GST, HSN/SAC and price lists set in Billing are left alone.
+   * Written straight to billing.services because BillingService.createService opens its own transaction.
+   */
+  async syncFeeServices(tx: Tx, userId: string): Promise<void> {
+    const res = await tx.execute<{ name: string; consultation_fee: string | null; follow_up_fee: string | null }>(sql`
+      select u.name, sp.consultation_fee::text as consultation_fee, sp.follow_up_fee::text as follow_up_fee
+        from iam.users u left join setup.staff_profiles sp on sp.tenant_id = u.tenant_id and sp.user_id = u.id
+       where u.id = ${userId}`);
+    const row = res.rows[0];
+    if (!row) return;
+    const codes = S.doctorFeeServiceCodes(userId);
+    const doctor = `Dr. ${row.name.replace(/^Dr\.?\s*/i, '')}`;
+    await this.syncFeeService(tx, codes.consultation, `Consultation - ${doctor}`, num(row.consultation_fee));
+    await this.syncFeeService(tx, codes.followUp, `Follow-up consultation - ${doctor}`, num(row.follow_up_fee));
+  }
+
+  private async syncFeeService(tx: Tx, code: string, name: string, fee: number | null): Promise<void> {
+    const c = ctx();
+    const active = fee !== null && fee > 0;
+    const [existing] = await tx.select().from(billingServices).where(eq(billingServices.code, code)).limit(1);
+    if (!existing) {
+      if (!active) return;
+      // Two check-ins can create it at once: the second one just keeps the first row.
+      await tx
+        .insert(billingServices)
+        .values({ tenantId: c.tenantId, code, name, category: 'consultation', basePrice: money(fee)!, taxRate: '0', isActive: true, createdBy: c.userId, updatedBy: c.userId })
+        .onConflictDoNothing();
+      return;
+    }
+    const price = active ? money(fee)! : existing.basePrice;
+    if (existing.name === name && Number(existing.basePrice) === Number(price) && existing.isActive === active) return;
+    await tx
+      .update(billingServices)
+      .set({ name, basePrice: price, isActive: active, updatedBy: c.userId })
+      .where(eq(billingServices.id, existing.id));
   }
 
   // ---------- doctors (cross-module contract) ----------
@@ -155,7 +226,7 @@ export class StaffService {
 
   async getDoctor(tx: Tx, userId: string): Promise<S.Doctor> {
     const res = await tx.execute<StaffRow>(sql`${STAFF_SELECT} where u.id = ${userId} and ${IS_DOCTOR}`);
-    if (!res.rows[0]) throw notFound('S.Doctor');
+    if (!res.rows[0]) throw notFound('Doctor');
     return doctorDto(res.rows[0]);
   }
 
@@ -252,6 +323,12 @@ export class StaffService {
     const c = ctx();
     return this.db.tx(async (tx) => {
       await this.getDoctor(tx, userId);
+      const [overlap] = await tx
+        .select({ fromDate: setupDoctorLeaves.fromDate, toDate: setupDoctorLeaves.toDate })
+        .from(setupDoctorLeaves)
+        .where(and(eq(setupDoctorLeaves.userId, userId), sql`${setupDoctorLeaves.fromDate} <= ${input.toDate}`, sql`${setupDoctorLeaves.toDate} >= ${input.fromDate}`))
+        .limit(1);
+      if (overlap) throw conflict('leave_overlap', `This leave overlaps an existing leave (${overlap.fromDate} to ${overlap.toDate})`);
       const [row] = await tx
         .insert(setupDoctorLeaves)
         .values({ tenantId: c.tenantId, userId, fromDate: input.fromDate, toDate: input.toDate, reason: input.reason || null, createdBy: c.userId })

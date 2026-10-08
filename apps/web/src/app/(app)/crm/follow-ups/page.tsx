@@ -293,7 +293,7 @@ function FollowUpForm({ initial, onClose, onSaved }: { initial?: C.FollowUp; onC
             </div>
           )}
           <Field id="fu-due" label="Due on *">
-            <Input id="fu-due" type="date" min={todayIST()} value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+            <Input id="fu-due" type="date" min={todayIST()} max={addDaysISO(todayIST(), 3 * 366)} value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
           </Field>
           <Field id="fu-type" label="Type">
             <Select id="fu-type" value={type} onChange={(e) => setType(e.target.value as C.FollowUpType)}>
@@ -344,7 +344,7 @@ function CloseFollowUp({ f, onClose, onSaved }: { f: C.FollowUp; onClose: () => 
             </Select>
           </Field>
           <Field id="cl-outcome" label="Outcome" className="sm:col-span-3">
-            <Input id="cl-outcome" placeholder="e.g. Booked for Monday 10 AM" value={outcome} onChange={(e) => setOutcome(e.target.value)} />
+            <Input id="cl-outcome" maxLength={1000} placeholder="e.g. Booked for Monday 10 AM" value={outcome} onChange={(e) => setOutcome(e.target.value)} />
           </Field>
         </div>
         <div className="flex justify-end gap-2">

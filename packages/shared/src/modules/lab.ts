@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { END_BEFORE_START, datesInOrder, isoDate, money as moneyField, positiveMoney, requiredText } from '../validation';
 import { patchSchema } from '../patch';
 import type { ImportColumn } from '../imports';
+import type { SourcePaymentState } from './billing';
 
 /**
  * Laboratory (LIS): permissions and API contracts (Zod schemas + types).
@@ -75,7 +77,7 @@ export const RESULT_FLAGS = ['normal', 'low', 'high', 'critical_low', 'critical_
 export type ResultFlag = (typeof RESULT_FLAGS)[number];
 
 const code = z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9_.-]{0,29}$/, 'Use letters, digits, - _ or . (max 30)');
-const money = z.coerce.number().min(0).max(10_000_000);
+const money = moneyField(10_000_000);
 const optText = (max: number) => z.string().trim().max(max).optional();
 
 // ---------- tests and ranges ----------
@@ -84,17 +86,29 @@ export const rangeInputSchema = z
   .object({
     gender: z.enum(RANGE_GENDERS).default('any'),
     /** Age band in years, inclusive of min and exclusive of max. */
-    ageMinYears: z.number().min(0).max(150).default(0),
-    ageMaxYears: z.number().min(0).max(150).default(150),
-    low: z.number().optional(),
-    high: z.number().optional(),
-    criticalLow: z.number().optional(),
-    criticalHigh: z.number().optional(),
+    ageMinYears: z.number({ error: 'Age from: enter a number' }).min(0, 'Age from cannot be negative').max(150, 'Age from can be at most 150').default(0),
+    ageMaxYears: z.number({ error: 'Age to: enter a number' }).min(0, 'Age to cannot be negative').max(150, 'Age to can be at most 150').default(150),
+    low: z.number({ error: 'Low: enter a number' }).optional(),
+    high: z.number({ error: 'High: enter a number' }).optional(),
+    criticalLow: z.number({ error: 'Critical low: enter a number' }).optional(),
+    criticalHigh: z.number({ error: 'Critical high: enter a number' }).optional(),
     /** Shown on the report instead of low–high, e.g. "Negative" or "< 200 desirable". */
     text: optText(200),
   })
-  .refine((r) => r.ageMaxYears > r.ageMinYears, { message: 'Age to must be more than age from' })
-  .refine((r) => r.low === undefined || r.high === undefined || r.high >= r.low, { message: 'High must be at least low' });
+  .refine((r) => r.ageMaxYears > r.ageMinYears, { message: 'Age to must be more than age from', path: ['ageMaxYears'] })
+  .refine((r) => r.low === undefined || r.high === undefined || r.high >= r.low, { message: 'High must be at least low', path: ['high'] })
+  .refine((r) => r.criticalLow === undefined || r.low === undefined || r.criticalLow <= r.low, {
+    message: 'Critical low must be at or below low',
+    path: ['criticalLow'],
+  })
+  .refine((r) => r.criticalHigh === undefined || r.high === undefined || r.criticalHigh >= r.high, {
+    message: 'Critical high must be at or above high',
+    path: ['criticalHigh'],
+  })
+  .refine((r) => r.criticalLow === undefined || r.criticalHigh === undefined || r.criticalHigh > r.criticalLow, {
+    message: 'Critical high must be more than critical low',
+    path: ['criticalHigh'],
+  });
 export type RangeInput = z.input<typeof rangeInputSchema>;
 
 export interface Range {
@@ -108,9 +122,9 @@ export interface Range {
   text: string | null;
 }
 
-export const testInputSchema = z.object({
+const testFields = z.object({
   code,
-  name: z.string().trim().min(1).max(200),
+  name: requiredText('the test name', 200),
   section: z.enum(LAB_SECTIONS).default('other'),
   sampleType: z.enum(SAMPLE_TYPES).default('blood'),
   container: optText(60),
@@ -118,17 +132,38 @@ export const testInputSchema = z.object({
   method: optText(100),
   resultType: z.enum(RESULT_TYPES).default('numeric'),
   /** Allowed answers for `option` tests, e.g. ["Positive", "Negative"]. The first is the normal one. */
-  options: z.array(z.string().trim().min(1).max(60)).max(20).default([]),
-  decimals: z.number().int().min(0).max(4).default(1),
+  options: z
+    .array(z.string().trim().min(1, 'A choice cannot be blank').max(60, 'A choice can be at most 60 characters'))
+    .max(20, 'At most 20 choices')
+    .default([]),
+  decimals: z.number({ error: 'Decimals: enter a number' }).int('Decimals must be a whole number').min(0, 'Decimals cannot be negative').max(4, 'At most 4 decimals').default(1),
   price: money.default(0),
   /** Billing service code; when set, billing prices the line from its service master. */
-  serviceCode: z.string().trim().toUpperCase().max(40).optional(),
-  tatHours: z.number().int().min(0).max(24 * 60).default(24),
+  serviceCode: z.string().trim().toUpperCase().max(40, 'Service code can be at most 40 characters').optional(),
+  tatHours: z
+    .number({ error: 'Turnaround: enter a number of hours' })
+    .int('Turnaround must be whole hours')
+    .min(0, 'Turnaround cannot be negative')
+    .max(24 * 60, 'Turnaround can be at most 1440 hours (60 days)')
+    .default(24),
   isActive: z.boolean().default(true),
-  ranges: z.array(rangeInputSchema).max(20).default([]),
+  ranges: z.array(rangeInputSchema).max(20, 'At most 20 reference ranges').default([]),
 });
+
+/** Pick-from-list tests need at least two different choices. */
+function checkOptions(t: { resultType?: ResultType; options?: string[] }, ctx: z.RefinementCtx) {
+  if (t.options === undefined) return;
+  if (t.resultType === 'option' && t.options.length < 2) {
+    ctx.addIssue({ code: 'custom', message: 'Give at least 2 choices for a pick-from-list test', path: ['options'] });
+  }
+  const seen = new Set(t.options.map((o) => o.toLowerCase()));
+  if (seen.size !== t.options.length) ctx.addIssue({ code: 'custom', message: 'Each choice must be different', path: ['options'] });
+}
+
+export const testInputSchema = testFields.superRefine(checkOptions);
 export type TestInput = z.input<typeof testInputSchema>;
-export const updateTestSchema = patchSchema(testInputSchema.omit({ code: true }));
+/** No defaults on update, so a partial edit never resets other fields. */
+export const updateTestSchema = patchSchema(testFields.omit({ code: true })).superRefine(checkOptions);
 export type UpdateTest = z.input<typeof updateTestSchema>;
 
 /** Columns of the lab test import sheet. One reference range per test (any gender, all ages); edit the test for more. */
@@ -154,7 +189,8 @@ export const TEST_IMPORT_COLUMNS: readonly ImportColumn[] = [
   { key: 'isActive', header: 'Active', type: 'boolean', example: 'Yes' },
 ];
 
-export const testImportRowSchema = testInputSchema
+// Built from testFields: Zod cannot .omit() a schema that already has refinements.
+export const testImportRowSchema = testFields
   .omit({ ranges: true })
   .extend({
     refLow: z.number().optional(),
@@ -190,16 +226,21 @@ export interface LabTest {
   ranges: Range[];
 }
 
-export const panelInputSchema = z.object({
+const uniqueIds = (ids: string[] | undefined) => !ids || new Set(ids).size === ids.length;
+const panelFields = z.object({
   code,
-  name: z.string().trim().min(1).max(200),
+  name: requiredText('the panel name', 200),
   price: money.default(0),
-  serviceCode: z.string().trim().toUpperCase().max(40).optional(),
+  serviceCode: z.string().trim().toUpperCase().max(40, 'Service code can be at most 40 characters').optional(),
   isActive: z.boolean().default(true),
-  testIds: z.array(z.uuid()).min(1).max(60),
+  testIds: z.array(z.uuid()).min(1, 'Pick at least one test for the panel').max(60, 'A panel can have at most 60 tests'),
 });
+export const panelInputSchema = panelFields.refine((p) => uniqueIds(p.testIds), { message: 'The same test is picked twice', path: ['testIds'] });
 export type PanelInput = z.input<typeof panelInputSchema>;
-export const updatePanelSchema = patchSchema(panelInputSchema.omit({ code: true }));
+export const updatePanelSchema = patchSchema(panelFields.omit({ code: true })).refine((p) => uniqueIds(p.testIds), {
+  message: 'The same test is picked twice',
+  path: ['testIds'],
+});
 export type UpdatePanel = z.input<typeof updatePanelSchema>;
 
 export interface LabPanel {
@@ -243,10 +284,14 @@ export const createOrderSchema = z.object({
   /** Outside referrer or B2B client name. */
   referredBy: optText(200),
   clinicalNotes: optText(1000),
-  items: z.array(orderItemInputSchema).min(1).max(60),
-  /** Raise the bill now (through billing). */
+  items: z.array(orderItemInputSchema).min(1, 'Add at least one test').max(60, 'At most 60 tests on one order'),
+  /**
+   * Bill now: the order's charges are posted to the patient's account and billed at once (with payNow).
+   * false: the charges are posted when the hospital's billing rules say (order or sample collection)
+   * and billed later at the billing desk.
+   */
   bill: z.boolean().default(true),
-  payNow: z.object({ mode: z.enum(['cash', 'upi', 'card']), amount: z.number().positive(), ref: optText(100) }).optional(),
+  payNow: z.object({ mode: z.enum(['cash', 'upi', 'card']), amount: positiveMoney(10_000_000), ref: optText(100) }).optional(),
 });
 export type CreateOrder = z.input<typeof createOrderSchema>;
 
@@ -254,24 +299,24 @@ export type CreateOrder = z.input<typeof createOrderSchema>;
 export const updateOrderSchema = z.object({
   priority: z.enum(ORDER_PRIORITIES).optional(),
   /** Referring doctor on staff; null removes them. */
-  doctorId: z.uuid().nullable().optional(),
-  referredBy: z.string().trim().max(200).nullable().optional(),
-  clinicalNotes: z.string().trim().max(1000).nullable().optional(),
+  doctorId: z.uuid({ error: 'Pick a doctor from the list' }).nullable().optional(),
+  referredBy: z.string().trim().max(200, 'Referred by can be at most 200 characters').nullable().optional(),
+  clinicalNotes: z.string().trim().max(1000, 'Clinical notes can be at most 1000 characters').nullable().optional(),
 });
 export type UpdateOrder = z.input<typeof updateOrderSchema>;
 
-export const cancelOrderSchema = z.object({ reason: z.string().trim().min(3).max(500) });
+export const cancelOrderSchema = z.object({ reason: requiredText('a reason', 500, 3) });
 export type CancelOrder = z.input<typeof cancelOrderSchema>;
 
 export const orderQuerySchema = z.object({
   q: z.string().trim().max(100).optional(),
   status: z.enum([...ORDER_STATUSES, 'open']).optional(),
   patientId: z.uuid().optional(),
-  from: z.iso.date().optional(),
-  to: z.iso.date().optional(),
+  from: isoDate.optional(),
+  to: isoDate.optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(25),
-});
+}).refine((q) => datesInOrder(q.from, q.to), { message: END_BEFORE_START, path: ['to'] });
 export type OrderQuery = z.input<typeof orderQuerySchema>;
 
 export interface OrderPatient {
@@ -295,6 +340,13 @@ export interface OrderSummary {
   referredBy: string | null;
   itemNames: string[];
   invoiceNo: string | null;
+  /** State of the charges this order posted to the patient's account ('none' = nothing posted yet). */
+  paymentState: SourcePaymentState;
+  /**
+   * The hospital asks OPD patients to pay before the sample (billing rule diagnosticsPayment 'before')
+   * and this order is not on an IPD bill: show "Unpaid" with Collect now while paymentState is pending/unpaid.
+   */
+  payFirst: boolean;
   hasCritical: boolean;
   createdAt: string;
 }
@@ -365,7 +417,7 @@ export interface Order extends OrderSummary {
 
 // ---------- samples ----------
 
-export const rejectSampleSchema = z.object({ reason: z.string().trim().min(3).max(300) });
+export const rejectSampleSchema = z.object({ reason: requiredText('a reason', 300, 3) });
 export type RejectSample = z.input<typeof rejectSampleSchema>;
 
 export const sampleWorklistQuerySchema = z.object({
@@ -377,14 +429,17 @@ export interface WorklistSample extends Sample {
   orderNo: string;
   priority: OrderPriority;
   patient: OrderPatient;
+  /** Payment state of the order's charges (see OrderSummary.paymentState). */
+  paymentState: SourcePaymentState;
+  payFirst: boolean;
 }
 
 // ---------- results ----------
 
 export const resultEntrySchema = z.object({
   resultId: z.uuid(),
-  value: z.string().trim().max(500),
-  remarks: optText(500),
+  value: z.string().trim().max(500, 'A result can be at most 500 characters'),
+  remarks: z.string().trim().max(500, 'Remarks can be at most 500 characters').optional(),
 });
 export const enterResultsSchema = z.object({ results: z.array(resultEntrySchema).min(1).max(200) });
 export type EnterResults = z.input<typeof enterResultsSchema>;
@@ -395,8 +450,12 @@ export const verifySchema = z.object({
 });
 export type Verify = z.input<typeof verifySchema>;
 
-export const amendSchema = z.object({ resultId: z.uuid(), reason: z.string().trim().min(3).max(300) });
+export const amendSchema = z.object({ resultId: z.uuid(), reason: requiredText('a reason', 300, 3) });
 export type Amend = z.input<typeof amendSchema>;
+
+/** A numeric result: a plain number, optionally after < > <= >= (e.g. "<0.1"). No hex, exponents or "Infinity". */
+export const NUMERIC_RESULT_REGEX = /^(?:[<>]=?\s*)?-?(\d+(\.\d+)?|\.\d+)$/;
+export const isNumericResult = (value: string) => NUMERIC_RESULT_REGEX.test(value.trim());
 
 /** Work out the flag for a value against its range. Shared so the web can flag as the user types. */
 export function flagFor(

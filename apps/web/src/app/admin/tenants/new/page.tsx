@@ -64,7 +64,8 @@ export default function NewTenantPage() {
             </div>
             <div>
               <Label htmlFor="trialDays">Trial days (blank = plan default)</Label>
-              <Input id="trialDays" type="number" className="mt-2" {...register('trialDays', { setValueAs: (v: string) => (v === '' ? undefined : Number(v)) })} />
+              <Input id="trialDays" type="number" min={0} max={180} step={1} className="mt-2" {...register('trialDays', { setValueAs: (v: string) => (v === '' ? undefined : Number(v)) })} />
+              <FieldError error={e.trialDays} />
             </div>
             <label className="flex items-center gap-2 text-sm sm:col-span-2">
               <input type="checkbox" {...register('startActive')} /> Start active (signed contract, skip the trial)

@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
 import { iso, sql, type Tx } from '@hms/db';
-import type { Paginated, portal } from '@hms/shared';
+import { portal, type Paginated } from '@hms/shared';
 import { DbService } from '../../common/db/db.service';
 import { currentContext } from '../../common/context/request-context';
 import { OutboxService } from '../../common/events/outbox.service';
@@ -19,7 +19,7 @@ import {
   type ReportRow,
 } from './portal.repository';
 
-const MAX_DAYS_AHEAD = 60;
+const MAX_DAYS_AHEAD = portal.PORTAL_MAX_BOOKING_DAYS;
 const LIVE = ['requested', 'booked', 'confirmed'];
 
 @Injectable()
@@ -152,6 +152,20 @@ export class PortalService {
     });
   }
 
+  /** What the hospital has charged but not billed yet (read-only; paid once the desk makes the bill). */
+  async pendingCharges(p: PatientPrincipal, patientId?: string): Promise<portal.PortalPendingCharges[]> {
+    const scope = await this.patients.scope(p.accountId, patientId);
+    if (!scope.size) return [];
+    const pending = await this.gateway.pendingCharges([...scope.keys()]);
+    return [...pending.entries()].map(([id, c]) => ({
+      patientId: id,
+      patientName: scope.get(id) ?? '',
+      count: c.count,
+      total: (c.paise / 100).toFixed(2),
+      oldestDate: c.oldestDate,
+    }));
+  }
+
   async reports(p: PatientPrincipal, patientId?: string): Promise<portal.PortalReport[]> {
     const scope = await this.patients.scope(p.accountId, patientId);
     if (!scope.size) return [];
@@ -221,6 +235,8 @@ export class PortalService {
       if (input.appointmentRequestId) {
         const appt = await this.repo.findAppointment(tx, input.appointmentRequestId);
         if (!appt || appt.patientId !== input.patientId) throw notFound('Appointment');
+        if (['cancelled', 'rejected'].includes(appt.status)) throw conflict('appointment_not_held', 'This appointment was cancelled, so it cannot be rated');
+        if (new Date(appt.slotStart).getTime() > Date.now()) throw badRequest('visit_not_done', 'You can give feedback after your visit');
       }
       const row = await this.repo.insertFeedback(tx, {
         tenantId: p.tenantId,

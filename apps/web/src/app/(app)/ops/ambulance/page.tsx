@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { CollectNow, PaymentStateBadge } from '@/modules/billing/collect-now';
 import {
   ErrorBox,
   Field,
@@ -28,6 +29,7 @@ import {
   VEHICLE_TYPE_LABELS,
   formatDateTime,
   formatINR,
+  checked,
   num,
   opt,
   firstIssue,
@@ -146,7 +148,7 @@ function BookTripForm({ vehicles, onDone }: { vehicles: O.Vehicle[]; onDone: () 
   const [f, setF] = React.useState({ kind: 'emergency_pickup' as O.TripKind, contactName: '', contactMobile: '', pickupAddress: '', dropAddress: '', notes: '', vehicleId: '' });
   const book = useMutation({
     mutationFn: () =>
-      api.ops.ambulance.createTrip({
+      api.ops.ambulance.createTrip(checked(O.createTripSchema, {
         kind: f.kind,
         patientId: patient?.id,
         contactName: f.contactName.trim(),
@@ -155,7 +157,7 @@ function BookTripForm({ vehicles, onDone }: { vehicles: O.Vehicle[]; onDone: () 
         dropAddress: opt(f.dropAddress),
         notes: opt(f.notes),
         vehicleId: f.vehicleId || undefined,
-      }),
+      })),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['ops'] });
       onDone();
@@ -244,16 +246,16 @@ function BookTripForm({ vehicles, onDone }: { vehicles: O.Vehicle[]; onDone: () 
   );
 }
 
-type ActionPanel = { tripId: string; kind: 'dispatch' | 'complete' | 'cancel' };
+type ActionPanel = { tripId: string; kind: 'dispatch' | 'complete' | 'cancel' | 'collect' };
 
-function TripActionForm({ trip, kind, vehicles, onDone }: { trip: O.Trip; kind: ActionPanel['kind']; vehicles: O.Vehicle[]; onDone: () => void }) {
+function TripActionForm({ trip, kind, vehicles, onDone }: { trip: O.Trip; kind: Exclude<ActionPanel['kind'], 'collect'>; vehicles: O.Vehicle[]; onDone: () => void }) {
   const queryClient = useQueryClient();
   const available = vehicles.filter((v) => v.status === 'available');
   const [vehicleId, setVehicleId] = React.useState(trip.vehicleId ?? available[0]?.id ?? '');
   const [odoStart, setOdoStart] = React.useState('');
   const [odoEnd, setOdoEnd] = React.useState('');
   const [distance, setDistance] = React.useState('');
-  const [bill, setBill] = React.useState(!!trip.patientId);
+  const [bill, setBill] = React.useState(false);
   const [charge, setCharge] = React.useState('');
   const [reason, setReason] = React.useState('');
   const act = useMutation({
@@ -264,7 +266,7 @@ function TripActionForm({ trip, kind, vehicles, onDone }: { trip: O.Trip; kind: 
           : kind === 'complete'
             ? { action: 'complete', odometerEnd: num(odoEnd), distanceKm: num(distance), bill: !!trip.patientId && bill, charge: num(charge) }
             : { action: 'cancel', reason: reason.trim() };
-      return api.ops.ambulance.tripAction(trip.id, body);
+      return api.ops.ambulance.tripAction(trip.id, checked(O.tripActionSchema, body));
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['ops'] });
@@ -314,11 +316,14 @@ function TripActionForm({ trip, kind, vehicles, onDone }: { trip: O.Trip; kind: 
             <Input id={`ch-${trip.id}`} type="number" min={0} step="0.01" value={charge} onChange={(e) => setCharge(e.target.value)} placeholder="Auto from rate" />
           </Field>
           {trip.patientId ? (
-            <label className="flex items-center gap-2 pt-7 text-sm">
-              <input type="checkbox" checked={bill} onChange={(e) => setBill(e.target.checked)} /> Bill patient
-            </label>
+            <div className="pt-6 text-sm">
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={bill} onChange={(e) => setBill(e.target.checked)} /> Make the bill now
+              </label>
+              <p className="text-xs text-muted-foreground">Otherwise the charge goes on the patient&apos;s account for the billing desk.</p>
+            </div>
           ) : (
-            <p className="pt-7 text-xs text-muted-foreground">Not a registered patient: no bill will be raised.</p>
+            <p className="pt-7 text-xs text-muted-foreground">Not a registered patient: nothing is charged.</p>
           )}
         </>
       )}
@@ -342,6 +347,9 @@ function TripActionForm({ trip, kind, vehicles, onDone }: { trip: O.Trip; kind: 
 
 function TripsTable({ trips, isPending, vehicles }: { trips: O.Trip[] | undefined; isPending: boolean; vehicles: O.Vehicle[] }) {
   const canManage = usePermission('ops.ambulance.manage');
+  const canTakePayment = usePermission('billing.payment.collect');
+  const canFinalize = usePermission('billing.invoice.finalize');
+  const canCollect = canTakePayment && canFinalize;
   const queryClient = useQueryClient();
   const [panel, setPanel] = React.useState<ActionPanel | null>(null);
   const onboard = useMutation({
@@ -408,6 +416,11 @@ function TripsTable({ trips, isPending, vehicles }: { trips: O.Trip[] | undefine
                     </TableCell>
                     <TableCell className="text-xs">
                       {t.charge != null ? formatINR(t.charge) : '—'}
+                      {t.paymentState && t.paymentState !== 'none' && (
+                        <div>
+                          <PaymentStateBadge state={t.paymentState} />
+                        </div>
+                      )}
                       {t.invoiceId && (
                         <div>
                           <Link href={`/billing/invoices/${t.invoiceId}`} className="text-primary hover:underline">
@@ -417,6 +430,11 @@ function TripsTable({ trips, isPending, vehicles }: { trips: O.Trip[] | undefine
                       )}
                     </TableCell>
                     <TableCell className="text-right">
+                      {!open && t.patientId && t.paymentState === 'pending' && canCollect && (
+                        <Button size="sm" variant="outline" onClick={() => setPanel({ tripId: t.id, kind: 'collect' })}>
+                          Collect now
+                        </Button>
+                      )}
                       {canManage && open && (
                         <div className="flex justify-end gap-1">
                           {t.status === 'requested' && (
@@ -444,7 +462,20 @@ function TripsTable({ trips, isPending, vehicles }: { trips: O.Trip[] | undefine
                   {panel?.tripId === t.id && (
                     <TableRow className="bg-muted/30 hover:bg-muted/30">
                       <TableCell colSpan={7}>
-                        <TripActionForm key={panel.kind} trip={t} kind={panel.kind} vehicles={vehicles} onDone={() => setPanel(null)} />
+                        {panel.kind === 'collect' ? (
+                          <div className="space-y-2">
+                            <CollectNow
+                              patientId={t.patientId!}
+                              source={{ module: 'ops', refId: t.id }}
+                              onDone={() => void queryClient.invalidateQueries({ queryKey: ['ops'] })}
+                            />
+                            <Button type="button" variant="outline" size="sm" onClick={() => setPanel(null)}>
+                              Close
+                            </Button>
+                          </div>
+                        ) : (
+                          <TripActionForm key={panel.kind} trip={t} kind={panel.kind} vehicles={vehicles} onDone={() => setPanel(null)} />
+                        )}
                       </TableCell>
                     </TableRow>
                   )}

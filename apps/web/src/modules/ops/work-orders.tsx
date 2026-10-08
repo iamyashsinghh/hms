@@ -5,13 +5,13 @@ import * as React from 'react';
 import Link from 'next/link';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
-import type { ops as O } from '@hms/shared';
+import { ops as O } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { usePermission } from '@/lib/auth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ErrorBox, Field, MessageRow, PriorityBadge, StatusBadge, WO_STATUS, WO_TYPE_LABELS, formatDateTime, formatINR, num, opt } from './ui';
+import { ErrorBox, Field, MessageRow, PriorityBadge, StatusBadge, WO_STATUS, WO_TYPE_LABELS, formatDateTime, formatINR, num, opt, checked, todayIST } from './ui';
 
 interface CompleteForm {
   id: string;
@@ -34,7 +34,7 @@ export function WorkOrderTable({ items, isPending, showAsset = true }: { items: 
   const [complete, setComplete] = React.useState<CompleteForm | null>(null);
 
   const update = useMutation({
-    mutationFn: ({ id, body }: { id: string; body: O.UpdateWorkOrder }) => api.ops.workOrders.update(id, body),
+    mutationFn: ({ id, body }: { id: string; body: O.UpdateWorkOrder }) => api.ops.workOrders.update(id, checked(O.updateWorkOrderSchema, body)),
     onSuccess: () => {
       setComplete(null);
       void queryClient.invalidateQueries({ queryKey: ['ops'] });
@@ -158,7 +158,7 @@ export function WorkOrderTable({ items, isPending, showAsset = true }: { items: 
                           </Field>
                           {complete.type === 'calibration' && (
                             <Field id={`ncd-${w.id}`} label="Next calibration due">
-                              <Input id={`ncd-${w.id}`} type="date" value={complete.nextCalibrationDue} onChange={(e) => setComplete({ ...complete, nextCalibrationDue: e.target.value })} />
+                              <Input id={`ncd-${w.id}`} type="date" min={todayIST()} value={complete.nextCalibrationDue} onChange={(e) => setComplete({ ...complete, nextCalibrationDue: e.target.value })} />
                             </Field>
                           )}
                           <div className="flex items-end justify-end gap-2 sm:col-span-4">

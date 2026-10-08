@@ -15,11 +15,11 @@ import {
   Pencil,
   Play,
   Printer,
-  ReceiptIndianRupee,
   X,
 } from 'lucide-react';
 import { radiology as R, type radiology } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { firstError, validate } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
 import { NoAccess } from '@/components/no-access';
 import { PageHeader } from '@/components/page-header';
@@ -28,7 +28,8 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { OrderStatusBadge, PriorityBadge, Textarea, dateTime, localToIso, patientLine, rupees } from '@/modules/radiology/ui';
+import { OrderPaymentCard } from '@/modules/lab/payment-card';
+import { OrderStatusBadge, PriorityBadge, Textarea, dateTime, localInputValue, localToIso, patientLine } from '@/modules/radiology/ui';
 
 type OrderWithReports = radiology.OrderWithReports;
 type Order = radiology.RadiologyOrder;
@@ -101,7 +102,7 @@ function EditOrderCard({ order, onClose }: { order: Order; onClose: () => void }
     ...(f.testId && f.testId !== order.testId ? { testId: f.testId } : {}),
   });
   const save = useOrderMutation(order.id, () => api.radiology.updateOrder(order.id, body()), onClose);
-  const testLocked = !!order.invoiceId;
+  const testLocked = !!order.invoiceId || order.paymentState === 'unpaid' || order.paymentState === 'paid';
   return (
     <Card>
       <CardHeader>
@@ -113,9 +114,9 @@ function EditOrderCard({ order, onClose }: { order: Order; onClose: () => void }
           noValidate
           onSubmit={(e) => {
             e.preventDefault();
-            const parsed = R.updateOrderSchema.safeParse(body());
-            setFormError(parsed.success ? null : (parsed.error.issues[0]?.message ?? 'Check the form'));
-            if (parsed.success) save.mutate(undefined);
+            const checked = validate(R.updateOrderSchema, body());
+            setFormError(firstError(checked.errors));
+            if (checked.data) save.mutate(undefined);
           }}
         >
           <div>
@@ -192,20 +193,29 @@ function EditOrderCard({ order, onClose }: { order: Order; onClose: () => void }
 function ScanActions({ order }: { order: Order }) {
   const modalities = useQuery({ queryKey: ['radiology', 'modalities'], queryFn: () => api.radiology.modalities() });
   const [when, setWhen] = React.useState('');
-  // Earliest bookable slot, as a datetime-local value (local time).
-  const [minWhen] = React.useState(() => {
-    const now = new Date();
-    return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
-  });
   const [modalityId, setModalityId] = React.useState(order.modalityId ?? '');
   const [studyUid, setStudyUid] = React.useState('');
   const [imagesUrl, setImagesUrl] = React.useState('');
   const [cancelReason, setCancelReason] = React.useState<string | null>(null);
-  const schedule = useOrderMutation(order.id, () => api.radiology.schedule(order.id, { scheduledAt: localToIso(when), modalityId: modalityId || undefined }));
+  const [checkError, setCheckError] = React.useState<string | null>(null);
+  const schedule = useOrderMutation(order.id, (body: radiology.ScheduleOrder) => api.radiology.schedule(order.id, body));
   const start = useOrderMutation(order.id, () => api.radiology.start(order.id));
-  const complete = useOrderMutation(order.id, () => api.radiology.complete(order.id, { studyUid: studyUid || undefined, imagesUrl: imagesUrl || undefined }));
+  const complete = useOrderMutation(order.id, (body: radiology.CompleteScan) => api.radiology.complete(order.id, body));
   const cancel = useOrderMutation(order.id, () => api.radiology.cancel(order.id, { reason: cancelReason ?? '' }));
   const error = schedule.error ?? start.error ?? complete.error ?? cancel.error;
+
+  // Check with the shared schema first, so a past slot or a bad link never leaves the page.
+  const book = () => {
+    if (Number.isNaN(new Date(when).getTime())) return setCheckError('Pick the slot date and time');
+    const checked = validate(R.scheduleOrderSchema, { scheduledAt: localToIso(when), modalityId: modalityId || undefined });
+    setCheckError(firstError(checked.errors));
+    if (checked.data) schedule.mutate(checked.data);
+  };
+  const done = () => {
+    const checked = validate(R.completeScanSchema, { studyUid: studyUid.trim() || undefined, imagesUrl: imagesUrl.trim() || undefined });
+    setCheckError(firstError(checked.errors));
+    if (checked.data) complete.mutate(checked.data);
+  };
   const canBook = order.status === 'ordered' || order.status === 'scheduled';
   const canScan = canBook || order.status === 'in_progress';
   const canCancel = !['finalized', 'cancelled'].includes(order.status);
@@ -222,7 +232,7 @@ function ScanActions({ order }: { order: Order }) {
               <div className="grid gap-2 sm:grid-cols-2">
                 <div>
                   <Label htmlFor="when">{order.status === 'scheduled' ? 'Move slot to' : 'Book slot'}</Label>
-                  <Input id="when" type="datetime-local" className="mt-1.5" min={minWhen} value={when} onChange={(e) => setWhen(e.target.value)} />
+                  <Input id="when" type="datetime-local" className="mt-1.5" min={localInputValue()} max={localInputValue(R.SCHEDULE_MAX_DAYS_AHEAD * 24 * 60)} value={when} onChange={(e) => setWhen(e.target.value)} />
                 </div>
                 <div>
                   <Label htmlFor="machine">Machine</Label>
@@ -235,7 +245,7 @@ function ScanActions({ order }: { order: Order }) {
                   </Select>
                 </div>
               </div>
-              <Button variant="outline" disabled={!when || schedule.isPending} onClick={() => schedule.mutate(undefined)}>
+              <Button variant="outline" disabled={!when || schedule.isPending} onClick={book}>
                 <CalendarClock /> {order.status === 'scheduled' ? 'Move slot' : 'Book slot'}
               </Button>
             </div>
@@ -250,10 +260,10 @@ function ScanActions({ order }: { order: Order }) {
                 </Button>
               )}
               <div className="space-y-2">
-                <Input placeholder="Study UID from the machine (optional)" value={studyUid} onChange={(e) => setStudyUid(e.target.value)} />
-                <Input placeholder="PACS viewer link (optional)" value={imagesUrl} onChange={(e) => setImagesUrl(e.target.value)} />
+                <Input placeholder="Study UID from the machine (optional)" maxLength={64} value={studyUid} onChange={(e) => setStudyUid(e.target.value)} />
+                <Input type="url" inputMode="url" placeholder="PACS viewer link, https://… (optional)" maxLength={1000} value={imagesUrl} onChange={(e) => setImagesUrl(e.target.value)} />
               </div>
-              <Button disabled={complete.isPending} onClick={() => complete.mutate(undefined)}>
+              <Button disabled={complete.isPending} onClick={done}>
                 <CheckCircle2 /> Scan done, send for reporting
               </Button>
             </div>
@@ -267,7 +277,7 @@ function ScanActions({ order }: { order: Order }) {
               </Button>
             ) : (
               <div className="flex gap-2">
-                <Input autoFocus placeholder="Why is it cancelled?" value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} />
+                <Input autoFocus placeholder="Why is it cancelled? (at least 3 characters)" maxLength={500} value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} />
                 <Button variant="destructive" disabled={cancelReason.trim().length < 3 || cancel.isPending} onClick={() => cancel.mutate(undefined)}>
                   Cancel order
                 </Button>
@@ -279,48 +289,33 @@ function ScanActions({ order }: { order: Order }) {
           </Can>
         )}
         {!canScan && <p className="text-sm text-muted-foreground">Scan done{order.acquiredAt ? ` on ${dateTime(order.acquiredAt)}` : ''}.</p>}
-        {error && <p className="text-sm text-destructive">{errorMessage(error)}</p>}
+        {(checkError || error) && <p className="text-sm text-destructive">{checkError ?? errorMessage(error)}</p>}
       </CardContent>
     </Card>
   );
 }
 
-function BillCard({ order }: { order: Order }) {
-  const canCollect = usePermission('billing.payment.collect');
-  const test = useQuery({ queryKey: ['radiology', 'test', order.testId], queryFn: () => api.radiology.test(order.testId!), enabled: !!order.testId });
-  const [mode, setMode] = React.useState<'none' | 'cash' | 'upi' | 'card'>('cash');
-  const amount = test.data?.price ?? null;
-  const bill = useOrderMutation(order.id, () => api.radiology.bill(order.id, mode !== 'none' && amount ? { payNow: { mode, amount } } : {}));
-  if (order.invoiceId) {
-    return (
-      <Row label="Bill">
-        <Link href={`/billing/invoices/${order.invoiceId}`} className="underline">
-          {order.invoiceNo ?? 'Draft bill'}
-        </Link>
-      </Row>
-    );
-  }
-  if (order.status === 'cancelled' || !order.testId) return null;
+/** What the order put on the patient's account: Collect now, the bill, or bill it now. */
+function PaymentCard({ order }: { order: Order }) {
+  const qc = useQueryClient();
+  const bill = useOrderMutation(order.id, () => api.radiology.bill(order.id, {}));
   return (
-    <Can permission="radiology.order.bill">
-      <div className="mt-3 space-y-2 border-t pt-3">
-        <p className="text-sm">Not billed yet{test.data?.serviceCode ? ' (price from billing services)' : amount != null ? `: ${rupees(amount)}` : ''}.</p>
-        <div className="flex gap-2">
-          {canCollect && !test.data?.serviceCode && (
-            <Select className="w-36" value={mode} onChange={(e) => setMode(e.target.value as typeof mode)} aria-label="Payment">
-              <option value="cash">Paid cash</option>
-              <option value="upi">Paid UPI</option>
-              <option value="card">Paid card</option>
-              <option value="none">Pay later</option>
-            </Select>
-          )}
-          <Button variant="outline" disabled={bill.isPending} onClick={() => bill.mutate(undefined)}>
-            <ReceiptIndianRupee /> Raise bill
-          </Button>
-        </div>
-        {bill.error && <p className="text-sm text-destructive">{errorMessage(bill.error)}</p>}
-      </div>
-    </Can>
+    <>
+      <OrderPaymentCard
+        className=""
+        patientId={order.patient.id}
+        source={{ module: 'radiology', refId: order.id }}
+        paymentState={order.paymentState}
+        payFirst={order.payFirst && (order.status === 'ordered' || order.status === 'scheduled')}
+        invoiceId={order.invoiceId}
+        invoiceNo={order.invoiceNo}
+        open={order.status !== 'cancelled'}
+        step="scan"
+        billNow={order.testId ? { permission: 'radiology.order.bill', disabled: bill.isPending, onClick: () => bill.mutate(undefined) } : undefined}
+        onBilled={() => void qc.invalidateQueries({ queryKey: ['radiology', 'order', order.id] })}
+      />
+      {bill.error && <p className="text-sm text-destructive">{errorMessage(bill.error)}</p>}
+    </>
   );
 }
 
@@ -579,9 +574,9 @@ export default function RadiologyOrderPage({ params }: { params: Promise<{ id: s
                 </Row>
               )}
               {o.cancelReason && <Row label="Cancelled">{o.cancelReason}</Row>}
-              <BillCard order={o} />
             </CardContent>
           </Card>
+          <PaymentCard order={o} />
           {editable && editing && <EditOrderCard order={o} onClose={() => setEditing(false)} />}
           {!o.testId && o.status !== 'cancelled' && !editing && (
             <Can permission="radiology.order.create">

@@ -84,7 +84,8 @@ export class CampsService {
       if (!camp) throw notFound('Camp');
       const startsOn = d.startsOn ?? camp.startsOn;
       const endsOn = d.endsOn ?? camp.endsOn;
-      if (endsOn < startsOn) throw badRequest('invalid_dates', 'End date is before the start date');
+      const issue = crm.campIssues({ startsOn, endsOn, status: d.status ?? camp.status })[0];
+      if (issue) throw badRequest('invalid_dates', issue.message);
       const { budget, spent, ...rest } = d;
       await tx
         .update(crmCamps)

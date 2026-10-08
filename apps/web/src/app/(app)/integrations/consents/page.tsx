@@ -3,10 +3,11 @@
 import * as React from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Eye, Loader2, Plus, RefreshCw } from 'lucide-react';
-import { integrations as I, type Patient } from '@hms/shared';
+import { integrations as I, todayIso, type Patient } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { Can, usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
+import { type FieldErrors, validate } from '@/lib/validate';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
 import { Badge } from '@/components/ui/badge';
@@ -66,6 +67,7 @@ export default function ConsentsPage() {
   const [page, setPage] = React.useState(1);
   const [form, setForm] = React.useState<Form | null>(null);
   const [viewing, setViewing] = React.useState<I.ConsentRequest | null>(null);
+  const [errors, setErrors] = React.useState<FieldErrors>({});
 
   const query: I.ConsentQuery = { status, page, pageSize: PAGE_SIZE };
   const { data, isPending, error } = useQuery({
@@ -75,16 +77,16 @@ export default function ConsentsPage() {
     enabled: canRead,
   });
 
+  const consentBody = (f: Form): I.ConsentRequestInput => ({
+    patientId: f.patient?.id ?? '',
+    purpose: f.purpose,
+    hiTypes: f.hiTypes,
+    dateFrom: f.dateFrom,
+    dateTo: f.dateTo,
+    validDays: f.validDays.trim() === '' ? Number.NaN : Number(f.validDays),
+  });
   const create = useMutation({
-    mutationFn: (f: Form) =>
-      api.integrations.consents.create({
-        patientId: f.patient!.id,
-        purpose: f.purpose,
-        hiTypes: f.hiTypes,
-        dateFrom: f.dateFrom,
-        dateTo: f.dateTo,
-        validDays: Number(f.validDays),
-      }),
+    mutationFn: (f: Form) => api.integrations.consents.create(consentBody(f)),
     onSuccess: () => {
       setForm(null);
       queryClient.invalidateQueries({ queryKey: ['integrations', 'consents'] });
@@ -121,7 +123,11 @@ export default function ConsentsPage() {
               className="grid gap-4 sm:grid-cols-3"
               onSubmit={(e) => {
                 e.preventDefault();
-                create.mutate(form);
+                const v = validate(I.consentRequestSchema, consentBody(form));
+                const errs = v.errors ?? {};
+                if (!form.patient) errs.patientId = 'Pick a patient';
+                setErrors(errs);
+                if (v.data && form.patient) create.mutate(form);
               }}
             >
               <div className="sm:col-span-3">
@@ -129,6 +135,7 @@ export default function ConsentsPage() {
               </div>
               <div className="sm:col-span-2">
                 <PatientPicker value={form.patient} onChange={(p) => setForm({ ...form, patient: p })} label="Patient (must have a linked ABHA) *" />
+                {errors.patientId && <p className="mt-1 text-xs text-destructive">{errors.patientId}</p>}
               </div>
               <Field id="purpose" label="Purpose">
                 <Select id="purpose" value={form.purpose} onChange={(e) => setForm({ ...form, purpose: e.target.value as I.ConsentPurpose })}>
@@ -139,7 +146,7 @@ export default function ConsentsPage() {
                   ))}
                 </Select>
               </Field>
-              <Field label="Record types *" className="sm:col-span-3">
+              <Field label="Record types *" className="sm:col-span-3" error={errors.hiTypes}>
                 <CheckboxGroup
                   options={I.HEALTH_INFO_TYPES}
                   value={form.hiTypes}
@@ -148,13 +155,13 @@ export default function ConsentsPage() {
                   className="grid gap-2 sm:grid-cols-3"
                 />
               </Field>
-              <Field id="from" label="Records from *">
-                <Input id="from" type="date" value={form.dateFrom} onChange={(e) => setForm({ ...form, dateFrom: e.target.value })} required />
+              <Field id="from" label="Records from *" error={errors.dateFrom}>
+                <Input id="from" type="date" max={todayIso()} value={form.dateFrom} onChange={(e) => setForm({ ...form, dateFrom: e.target.value })} required />
               </Field>
-              <Field id="to" label="Records to *" error={form.dateTo && form.dateFrom && form.dateTo < form.dateFrom ? 'End date must be on or after the start date' : undefined}>
-                <Input id="to" type="date" value={form.dateTo} onChange={(e) => setForm({ ...form, dateTo: e.target.value })} required />
+              <Field id="to" label="Records to *" error={form.dateTo && form.dateFrom && form.dateTo < form.dateFrom ? 'End date must be on or after the start date' : errors.dateTo}>
+                <Input id="to" type="date" min={form.dateFrom || undefined} value={form.dateTo} onChange={(e) => setForm({ ...form, dateTo: e.target.value })} required />
               </Field>
-              <Field id="valid" label="Consent valid for (days)">
+              <Field id="valid" label="Consent valid for (days)" error={errors.validDays}>
                 <Input id="valid" type="number" min={1} max={365} value={form.validDays} onChange={(e) => setForm({ ...form, validDays: e.target.value })} required />
               </Field>
               <div className="flex justify-end gap-2 sm:col-span-3">

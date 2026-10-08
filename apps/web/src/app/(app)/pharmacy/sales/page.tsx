@@ -67,8 +67,8 @@ export default function SalesPage() {
             <option value="otc">OTC</option>
             <option value="rx">Rx</option>
           </Select>
-          <Input aria-label="From" type="date" className="w-40" value={from} onChange={(e) => { setFrom(e.target.value); setPage(1); }} />
-          <Input aria-label="To" type="date" className="w-40" value={to} onChange={(e) => { setTo(e.target.value); setPage(1); }} />
+          <Input aria-label="From" type="date" className="w-40" max={to || undefined} value={from} onChange={(e) => { setFrom(e.target.value); setPage(1); }} />
+          <Input aria-label="To" type="date" className="w-40" min={from || undefined} value={to} onChange={(e) => { setTo(e.target.value); setPage(1); }} />
           {isFetching && <Loader2 className="size-4 animate-spin text-muted-foreground" />}
         </div>
         {error ? (
@@ -104,11 +104,11 @@ export default function SalesPage() {
                       <Badge variant={s.type === 'rx' ? 'default' : 'secondary'}>{s.type.toUpperCase()}</Badge>
                     </TableCell>
                     <TableCell>{s.customerName ?? (s.patientId ? 'Registered patient' : 'Walk-in')}</TableCell>
-                    <TableCell className="uppercase">{s.paymentMode ?? '—'}</TableCell>
+                    <TableCell className="uppercase">{s.onIpdBill ? 'IPD bill' : (s.paymentMode ?? '—')}</TableCell>
                     <TableCell className="text-right tabular-nums">{inr(s.total)}</TableCell>
                     <TableCell>
                       {s.status === 'completed' ? (
-                        <Badge variant="secondary">Paid</Badge>
+                        <Badge variant="secondary">{s.onIpdBill ? 'On IPD bill' : 'Paid'}</Badge>
                       ) : (
                         <Badge variant="destructive">{s.status === 'returned' ? 'Returned' : `Returned ${inr(s.returnedAmount)}`}</Badge>
                       )}

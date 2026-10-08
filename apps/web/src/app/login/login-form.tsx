@@ -66,17 +66,17 @@ export function LoginForm() {
       )}
       <div className="space-y-2">
         <Label htmlFor="tenantCode">Hospital code</Label>
-        <Input id="tenantCode" autoCapitalize="none" autoComplete="organization" placeholder="e.g. demo" aria-invalid={!!errors.tenantCode} {...register('tenantCode')} />
+        <Input id="tenantCode" autoCapitalize="none" autoComplete="organization" placeholder="e.g. demo" maxLength={63} aria-invalid={!!errors.tenantCode} {...register('tenantCode')} />
         <FieldError error={errors.tenantCode} />
       </div>
       <div className="space-y-2">
         <Label htmlFor="identifier">Email or mobile</Label>
-        <Input id="identifier" autoCapitalize="none" autoComplete="username" placeholder="you@hospital.in" aria-invalid={!!errors.identifier} {...register('identifier')} />
+        <Input id="identifier" autoCapitalize="none" autoComplete="username" placeholder="you@hospital.in or 10-digit mobile" maxLength={254} aria-invalid={!!errors.identifier} {...register('identifier')} />
         <FieldError error={errors.identifier} />
       </div>
       <div className="space-y-2">
         <Label htmlFor="password">Password</Label>
-        <Input id="password" type="password" autoComplete="current-password" aria-invalid={!!errors.password} {...register('password')} />
+        <Input id="password" type="password" autoComplete="current-password" maxLength={200} aria-invalid={!!errors.password} {...register('password')} />
         <FieldError error={errors.password} />
       </div>
       <Button type="submit" className="w-full" size="lg" disabled={isSubmitting}>

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { formatSeries, iso, nextCounter, type Tx } from '@hms/db';
-import { insurance as contracts, type Paginated } from '@hms/shared';
+import { insurance as contracts, todayIso, type Paginated } from '@hms/shared';
 import type { insurance as I } from '@hms/shared';
 import type { z } from 'zod';
 import { DbService } from '../../common/db/db.service';
@@ -282,6 +282,26 @@ export class InsuranceService {
       const payers = await this.repo.payersByIds(tx, items.map((i) => i.payerId));
       return { items: items.map((r) => preauthSummaryDto(r, payers)), page: f.page, pageSize: f.pageSize, total };
     });
+  }
+
+  /**
+   * The approved pre-auth for an IPD stay (cross-module, inside the caller's transaction), for the
+   * "estimate vs actual" line on the running bill. A pre-auth whose admission reference is the admission
+   * id or IPD number wins; otherwise an approved pre-auth with no reference, raised from 30 days before
+   * the admission on. Null when there is none.
+   */
+  async approvedPreauthForAdmission(
+    tx: Tx,
+    a: { patientId: string; admissionId: string; ipdNo: string; admittedOn: string },
+  ): Promise<{ preauthId: string; number: string; payerName: string; approvedAmount: number } | null> {
+    const rows = await this.repo.approvedPreauths(tx, a.patientId);
+    const ref = (r: PreauthRow) => (r.admissionRef ?? '').trim().toUpperCase();
+    const match =
+      rows.find((r) => ref(r) === a.admissionId.toUpperCase() || ref(r) === a.ipdNo.toUpperCase()) ??
+      rows.find((r) => !ref(r) && iso(r.createdAt).slice(0, 10) >= addDays(a.admittedOn, -30));
+    if (!match || match.approvedAmount == null) return null;
+    const payer = await this.repo.payerById(tx, match.payerId);
+    return { preauthId: match.id, number: match.number, payerName: payer?.name ?? '', approvedAmount: amt(match.approvedAmount) };
   }
 
   getPreauth(id: string): Promise<I.Preauth> {
@@ -786,6 +806,12 @@ export class InsuranceService {
     await this.db.tx(async (tx) => {
       const claim = await this.mustClaim(tx, claimId, true);
       if (!OPEN.includes(claim.status)) throw conflict('invalid_status', `A claim that is ${claim.status} cannot take a settlement`);
+      if (claim.submittedAt) {
+        const submittedOn = todayIso(0, new Date(iso(claim.submittedAt)));
+        if (d.settledOn < submittedOn) {
+          throw badRequest('settled_before_submit', `Settlement date cannot be before the claim was submitted (${submittedOn})`);
+        }
+      }
       const paid = paise(d.amountPaid);
       const tds = paise(d.tdsAmount);
       const writeOff = d.deductions.filter((x) => !x.recoverFromPatient).reduce((a, x) => a + paise(x.amount), 0);

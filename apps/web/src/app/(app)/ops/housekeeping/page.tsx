@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ErrorBox, Field, HK_KIND_LABELS, HK_STATUS, MessageRow, Pager, PriorityBadge, StatusBadge, formatDateTime, opt } from '@/modules/ops/ui';
+import { ErrorBox, Field, HK_KIND_LABELS, HK_STATUS, MessageRow, Pager, PriorityBadge, StatusBadge, formatDateTime, opt, checked } from '@/modules/ops/ui';
 
 const PAGE_SIZE = 30;
 
@@ -38,28 +38,30 @@ function TaskForm({ initial, onDone }: { initial?: O.HkTask; onDone: () => void 
   });
   const save = useMutation({
     mutationFn: () => {
-      if (!f.location.trim()) throw new Error('Location is required');
       const dueAt = f.dueAt ? new Date(f.dueAt).toISOString() : null;
       const dueChanged = f.dueAt !== toLocalInput(initial?.dueAt);
-      if (dueAt && dueChanged && new Date(dueAt).getTime() < Date.now() - 60_000) throw new Error('Due by cannot be in the past');
+      if (dueAt && dueChanged && new Date(dueAt).getTime() < Date.now() - 60_000) throw new Error('Due time cannot be in the past');
       if (initial) {
-        return api.ops.housekeeping.update(initial.id, {
-          location: f.location.trim(),
-          kind: f.kind,
-          priority: f.priority,
-          description: f.description.trim() || null,
-          dueAt,
-          ...(f.assignedTo.trim() ? { assignedTo: f.assignedTo.trim() } : {}),
-        });
+        return api.ops.housekeeping.update(
+          initial.id,
+          checked(O.updateHkTaskSchema, {
+            location: f.location.trim(),
+            kind: f.kind,
+            priority: f.priority,
+            description: f.description.trim() || null,
+            dueAt,
+            ...(f.assignedTo.trim() ? { assignedTo: f.assignedTo.trim() } : {}),
+          }),
+        );
       }
-      return api.ops.housekeeping.create({
+      return api.ops.housekeeping.create(checked(O.createHkTaskSchema, {
         location: f.location.trim(),
         kind: f.kind,
         priority: f.priority,
         description: opt(f.description),
         assignedTo: canManage ? opt(f.assignedTo) : undefined,
         dueAt: dueAt ?? undefined,
-      });
+      }));
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['ops'] });

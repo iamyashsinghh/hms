@@ -5,8 +5,9 @@ import { use } from 'react';
 import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Loader2, Pencil, PhoneCall, UserCheck, XCircle } from 'lucide-react';
-import type { Patient, crm as C } from '@hms/shared';
+import { crm as C, type Patient } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { firstError, validate } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -25,6 +26,7 @@ import {
   formatDateTime,
   fromLocalInput,
   toLocalInput,
+  todayIST,
 } from '@/modules/crm/ui';
 import { LeadForm } from '@/modules/crm/lead-form';
 
@@ -179,6 +181,7 @@ function LogActivity({ lead, onDone }: { lead: C.LeadDetail; onDone: (l: C.LeadD
   const [note, setNote] = React.useState('');
   const [status, setStatus] = React.useState('');
   const [next, setNext] = React.useState(toLocalInput(lead.nextFollowUpAt));
+  const [actError, setActError] = React.useState<string | null>(null);
   const m = useMutation({
     mutationFn: () =>
       api.crm.leads.addActivity(lead.id, {
@@ -201,7 +204,7 @@ function LogActivity({ lead, onDone }: { lead: C.LeadDetail; onDone: (l: C.LeadD
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <ErrorBox error={m.error ? errorMessage(m.error) : null} />
+        <ErrorBox error={actError ?? (m.error ? errorMessage(m.error) : null)} />
         <div className="grid gap-4 sm:grid-cols-3">
           <Field id="act-type" label="Type">
             <Select id="act-type" value={type} onChange={(e) => setType(e.target.value as typeof type)}>
@@ -219,14 +222,26 @@ function LogActivity({ lead, onDone }: { lead: C.LeadDetail; onDone: (l: C.LeadD
             </Select>
           </Field>
           <Field id="act-next" label="Next call">
-            <Input id="act-next" type="datetime-local" value={next} onChange={(e) => setNext(e.target.value)} />
+            <Input id="act-next" type="datetime-local" min={`${todayIST()}T00:00`} value={next} onChange={(e) => setNext(e.target.value)} />
           </Field>
           <Field id="act-note" label="What was discussed *" className="sm:col-span-3">
             <Textarea id="act-note" value={note} onChange={(e) => setNote(e.target.value)} />
           </Field>
         </div>
         <div className="flex justify-end">
-          <Button disabled={m.isPending || !note.trim()} onClick={() => m.mutate()}>
+          <Button
+            disabled={m.isPending || !note.trim()}
+            onClick={() => {
+              const at = fromLocalInput(next);
+              // A changed next-call time must not be in the past; an unchanged one is kept as it is.
+              const changed = next !== toLocalInput(lead.nextFollowUpAt);
+              const problem =
+                firstError(validate(C.leadActivityInputSchema, { type, note, nextFollowUpAt: at }).errors) ??
+                (changed && at && Date.parse(at) < Date.parse(`${todayIST()}T00:00:00+05:30`) ? 'Next call cannot be in the past' : null);
+              setActError(problem);
+              if (!problem) m.mutate();
+            }}
+          >
             {m.isPending && <Loader2 className="animate-spin" />}
             Save
           </Button>
@@ -260,6 +275,7 @@ function Convert({ lead, onDone }: { lead: C.LeadDetail; onDone: (l: C.LeadDetai
     onSuccess: onDone,
   });
   const ready = mode === 'existing' ? !!patient : !!reg.firstName.trim() && !!reg.gender;
+  const [convertError, setConvertError] = React.useState<string | null>(null);
   return (
     <Card>
       <CardHeader>
@@ -268,7 +284,7 @@ function Convert({ lead, onDone }: { lead: C.LeadDetail; onDone: (l: C.LeadDetai
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        <ErrorBox error={m.error ? errorMessage(m.error) : null} />
+        <ErrorBox error={convertError ?? (m.error ? errorMessage(m.error) : null)} />
         <div className="flex gap-4 text-sm">
           <label className="flex items-center gap-2">
             <input type="radio" checked={mode === 'new'} onChange={() => setMode('new')} /> Register new
@@ -282,10 +298,10 @@ function Convert({ lead, onDone }: { lead: C.LeadDetail; onDone: (l: C.LeadDetai
         ) : (
           <div className="grid grid-cols-2 gap-3">
             <Field id="cv-first" label="First name *">
-              <Input id="cv-first" value={reg.firstName} onChange={(e) => setReg({ ...reg, firstName: e.target.value })} />
+              <Input id="cv-first" maxLength={100} value={reg.firstName} onChange={(e) => setReg({ ...reg, firstName: e.target.value })} />
             </Field>
             <Field id="cv-last" label="Last name">
-              <Input id="cv-last" value={reg.lastName} onChange={(e) => setReg({ ...reg, lastName: e.target.value })} />
+              <Input id="cv-last" maxLength={100} value={reg.lastName} onChange={(e) => setReg({ ...reg, lastName: e.target.value })} />
             </Field>
             <Field id="cv-gender" label="Gender *">
               <Select id="cv-gender" value={reg.gender} onChange={(e) => setReg({ ...reg, gender: e.target.value })}>
@@ -296,12 +312,27 @@ function Convert({ lead, onDone }: { lead: C.LeadDetail; onDone: (l: C.LeadDetai
               </Select>
             </Field>
             <Field id="cv-age" label="Age">
-              <Input id="cv-age" type="number" min={0} max={130} value={reg.ageYears} onChange={(e) => setReg({ ...reg, ageYears: e.target.value })} />
+              <Input id="cv-age" type="number" min={0} max={130} step={1} value={reg.ageYears} onChange={(e) => setReg({ ...reg, ageYears: e.target.value })} />
             </Field>
           </div>
         )}
         {lead.referrerName && <p className="text-xs text-muted-foreground">The referral to {lead.referrerName} starts automatically.</p>}
-        <Button className="w-full" disabled={m.isPending || !ready} onClick={() => m.mutate()}>
+        <Button
+          className="w-full"
+          disabled={m.isPending || !ready}
+          onClick={() => {
+            const problem =
+              mode === 'existing'
+                ? null
+                : firstError(
+                    validate(C.convertLeadSchema, {
+                      register: { firstName: reg.firstName, lastName: reg.lastName || undefined, gender: reg.gender, ageYears: reg.ageYears || undefined, mobile: lead.mobile ?? undefined },
+                    }).errors,
+                  );
+            setConvertError(problem);
+            if (!problem) m.mutate();
+          }}
+        >
           {m.isPending && <Loader2 className="animate-spin" />}
           Convert
         </Button>
@@ -322,7 +353,7 @@ function Lose({ lead, onDone }: { lead: C.LeadDetail; onDone: (l: C.LeadDetail) 
       </CardHeader>
       <CardContent className="space-y-3">
         <ErrorBox error={m.error ? errorMessage(m.error) : null} />
-        <Input aria-label="Reason" placeholder="Reason (e.g. price, went elsewhere)" value={reason} onChange={(e) => setReason(e.target.value)} />
+        <Input aria-label="Reason" maxLength={500} placeholder="Reason (e.g. price, went elsewhere)" value={reason} onChange={(e) => setReason(e.target.value)} />
         <Button variant="outline" className="w-full" disabled={m.isPending || !reason.trim()} onClick={() => m.mutate()}>
           Mark lost
         </Button>

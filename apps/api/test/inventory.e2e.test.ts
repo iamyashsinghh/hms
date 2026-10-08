@@ -264,6 +264,66 @@ describe('indents and issues', () => {
   });
 });
 
+describe('consumables issued for a patient', () => {
+  let admission: { id: string; ipdNo: string; patientId: string };
+  let item: { id: string; name: string };
+  let indent: { id: string; lines: { id: string }[] };
+  const ipd = (method: Method, url: string, payload?: unknown) => raw(admin, method, `/ipd${url}`, payload);
+  const accountCharges = async () =>
+    (await ok(ipd('GET', `/admissions/${admission.id}/bill`))).charges.filter((c: { sourceModule: string }) => c.sourceModule === 'inventory');
+  const rules = (r: Record<string, unknown>, replace = false) => app.inject({ method: 'PUT', url: '/api/v1/billing/rules', headers: bearer(admin), payload: { facilityId, replace, rules: r } });
+
+  beforeAll(async () => {
+    const ward = await ok(ipd('POST', '/wards', { facilityId, code: `CW${run}`.slice(0, 20), name: `Consumables ward ${run}`, wardType: 'general', defaultDailyRate: 800 }), 201);
+    const [bed] = await ok(ipd('POST', '/beds/bulk', { wardId: ward.id, prefix: 'C', from: 1, to: 1 }), 201);
+    const patient = await ok(raw(admin, 'POST', '/patients', { firstName: 'Gauze', lastName: `User${run}`, gender: 'male', ageYears: 45, mobile: '9876500003' }), 201);
+    const doctorId = (await login(app, 'doctor@demo.hms')).user.id;
+    admission = await ok(ipd('POST', '/admissions', { patientId: patient.id, bedId: bed.id, doctorId, reason: 'Wound care' }), 201);
+
+    item = await newItem(12);
+    const po = await approvedPo(item.id, 20, 8);
+    await ok(call(admin, 'POST', '/grns', { purchaseOrderId: po.id, lines: [{ poLineId: po.lines[0].id, qty: 20, batchNo: 'PT1', expiryDate: '2030-01-31', mrp: 10 }] }), 201);
+    indent = await ok(call(nurse, 'POST', '/indents', { toStoreId: wardStoreId, fromStoreId: mainStoreId, lines: [{ itemId: item.id, qty: 10 }] }), 201);
+    await ok(call(admin, 'POST', `/indents/${indent.id}/decision`, { approve: true }));
+  });
+  afterAll(() => rules({}, true));
+
+  it('lists admitted patients to issue for', async () => {
+    const found = await ok(call(admin, 'GET', `/indents/admitted-patients?q=${encodeURIComponent(`user${run}`.toLowerCase())}`));
+    expect(found.items).toEqual([expect.objectContaining({ id: admission.id, ipdNo: admission.ipdNo })]);
+    expect((await call(nurse, 'GET', '/indents/admitted-patients')).statusCode).toBe(403);
+  });
+
+  it('charges each issued line to the admission at the sale rate (GST inside)', async () => {
+    const res = await ok(call(admin, 'POST', `/indents/${indent.id}/issue`, { admissionId: admission.id, lines: [{ indentLineId: indent.lines[0]!.id, qty: 4 }] }), 201);
+    expect(res.issues[0]).toMatchObject({ admissionId: admission.id, patientId: admission.patientId, patientName: `Gauze User${run}` });
+    const charges = await accountCharges();
+    expect(charges).toEqual([expect.objectContaining({ itemId: item.id, qty: 4, unitPrice: 10, taxRate: 12, priceIncludesTax: true, amount: 40, status: 'pending' })]);
+    expect(charges[0].description).toContain('batch PT1');
+  });
+
+  it('charges nothing when the hospital treats consumables as its own cost', async () => {
+    expect((await rules({ consumables: 'hospital_cost' })).statusCode).toBe(200);
+    const res = await ok(call(admin, 'POST', `/indents/${indent.id}/issue`, { patientId: admission.patientId, lines: [{ indentLineId: indent.lines[0]!.id, qty: 1 }] }), 201);
+    // A patient alone is matched to their current admission.
+    expect(res.issues[1]).toMatchObject({ admissionId: admission.id, patientId: admission.patientId });
+    expect(await accountCharges()).toHaveLength(1);
+    await rules({}, true);
+  });
+
+  it('checks the patient and admission', async () => {
+    const other = await ok(raw(admin, 'POST', '/patients', { firstName: 'Other', lastName: `Pt${run}`, gender: 'female', ageYears: 30, mobile: '9876500004' }), 201);
+    const bad = await call(admin, 'POST', `/indents/${indent.id}/issue`, { admissionId: admission.id, patientId: other.id, lines: [{ indentLineId: indent.lines[0]!.id, qty: 1 }] });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json().error.code).toBe('admission_other_patient');
+    expect((await call(admin, 'POST', `/indents/${indent.id}/issue`, { admissionId: crypto.randomUUID(), lines: [{ indentLineId: indent.lines[0]!.id, qty: 1 }] })).statusCode).toBe(404);
+    // Issued for a patient who is not admitted: the charge waits on their account.
+    await ok(call(admin, 'POST', `/indents/${indent.id}/issue`, { patientId: other.id, lines: [{ indentLineId: indent.lines[0]!.id, qty: 1 }] }), 201);
+    const account = await ok(raw(admin, 'GET', `/billing/patients/${other.id}/charges`));
+    expect(account).toMatchObject({ pendingTotal: 10, groups: [expect.objectContaining({ account: 'other' })] });
+  });
+});
+
 describe('editing', () => {
   const ist = (days = 0) => new Date(Date.now() + days * 86_400_000).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
@@ -283,7 +343,8 @@ describe('editing', () => {
     const draft = await ok(call(admin, 'POST', '/purchase-orders', { vendorId, storeId: mainStoreId, expectedDate: ist(7), lines: [{ itemId: a.id, qty: 5, rate: 2 }] }), 201);
     const past = await call(admin, 'POST', '/purchase-orders', { vendorId, storeId: mainStoreId, expectedDate: '2000-01-01', lines: [{ itemId: a.id, qty: 5, rate: 2 }] });
     expect(past.statusCode).toBe(400);
-    expect(past.json().error.code).toBe('invalid_expected_date');
+    // The shared schema refuses a past date before the service sees it.
+    expect(past.json().error.message).toContain('cannot be in the past');
 
     const other = await ok(call(admin, 'POST', '/vendors', { code: `P${run}`, name: `Other Supplier ${run}` }), 201);
     const edited = await ok(
@@ -382,5 +443,83 @@ describe('access control', () => {
       ),
     ).resolves.toEqual([]);
     expect((await ok(call(admin, 'GET', `/purchase-orders/${po.id}`))).notes).toBeNull();
+  });
+});
+
+describe('validation', () => {
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  const addDays = (d: string, n: number) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+  const msg = (res: { json: () => unknown }) => {
+    const e = (res.json() as { error: { message: string; details?: unknown } }).error;
+    return [e.message, ...(Array.isArray(e.details) ? (e.details as { message: string }[]).map((d) => d.message) : [])].join(' | ');
+  };
+
+  it('checks vendor identifiers and contact details', async () => {
+    const bad = await call(admin, 'POST', '/vendors', { code: `BAD${run}`, name: 'Bad Vendor', gstin: '27ABC', pan: '1234', phone: 'abc', email: 'x@' });
+    expect(bad.statusCode).toBe(400);
+    for (const m of ['valid 15-character GSTIN', 'valid PAN', 'valid phone number', 'valid email']) expect(msg(bad)).toContain(m);
+
+    const space = await call(admin, 'POST', '/vendors', { code: 'MS 01', name: 'Spacey' });
+    expect(msg(space)).toContain('no spaces');
+
+    const mismatch = await call(admin, 'POST', '/vendors', { code: `MM${run}`, name: 'Mismatch', gstin: '27AAPFU0939F1ZV', pan: 'ABCDE1234F' });
+    expect(mismatch.statusCode).toBe(400);
+    expect(msg(mismatch)).toContain('PAN does not match the GSTIN');
+
+    const blanks = await call(admin, 'POST', '/vendors', { code: `BL${run}`, name: 'Blank Fields', phone: '', email: '', gstin: '', pan: '' });
+    expect(blanks.statusCode, blanks.body).toBe(201);
+    expect(blanks.json()).toMatchObject({ phone: null, email: null, gstin: null, pan: null });
+  });
+
+  it('refuses past needed-by and expected dates, duplicate items and bad quantities', async () => {
+    const item = await newItem();
+    const past = await call(pharmacist, 'POST', '/requisitions', { storeId: mainStoreId, neededBy: addDays(today, -1), lines: [{ itemId: item.id, qty: 5 }] });
+    expect(past.statusCode).toBe(400);
+    expect(msg(past)).toContain('Needed-by date cannot be in the past');
+
+    const dup = await call(pharmacist, 'POST', '/requisitions', { storeId: mainStoreId, lines: [{ itemId: item.id, qty: 5 }, { itemId: item.id, qty: 2 }] });
+    expect(dup.statusCode).toBe(400);
+    expect(msg(dup)).toContain('listed twice');
+
+    const frac = await call(pharmacist, 'POST', '/requisitions', { storeId: mainStoreId, lines: [{ itemId: item.id, qty: 1.5 }] });
+    expect(msg(frac)).toContain('whole number');
+
+    const poPast = await call(admin, 'POST', '/purchase-orders', { vendorId, storeId: mainStoreId, expectedDate: addDays(today, -3), lines: [{ itemId: item.id, qty: 1, rate: 1 }] });
+    expect(poPast.statusCode).toBe(400);
+    expect(msg(poPast)).toContain('Expected delivery date cannot be in the past');
+
+    const rate = await call(admin, 'POST', '/purchase-orders', { vendorId, storeId: mainStoreId, lines: [{ itemId: item.id, qty: 1, rate: 1.005 }] });
+    expect(msg(rate)).toContain('2 decimal');
+
+    const draft = await ok(call(admin, 'POST', '/purchase-orders', { vendorId, storeId: mainStoreId, expectedDate: addDays(today, 7), lines: [{ itemId: item.id, qty: 1, rate: 1 }] }), 201);
+    const edit = await call(admin, 'PATCH', `/purchase-orders/${draft.id}`, { expectedDate: addDays(today, -1) });
+    expect(edit.statusCode).toBe(400);
+    expect(edit.json().error.code).toBe('expected_date_past');
+    // Saving the same date again is fine.
+    expect((await call(admin, 'PATCH', `/purchase-orders/${draft.id}`, { expectedDate: addDays(today, 7), notes: 'ok' })).statusCode).toBe(200);
+  });
+
+  it('refuses expired batches, future invoice dates and MRP below the rate on a GRN', async () => {
+    const item = await newItem();
+    const po = await approvedPo(item.id, 10, 10);
+    const lineId = po.lines[0].id;
+    const expired = await call(admin, 'POST', '/grns', { purchaseOrderId: po.id, lines: [{ poLineId: lineId, qty: 1, batchNo: 'OLD1', expiryDate: addDays(today, -1) }] });
+    expect(expired.statusCode).toBe(400);
+    expect(msg(expired)).toContain('already expired');
+
+    const invoice = await call(admin, 'POST', '/grns', { purchaseOrderId: po.id, invoiceDate: addDays(today, 1), lines: [{ poLineId: lineId, qty: 1 }] });
+    expect(msg(invoice)).toContain('Invoice date cannot be in the future');
+
+    const cheap = await call(admin, 'POST', '/grns', { purchaseOrderId: po.id, lines: [{ poLineId: lineId, qty: 1, mrp: 5 }] });
+    expect(cheap.statusCode).toBe(400);
+    expect(cheap.json().error.code).toBe('mrp_below_rate');
+
+    const good = await call(admin, 'POST', '/grns', { purchaseOrderId: po.id, invoiceNo: '', invoiceDate: today, lines: [{ poLineId: lineId, qty: 2, batchNo: '', expiryDate: addDays(today, 365), mrp: 12 }] });
+    expect(good.statusCode, good.body).toBe(201);
+    expect(good.json().lines[0]).toMatchObject({ batchNo: 'NA', mrp: 12 });
+
+    const noReason = await call(admin, 'POST', `/grns/${good.json().id}/returns`, { reason: ' ', lines: [{ grnLineId: good.json().lines[0].id, qty: 1 }] });
+    expect(noReason.statusCode).toBe(400);
+    expect(msg(noReason)).toContain('reason');
   });
 });

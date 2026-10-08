@@ -1,6 +1,8 @@
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { DbService } from '../src/common/db/db.service';
+import { ChargesService } from '../src/modules/billing/charges.service';
 import { ReportsIngestService } from '../src/modules/reports/reports.ingest';
 import { bearer, bootApp, login } from './helpers';
 
@@ -169,8 +171,15 @@ describe('reports', () => {
   it('validates ranges', async () => {
     const bad = await get(owner, `dashboard?from=2026-02-01&to=2026-01-01`);
     expect(bad.statusCode).toBe(400);
+    expect(bad.json().error.message).toContain('"from" must be on or before "to"');
     const long = await get(owner, `dashboard?from=2024-01-01&to=2026-01-01`);
     expect(long.statusCode).toBe(400);
+    expect(long.json().error.message).toContain('A report can cover at most 366 days');
+    const wrongFormat = await get(owner, `patients?from=08-10-2026&to=2026-10-08`);
+    expect(wrongFormat.statusCode).toBe(400);
+    expect(wrongFormat.json().error.message).toContain('Enter a valid date');
+    const exportReversed = await get(owner, `export?report=collections&from=2026-02-01&to=2026-01-01`);
+    expect(exportReversed.statusCode).toBe(400);
   });
 
   it('enforces permissions', async () => {
@@ -201,5 +210,79 @@ describe('reports', () => {
     await ingest.ingest(event(city.user.tenantId, 'frontoffice.visit.checked_in', { visitId: randomUUID(), patientId: randomUUID() }));
     expect((await get(city.token, `owner-summary?date=${day}`)).json().opdVisits).toBe(cityBefore + 1);
     expect((await get(owner, `owner-summary?date=${day}`)).json().opdVisits).toBe(before.opdVisits);
+  });
+});
+
+describe('unbilled charges at day end', () => {
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  const daysAgo = (n: number) => new Date(Date.parse(`${today}T00:00:00Z`) - n * 86_400_000).toISOString().slice(0, 10);
+  const tag = randomUUID().slice(0, 8);
+  let patientId: string;
+  let uhid: string;
+  let labId: string;
+  const inTenant = <T>(fn: (c: ChargesService, tx: Parameters<Parameters<DbService['asTenant']>[1]>[0]) => Promise<T>) =>
+    app.get(DbService).asTenant({ tenantId: demo.tenantId }, (tx) => fn(app.get(ChargesService), tx));
+
+  beforeAll(async () => {
+    const p = await app.inject({
+      method: 'POST',
+      url: '/api/v1/patients',
+      headers: bearer(reception),
+      payload: { firstName: 'Unbilled', lastName: `Report${tag.replace(/\d/g, 'x')}`, gender: 'male', ageYears: 40 },
+    });
+    expect(p.statusCode, p.body).toBe(201);
+    patientId = p.json().id;
+    uhid = p.json().uhid;
+    const facilityId = demo.facilities[0]!.id;
+    const post = (module: string, description: string, unitPrice: number, extra: Record<string, unknown> = {}) =>
+      inTenant((c, tx) => c.postCharge(tx, { patientId, facilityId, source: { module, refId: `${module}-${tag}` }, description, unitPrice, taxRate: 0, ...extra }));
+    labId = (await post('lab', 'CBC', 300)).id;
+    await post('radiology', 'X-ray chest', 400, { taxRate: 18 });
+    await post('ops', 'Ambulance drop home', 1000, { chargeDate: daysAgo(3) });
+    await post('pharmacy', 'Returned strip', 50);
+    await inTenant((c, tx) => c.cancelBySource(tx, { module: 'pharmacy', refId: `pharmacy-${tag}` }, 'Returned'));
+  });
+
+  it('lists pending charges by department, age and patient', async () => {
+    const res = await get(billingClerk, 'unbilled');
+    expect(res.statusCode, res.body).toBe(200);
+    const r = res.json();
+    expect(r.date).toBe(today);
+    const mine = r.byPatient.find((x: { patientId: string }) => x.patientId === patientId);
+    expect(mine).toMatchObject({ uhid, count: 3, amount: 1772, oldestDate: daysAgo(3), ageDays: 3, accounts: ['other'] });
+    expect([...mine.modules].sort()).toEqual(['lab', 'ops', 'radiology']);
+    expect(r.byModule.find((m: { module: string }) => m.module === 'ops')).toMatchObject({ label: 'Ambulance' });
+    expect(r.byAge.map((a: { key: string }) => a.key)).toEqual(['today', '1-2', '3-7', '8+']);
+    expect(r.byAge.find((a: { key: string }) => a.key === '3-7').count).toBeGreaterThanOrEqual(1);
+    const sum = (xs: { amount: number }[]) => Math.round(xs.reduce((s, x) => s + x.amount * 100, 0)) / 100;
+    expect(sum(r.byModule)).toBe(r.total.amount);
+    expect(sum(r.byPatient)).toBe(r.total.amount);
+
+    // As of a day before anything was posted, the patient is not there.
+    const before = (await get(billingClerk, `unbilled?date=${daysAgo(5)}`)).json();
+    expect(before.byPatient.find((x: { patientId: string }) => x.patientId === patientId)).toBeUndefined();
+  });
+
+  it('shows billed vs unbilled on the owner summary and drops a charge once billed', async () => {
+    const s1 = (await get(owner, `owner-summary?date=${today}`)).json();
+    expect(s1.unbilledCharges.amount).toBeGreaterThanOrEqual(1772);
+    await inTenant((c, tx) => c.billCharges(tx, { patientId, chargeIds: [labId] }));
+    const mine = (await get(billingClerk, 'unbilled')).json().byPatient.find((x: { patientId: string }) => x.patientId === patientId);
+    expect(mine).toMatchObject({ count: 2, amount: 1472 });
+    expect(mine.modules).not.toContain('lab');
+  });
+
+  it('exports the unbilled list as CSV', async () => {
+    const res = await get(owner, `export?report=unbilled-charges&from=${today}&to=${today}`);
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.headers['content-disposition']).toContain(`unbilled-charges_${today}.csv`);
+    expect(res.body).toContain('charge_date,age_days,department,uhid,patient,mobile,account,description,qty,amount');
+    expect(res.body).toContain(`${daysAgo(3)},3,Ambulance,${uhid}`);
+    expect(res.body).toContain('X-ray chest,1,472.00');
+  });
+
+  it('is for the billing desk and management only', async () => {
+    expect((await get(reception, 'unbilled')).statusCode).toBe(403);
+    expect((await get(city.token, 'unbilled')).json().byPatient.find((x: { patientId: string }) => x.patientId === patientId)).toBeUndefined();
   });
 });

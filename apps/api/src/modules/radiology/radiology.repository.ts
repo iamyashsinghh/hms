@@ -291,6 +291,34 @@ export class RadiologyRepository {
   }
 
   /** Staff display names. Reads iam.users (core) until a users service exists. */
+  // ---------- patient account (read-only) ----------
+
+  /** Charges already on the patient's account for these orders (any status). */
+  async chargeLines(tx: Tx, orderIds: string[]) {
+    if (!orderIds.length) return [];
+    const res = await tx.execute<{ order_id: string; line: string; status: string; admission_id: string | null }>(sql`
+      select source_ref as order_id, source_line as line, status, admission_id from billing.charges
+       where source_module = 'radiology' and source_ref in (${sql.join(orderIds.map((i) => sql`${i}`), sql`, `)})`);
+    return res.rows.map((r) => ({ orderId: r.order_id, line: r.line, status: r.status, admissionId: r.admission_id }));
+  }
+
+  /** OPD visit of the consultation an order came from. */
+  async encounterVisit(tx: Tx, encounterId: string): Promise<string | null> {
+    const res = await tx.execute<{ visit_id: string | null }>(sql`select visit_id from clinical.encounters where id = ${encounterId}::uuid`);
+    return res.rows[0]?.visit_id ?? null;
+  }
+
+  /** Stores the bill number on orders whose charge was billed (first bill wins). */
+  async setInvoice(tx: Tx, orderIds: string[], invoiceId: string, invoiceNo: string): Promise<number> {
+    if (!orderIds.length) return 0;
+    const rows = await tx
+      .update(radiologyOrders)
+      .set({ invoiceId, invoiceNo })
+      .where(and(inArray(radiologyOrders.id, orderIds), sql`${radiologyOrders.invoiceId} is null`))
+      .returning({ id: radiologyOrders.id });
+    return rows.length;
+  }
+
   async userNames(tx: Tx, ids: (string | null | undefined)[]): Promise<Map<string, string>> {
     const unique = [...new Set(ids.filter((i): i is string => !!i))];
     if (!unique.length) return new Map();

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import {
   and,
+  billingCharges,
   count,
   crmCommissionRules,
   crmCommissions,
@@ -336,8 +337,18 @@ export class ReferralsService {
         ),
       );
     const module = e.source?.module ?? 'billing';
-    const breakdown: CrmCommissionLine[] = e.lines.map((line) => {
-      const rule = pickRule(rules, line.serviceCode ?? null, module);
+    // A bill made from patient-account charges mixes departments: each line keeps its charge's module
+    // (lab, radiology, ...) so department rules still apply. Lines are in invoice line order.
+    const lineModules = new Map(
+      (
+        await tx
+          .select({ lineNo: billingCharges.invoiceLineNo, module: billingCharges.sourceModule })
+          .from(billingCharges)
+          .where(eq(billingCharges.invoiceId, e.invoiceId))
+      ).map((c) => [c.lineNo, c.module]),
+    );
+    const breakdown: CrmCommissionLine[] = e.lines.map((line, i) => {
+      const rule = pickRule(rules, line.serviceCode ?? null, lineModules.get(i + 1) ?? module);
       const base = paise(line.amount ?? 0);
       const commission = !rule ? 0 : rule.rateType === 'percent' ? Math.round((base * Number(rule.rate)) / 100) : paise(rule.rate) * Math.max(1, Math.round(line.qty || 1));
       return {
@@ -523,6 +534,9 @@ export class ReferralsService {
     return this.db.tx(async (tx) => {
       const s = await this.statementRow(tx, id);
       if (s.status !== 'approved') throw conflict('statement_not_approved', 'Approve the statement before paying it');
+      if (d.mode !== 'cash' && !d.reference) {
+        throw badRequest('payment_reference_required', `Enter the ${d.mode === 'cheque' ? 'cheque number' : 'UTR / transaction reference'} for a ${d.mode.toUpperCase()} payment`);
+      }
       await tx
         .update(crmCommissionStatements)
         .set({

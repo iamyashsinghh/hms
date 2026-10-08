@@ -4,7 +4,7 @@ import * as React from 'react';
 import { use } from 'react';
 import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, ArrowLeft, Ban, CheckCheck, FileText, Loader2, Pencil, Printer, ReceiptIndianRupee, Save, TestTube } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Ban, CheckCheck, FileText, Loader2, Pencil, Printer, Save, TestTube } from 'lucide-react';
 import { lab as L } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { Can, usePermission } from '@/lib/auth';
@@ -26,6 +26,7 @@ import {
   groupBySection,
   rangeText,
 } from '@/modules/lab/ui';
+import { OrderPaymentCard } from '@/modules/lab/payment-card';
 
 type Draft = Record<string, { value: string; remarks: string }>;
 
@@ -53,6 +54,8 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
     onSuccess: (o) => {
       queryClient.setQueryData(key, o);
       queryClient.invalidateQueries({ queryKey: ['lab', 'orders'], exact: false, refetchType: 'none' });
+      // Collecting a sample or billing may have put charges on the patient's account.
+      queryClient.invalidateQueries({ queryKey: ['billing', 'charges', 'patient', o.patient.id] });
     },
   });
 
@@ -65,6 +68,11 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
     (r) => r.status !== 'verified' && ((draft[r.id]?.value ?? '') !== (r.value ?? '') || (draft[r.id]?.remarks ?? '') !== (r.remarks ?? '')),
   );
   const entered = order.results.filter((r) => r.status === 'entered');
+  const notANumber = (r: L.Result) => {
+    const v = draft[r.id]?.value?.trim() ?? '';
+    return r.resultType === 'numeric' && v !== '' && !L.isNumericResult(v);
+  };
+  const badValues = changed.filter(notANumber);
   const unmatched = order.items.filter((i) => i.kind === 'unmatched');
   const sampleOf = (r: L.Result) => order.samples.find((s) => s.id === r.sampleId);
 
@@ -112,25 +120,6 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
           <Link href={`/lab/orders/${id}/report`} className={buttonVariants({ variant: order.status === 'completed' ? 'default' : 'outline' })}>
             <FileText /> {order.status === 'completed' ? 'Report' : 'Preview report'}
           </Link>
-          {order.invoiceId ? (
-            <Can permission="billing.invoice.read" fallback={<Badge variant="outline">Bill {order.invoiceNo}</Badge>}>
-              <Link href={`/billing/invoices/${order.invoiceId}`} className={buttonVariants({ variant: 'outline' })}>
-                <ReceiptIndianRupee /> {order.invoiceNo}
-              </Link>
-            </Can>
-          ) : (
-            open && (
-              <Can permission="lab.order.create">
-                <Button
-                  variant="outline"
-                  disabled={act.isPending || unmatched.length === order.items.length}
-                  onClick={() => act.mutate(() => api.lab.orders.bill(id))}
-                >
-                  <ReceiptIndianRupee /> Create bill
-                </Button>
-              </Can>
-            )
-          )}
           {open && order.status !== 'completed' && !editing && (
             <Can permission="lab.order.create">
               <Button variant="outline" onClick={() => setEditing(true)}>
@@ -144,7 +133,10 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
                 variant="ghost"
                 onClick={() => {
                   const reason = window.prompt('Why is this order being cancelled?');
-                  if (reason && reason.trim().length >= 3) act.mutate(() => api.lab.orders.cancel(id, { reason }));
+                  if (reason !== null) {
+                    if (reason.trim().length >= 3) act.mutate(() => api.lab.orders.cancel(id, { reason }));
+                    else window.alert('Give a reason of at least 3 characters');
+                  }
                 }}
               >
                 <Ban /> Cancel
@@ -171,6 +163,23 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
       <div className="mb-4">
         <ErrorBox error={act.error ? errorMessage(act.error) : null} />
       </div>
+
+      <OrderPaymentCard
+        patientId={order.patient.id}
+        source={{ module: 'lab', refId: order.id }}
+        paymentState={order.paymentState}
+        payFirst={order.payFirst && order.samples.some((s) => s.status === 'pending')}
+        invoiceId={order.invoiceId}
+        invoiceNo={order.invoiceNo}
+        open={open}
+        step="sample"
+        billNow={{
+          permission: 'lab.order.create',
+          disabled: act.isPending || unmatched.length === order.items.length,
+          onClick: () => act.mutate(() => api.lab.orders.bill(id)),
+        }}
+        onBilled={() => queryClient.invalidateQueries({ queryKey: key })}
+      />
 
       {unmatched.length > 0 && (
         <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
@@ -235,7 +244,10 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
                           variant="ghost"
                           onClick={() => {
                             const reason = window.prompt('Reason for rejecting this sample (haemolysed, clotted, insufficient…)');
-                            if (reason && reason.trim().length >= 3) act.mutate(() => api.lab.samples.reject(s.id, { reason }));
+                            if (reason !== null) {
+                              if (reason.trim().length >= 3) act.mutate(() => api.lab.samples.reject(s.id, { reason }));
+                              else window.alert('Give a reason of at least 3 characters');
+                            }
                           }}
                         >
                           Reject
@@ -259,9 +271,10 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
         <CardHeader className="flex flex-row items-center justify-between gap-2">
           <CardTitle>Results</CardTitle>
           {open && (
-            <div className="flex gap-2">
+            <div className="flex items-center gap-2">
+              {badValues.length > 0 && <span className="text-xs text-destructive">{badValues[0]!.name}: enter a number</span>}
               {canEnter && (
-                <Button size="sm" variant="outline" disabled={!changed.length || act.isPending} onClick={saveResults}>
+                <Button size="sm" variant="outline" disabled={!changed.length || badValues.length > 0 || act.isPending} onClick={saveResults}>
                   {act.isPending ? <Loader2 className="animate-spin" /> : <Save />} Save results
                 </Button>
               )}
@@ -323,8 +336,11 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
                                 inputMode={r.resultType === 'numeric' ? 'decimal' : 'text'}
                                 disabled={!editable}
                                 value={d.value}
+                                maxLength={500}
+                                aria-invalid={notANumber(r)}
+                                title={notANumber(r) ? 'Enter a number, e.g. 12.5 or <0.1' : undefined}
                                 onChange={(e) => set({ value: e.target.value })}
-                                className={flag && flag !== 'normal' ? 'border-destructive font-semibold text-destructive' : ''}
+                                className={flag && flag !== 'normal' ? 'border-destructive font-semibold text-destructive' : notANumber(r) ? 'border-destructive' : ''}
                               />
                             )}
                             <FlagMark flag={flag} />
@@ -333,7 +349,7 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
                         <TableCell className="text-sm text-muted-foreground">{r.unit}</TableCell>
                         <TableCell className="text-sm text-muted-foreground">{rangeText(r)}</TableCell>
                         <TableCell>
-                          <Input aria-label={`${r.name} remarks`} disabled={!editable} value={d.remarks} onChange={(e) => set({ remarks: e.target.value })} />
+                          <Input aria-label={`${r.name} remarks`} disabled={!editable} maxLength={500} value={d.remarks} onChange={(e) => set({ remarks: e.target.value })} />
                         </TableCell>
                         <TableCell>
                           {r.status === 'verified' ? (
@@ -345,7 +361,10 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
                                   variant="ghost"
                                   onClick={() => {
                                     const reason = window.prompt(`Why does ${r.name} need correcting?`);
-                                    if (reason && reason.trim().length >= 3) act.mutate(() => api.lab.orders.amend(id, { resultId: r.id, reason }));
+                                    if (reason !== null) {
+                                      if (reason.trim().length >= 3) act.mutate(() => api.lab.orders.amend(id, { resultId: r.id, reason }));
+                                      else window.alert('Give a reason of at least 3 characters');
+                                    }
                                   }}
                                 >
                                   Amend

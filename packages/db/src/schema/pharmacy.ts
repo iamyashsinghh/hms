@@ -227,6 +227,8 @@ export const pharmacySales = pg.table(
     paymentMode: text('payment_mode'),
     invoiceId: uuid('invoice_id'),
     invoiceNumber: text('invoice_number'),
+    /** Set when the medicines went on the patient's IPD bill (charges) instead of their own invoice. */
+    admissionId: uuid('admission_id'),
     ...actorColumns(),
     ...timestamps(),
   },

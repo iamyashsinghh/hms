@@ -74,6 +74,8 @@ export const frontofficeVisits = clinical.table(
     calledAt: tz('called_at'),
     startedAt: tz('started_at'),
     completedAt: tz('completed_at'),
+    /** How the consultation was charged at check-in (migration 20261008100000_frontoffice_visit_fee.sql). */
+    feeType: text('fee_type'),
     ...actorColumns(),
     ...timestamps(),
   },
@@ -82,6 +84,7 @@ export const frontofficeVisits = clinical.table(
     uniqueIndex('opd_visits_no_uq').on(t.tenantId, t.visitNo),
     uniqueIndex('opd_visits_token_uq').on(t.tenantId, t.facilityId, t.doctorId, t.visitDate, t.tokenNo),
     index('opd_visits_queue_idx').on(t.tenantId, t.facilityId, t.visitDate, t.doctorId, t.status),
+    index('opd_visits_patient_doctor_idx').on(t.tenantId, t.patientId, t.doctorId, t.visitDate),
   ],
 );
 

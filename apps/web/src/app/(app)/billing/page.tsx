@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight, Loader2, Plus, Search } from 'lucide-react';
 import type { billing as B } from '@hms/shared';
@@ -15,14 +15,25 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { BillsTabs } from '@/modules/billing/tabs';
 import { InvoiceStatusBadge, formatINR, useDebounced } from '@/modules/billing/ui';
 
 const PAGE_SIZE = 25;
 
-export default function BillsPage() {
+export default function Page() {
+  return (
+    <React.Suspense>
+      <BillsPage />
+    </React.Suspense>
+  );
+}
+
+function BillsPage() {
   const canRead = usePermission('billing.invoice.read');
   const router = useRouter();
-  const [search, setSearch] = React.useState('');
+  // ?q= opens the list already searched (e.g. "earlier bills due" on the billing desk).
+  const params = useSearchParams();
+  const [search, setSearch] = React.useState(() => params.get('q') ?? '');
   const [filter, setFilter] = React.useState('');
   const [page, setPage] = React.useState(1);
   const q = useDebounced(search.trim());
@@ -49,11 +60,12 @@ export default function BillsPage() {
         actions={
           <Can permission="billing.invoice.create">
             <Link href="/billing/new" className={buttonVariants()}>
-              <Plus /> New bill
+              <Plus /> Bill a patient
             </Link>
           </Can>
         }
       />
+      <BillsTabs />
       <Card>
         <div className="flex flex-wrap items-center gap-3 border-b p-4">
           <div className="relative w-full max-w-sm">

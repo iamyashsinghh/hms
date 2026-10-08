@@ -92,8 +92,16 @@ export class BillingRepository {
   async searchServices(tx: Tx, f: { q?: string; category?: string; active: string; page: number; pageSize: number }) {
     const conds: (SQL | undefined)[] = [];
     if (f.q) {
+      // Every typed word must appear in the name or code, punctuation ignored ("xray ch" finds "X-ray chest PA").
+      const flat = (col: typeof billingServices.name | typeof billingServices.code) => sql`regexp_replace(lower(${col}), '[^a-z0-9]+', '', 'g')`;
+      const words = f.q.toLowerCase().split(/\s+/).map((w) => w.replace(/[^a-z0-9]+/g, '')).filter(Boolean);
       const term = f.q.toLowerCase();
-      conds.push(sql`(${billingServices.code} = upper(${term}) or lower(${billingServices.name}) like ${'%' + term + '%'} or lower(${billingServices.code}) like ${'%' + term + '%'})`);
+      const wordConds = words.map((w) => sql`(${flat(billingServices.name)} like ${'%' + w + '%'} or ${flat(billingServices.code)} like ${'%' + w + '%'})`);
+      conds.push(
+        wordConds.length
+          ? sql`(${billingServices.code} = upper(${term}) or (${sql.join(wordConds, sql` and `)}))`
+          : sql`(${billingServices.code} = upper(${term}) or lower(${billingServices.name}) like ${'%' + term + '%'})`,
+      );
     }
     if (f.category) conds.push(eq(billingServices.category, f.category));
     if (f.active !== 'all') conds.push(eq(billingServices.isActive, f.active === 'true'));

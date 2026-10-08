@@ -1,6 +1,6 @@
 import { HttpStatus, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { iso, nextCounter, sql, type Tx } from '@hms/db';
-import { frontoffice as fo, type Paginated } from '@hms/shared';
+import { frontoffice as fo, setup as S, type billing as B, type Paginated } from '@hms/shared';
 import type { z } from 'zod';
 import { DbService } from '../../common/db/db.service';
 import { AuditService } from '../../common/db/audit.service';
@@ -8,6 +8,7 @@ import { OutboxService } from '../../common/events/outbox.service';
 import { EventBus } from '../../common/events/event-bus';
 import { currentContext } from '../../common/context/request-context';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../common/errors/errors';
+import { ChargesService } from '../billing/charges.service';
 import { PatientsService } from '../patients/patients.service';
 import { SetupService } from '../setup/setup.service';
 import {
@@ -38,6 +39,10 @@ const EV = fo.FRONTOFFICE_EVENTS;
  * Front office rules: booking, the appointment status machine, check-in and the per-doctor token queue,
  * TV display, duplicate search, patient merge and ABHA capture.
  *
+ * Billing: check-in / walk-in posts the consultation charge (doctor's fee or follow-up fee) and any registration
+ * fee due onto the patient's account in the same transaction; the hospital's billing rules decide whether it is
+ * collected at check-in and whether an unpaid token can be called. Cancelling a token cancels its charge.
+ *
  * Other modules import FrontofficeModule and call book() / getQueue() (see PARALLEL_PLAN.md section 4).
  */
 @Injectable()
@@ -52,6 +57,7 @@ export class FrontofficeService implements OnModuleInit {
     private readonly bus: EventBus,
     private readonly patients: PatientsService,
     private readonly setup: SetupService,
+    private readonly charges: ChargesService,
   ) {}
 
   onModuleInit() {
@@ -192,6 +198,7 @@ export class FrontofficeService implements OnModuleInit {
         const visit = await this.repo.findVisit(tx, row.visitId, true);
         if (visit && fo.VISIT_TRANSITIONS.cancel.from.includes(visit.status as fo.VisitStatus)) {
           await this.repo.updateVisit(tx, visit.id, { status: 'cancelled', updatedBy: currentContext()?.userId ?? null });
+          await this.charges.cancelBySource(tx, { module: 'frontoffice', refId: visit.id }, `Appointment cancelled: ${reason}`);
         }
       }
       const updated = await this.moveAppointment(tx, row, 'cancelled', 'cancelled', reason, { cancelReason: reason });
@@ -228,7 +235,7 @@ export class FrontofficeService implements OnModuleInit {
         notes: input.notes ?? null,
       });
       await this.moveAppointment(tx, row, 'checked_in', 'checked_in', null, { visitId: visit.id }, { tokenNo: visit.tokenNo });
-      return this.toVisit(tx, visit, patient);
+      return this.checkedIn(tx, visit, patient);
     });
   }
 
@@ -248,7 +255,7 @@ export class FrontofficeService implements OnModuleInit {
         priority: input.priority,
         notes: input.notes ?? null,
       });
-      return this.toVisit(tx, visit, patient);
+      return this.checkedIn(tx, visit, patient);
     });
   }
 
@@ -264,7 +271,13 @@ export class FrontofficeService implements OnModuleInit {
         const key = v.status === 'in_consultation' ? 'inConsultation' : (v.status as keyof fo.QueueSummary);
         summary[key]++;
       }
-      return { date, items, summary };
+      const rules = await this.charges.rules(tx, facilityId);
+      return {
+        date,
+        items,
+        summary,
+        billing: { collectAtCheckIn: rules.opdPayment === 'before', blockUnpaid: rules.opdPayment === 'before' && rules.opdUnpaid === 'block' },
+      };
     });
   }
 
@@ -300,6 +313,7 @@ export class FrontofficeService implements OnModuleInit {
     if (!rule.from.includes(visit.status as fo.VisitStatus)) {
       throw this.badState(`Cannot ${action} a token that is ${visit.status.replace('_', ' ')}`);
     }
+    if (action === 'call' || action === 'start') await this.requirePaidIfBlocking(tx, visit);
     const now = new Date().toISOString();
     const patch: Partial<VisitRow> = { status: rule.to, updatedBy: actorId ?? null };
     if (room !== undefined) patch.room = room || null;
@@ -313,6 +327,9 @@ export class FrontofficeService implements OnModuleInit {
       patch.startedAt = visit.startedAt ?? now;
     }
     const updated = await this.repo.updateVisit(tx, visit.id, patch);
+    if (action === 'cancel') {
+      await this.charges.cancelBySource(tx, { module: 'frontoffice', refId: visit.id }, 'Visit cancelled before consultation');
+    }
 
     if (visit.appointmentId) {
       const appt = await this.repo.findAppointment(tx, visit.appointmentId, true);
@@ -521,6 +538,9 @@ export class FrontofficeService implements OnModuleInit {
   ): Promise<{ start: string; end: string }> {
     const start = new Date(requestedStart).toISOString();
     if (new Date(start).getTime() < Date.now() - 5 * 60_000) throw badRequest('slot_in_past', 'That time has already passed');
+    if (new Date(start).getTime() > Date.now() + fo.MAX_BOOKING_DAYS_AHEAD * 86_400_000) {
+      throw badRequest('slot_too_far', `Appointments can be booked up to ${fo.MAX_BOOKING_DAYS_AHEAD} days ahead`);
+    }
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${'frontoffice.doctor.' + doctorId}))`);
 
     const date = istDate(start);
@@ -624,6 +644,71 @@ export class FrontofficeService implements OnModuleInit {
     return row;
   }
 
+  // ---------- billing ----------
+
+  /**
+   * Posts what the patient owes for this visit, inside the check-in transaction: the consultation (doctor's
+   * fee, or the follow-up fee inside the doctor's follow-up days when the hospital uses follow-up fees; no
+   * charge when the doctor has no fee or the follow-up is free) and the registration fee when it is due.
+   */
+  private async postVisitCharges(tx: Tx, visit: VisitRow): Promise<{ visit: VisitRow; charges: B.Charge[] }> {
+    await this.setup.syncDoctorFeeServicesInTx(tx, visit.doctorId);
+    const [doctor, rules] = await Promise.all([this.setup.getDoctorInTx(tx, visit.doctorId), this.charges.rules(tx, visit.facilityId)]);
+    const codes = S.doctorFeeServiceCodes(visit.doctorId);
+    let feeType: fo.VisitFeeType = 'none';
+    let serviceCode: string | undefined;
+    if ((doctor.consultationFee ?? 0) > 0) {
+      feeType = 'full';
+      serviceCode = codes.consultation;
+      const days = doctor.followUpDays ?? 0;
+      if (rules.followUp === 'doctor_fee' && days > 0 && doctor.followUpFee !== undefined && (await this.repo.followUpReference(tx, visit, days))) {
+        feeType = doctor.followUpFee > 0 ? 'follow_up' : 'free_follow_up';
+        serviceCode = doctor.followUpFee > 0 ? codes.followUp : undefined;
+      }
+    }
+    const posted: B.Charge[] = [];
+    if (serviceCode) {
+      posted.push(
+        await this.charges.postCharge(tx, {
+          patientId: visit.patientId,
+          facilityId: visit.facilityId,
+          visitId: visit.id,
+          source: { module: 'frontoffice', refId: visit.id, line: 'consultation' },
+          serviceCode,
+          doctorId: visit.doctorId,
+          chargeDate: visit.visitDate,
+        }),
+      );
+    }
+    const registration = await this.patients.chargeRegistrationIfDue(tx, visit.patientId, visit.facilityId, visit.id);
+    if (registration) posted.push(registration);
+    const updated = await this.repo.updateVisit(tx, visit.id, { feeType });
+    return { visit: updated, charges: posted };
+  }
+
+  /** The check-in / walk-in response: the visit plus the charges just posted and whether to collect now. */
+  private async checkedIn(tx: Tx, created: VisitRow, patient: PatientBriefRow): Promise<fo.Visit> {
+    const { visit, charges } = await this.postVisitCharges(tx, created);
+    const rules = await this.charges.rules(tx, visit.facilityId);
+    const states = await this.charges.paymentStates(tx, { visitIds: [visit.id] });
+    return {
+      ...(await this.toVisit(tx, visit, patient)),
+      paymentState: states.get(visit.id) ?? 'none',
+      chargeIds: charges.filter((c) => c.status === 'pending').map((c) => c.id),
+      collectNow: rules.opdPayment === 'before',
+    };
+  }
+
+  /** Billing rule "keep unpaid OPD patients out": refuse to call / start a token whose consultation is not paid. */
+  private async requirePaidIfBlocking(tx: Tx, visit: VisitRow): Promise<void> {
+    const rules = await this.charges.rules(tx, visit.facilityId);
+    if (rules.opdPayment !== 'before' || rules.opdUnpaid !== 'block') return;
+    const state = (await this.charges.paymentStates(tx, { module: 'frontoffice', refIds: [visit.id] })).get(visit.id);
+    if (state === 'pending' || state === 'unpaid') {
+      throw new AppError(HttpStatus.CONFLICT, 'consultation_unpaid', 'Collect the consultation fee first', { visitId: visit.id, paymentState: state });
+    }
+  }
+
   private async apptEvent(tx: Tx, row: AppointmentRow): Promise<Record<string, unknown>> {
     const names = await this.repo.userNames(tx, [row.doctorId]);
     const e: fo.AppointmentBookedEvent = {
@@ -657,11 +742,12 @@ export class FrontofficeService implements OnModuleInit {
   }
 
   private async toVisits(tx: Tx, rows: VisitRow[]): Promise<fo.Visit[]> {
-    const [patients, names] = await Promise.all([
+    const [patients, names, states] = await Promise.all([
       this.repo.patientBriefs(tx, rows.map((r) => r.patientId)),
       this.repo.userNames(tx, rows.map((r) => r.doctorId)),
+      this.charges.paymentStates(tx, { visitIds: rows.map((r) => r.id) }),
     ]);
-    return rows.map((r) => toVisit(r, patients.get(r.patientId), names.get(r.doctorId) ?? null));
+    return rows.map((r) => ({ ...toVisit(r, patients.get(r.patientId), names.get(r.doctorId) ?? null), paymentState: states.get(r.id) ?? 'none' }));
   }
 }
 
@@ -715,6 +801,7 @@ function toVisit(r: VisitRow, p: PatientBriefRow | undefined, doctorName: string
     calledAt: iso(r.calledAt),
     startedAt: iso(r.startedAt),
     completedAt: iso(r.completedAt),
+    feeType: (r.feeType as fo.VisitFeeType | null) ?? null,
   };
 }
 
