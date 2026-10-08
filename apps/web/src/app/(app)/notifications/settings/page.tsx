@@ -5,6 +5,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { notifications as n } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { firstError, validate } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -28,6 +29,7 @@ function SettingsForm() {
 function SettingsEditor({ initial }: { initial: n.Settings }) {
   const queryClient = useQueryClient();
   const [form, setForm] = React.useState<n.Settings>(initial);
+  const [formError, setFormError] = React.useState<string | null>(null);
   const save = useMutation({
     mutationFn: (body: n.UpdateSettings) => api.notifications.updateSettings(body),
     onSuccess: (s) => {
@@ -48,16 +50,22 @@ function SettingsEditor({ initial }: { initial: n.Settings }) {
           className="space-y-5"
           onSubmit={(e) => {
             e.preventDefault();
-            save.mutate({
+            const body: n.UpdateSettings = {
               ...form,
               displayName: form.displayName || null,
               smsSenderId: form.smsSenderId ? form.smsSenderId.toUpperCase() : null,
               emailFromName: form.emailFromName || null,
               emailReplyTo: form.emailReplyTo || null,
-            });
+            };
+            const v = validate(n.updateSettingsSchema, body);
+            let message = firstError(v.errors);
+            if (!message && form.defaultChannels.length === 0) message = 'Pick at least one default channel';
+            if (!message && form.defaultChannels.some((c) => !form.enabledChannels.includes(c))) message = 'Default channels must be switched on';
+            setFormError(message);
+            if (!message) save.mutate(body);
           }}
         >
-          {save.error && <ErrorBox>{errorMessage(save.error)}</ErrorBox>}
+          {(formError || save.error) && <ErrorBox>{formError ?? errorMessage(save.error)}</ErrorBox>}
           {save.isSuccess && <p className="text-sm text-accent-foreground">Saved.</p>}
           <div>
             <Label>Channels switched on</Label>
@@ -78,7 +86,7 @@ function SettingsEditor({ initial }: { initial: n.Settings }) {
           <div className="grid gap-5 sm:grid-cols-2">
             <div>
               <Label htmlFor="displayName">Hospital name in messages</Label>
-              <Input id="displayName" className="mt-2" placeholder="Registered name" value={form.displayName ?? ''} onChange={(e) => setForm({ ...form, displayName: e.target.value })} />
+              <Input id="displayName" className="mt-2" placeholder="Registered name" maxLength={100} value={form.displayName ?? ''} onChange={(e) => setForm({ ...form, displayName: e.target.value })} />
             </div>
             <div>
               <Label htmlFor="sender">SMS sender id (DLT header)</Label>
@@ -86,15 +94,15 @@ function SettingsEditor({ initial }: { initial: n.Settings }) {
             </div>
             <div>
               <Label htmlFor="fromName">Email from name</Label>
-              <Input id="fromName" className="mt-2" value={form.emailFromName ?? ''} onChange={(e) => setForm({ ...form, emailFromName: e.target.value })} />
+              <Input id="fromName" className="mt-2" maxLength={100} value={form.emailFromName ?? ''} onChange={(e) => setForm({ ...form, emailFromName: e.target.value })} />
             </div>
             <div>
               <Label htmlFor="replyTo">Email reply-to</Label>
-              <Input id="replyTo" type="email" className="mt-2" value={form.emailReplyTo ?? ''} onChange={(e) => setForm({ ...form, emailReplyTo: e.target.value })} />
+              <Input id="replyTo" type="email" className="mt-2" maxLength={254} value={form.emailReplyTo ?? ''} onChange={(e) => setForm({ ...form, emailReplyTo: e.target.value })} />
             </div>
             <div>
               <Label htmlFor="threshold">Low balance alert below (₹)</Label>
-              <Input id="threshold" type="number" min={0} className="mt-2" value={form.lowBalanceThreshold} onChange={(e) => setForm({ ...form, lowBalanceThreshold: Number(e.target.value) })} />
+              <Input id="threshold" type="number" min={0} max={100000} step="0.01" className="mt-2" value={form.lowBalanceThreshold} onChange={(e) => setForm({ ...form, lowBalanceThreshold: Number(e.target.value) })} />
             </div>
           </div>
           <div className="flex justify-end">

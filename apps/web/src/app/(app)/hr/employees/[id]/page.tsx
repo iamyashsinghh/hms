@@ -7,6 +7,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
 import { hr as H } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { firstError, validate, type FieldErrors } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
 import { NoAccess } from '@/components/no-access';
@@ -34,6 +35,7 @@ export default function EmployeePage({ params }: { params: Promise<{ id: string 
   const canLeave = usePermission('hr.leave.read');
   const queryClient = useQueryClient();
   const [editing, setEditing] = React.useState(false);
+  const [exitError, setExitError] = React.useState<string | null>(null);
   const key = ['hr', 'employees', id];
   const { data: e, isPending, error } = useQuery({ queryKey: key, queryFn: () => api.hr.employees.get(id), enabled: canRead });
   const { data: balances } = useQuery({ queryKey: ['hr', 'balances', id], queryFn: () => api.hr.employees.leaveBalances(id), enabled: canRead && canLeave });
@@ -77,8 +79,12 @@ export default function EmployeePage({ params }: { params: Promise<{ id: string 
               <Button
                 variant="outline"
                 onClick={() => {
-                  const d = window.prompt('Last working day (YYYY-MM-DD)', todayIST());
-                  if (d) save.mutate({ status: 'exited', dateOfExit: d });
+                  const d = window.prompt('Last working day (YYYY-MM-DD)', todayIST())?.trim();
+                  if (!d) return;
+                  // Check the date against the joining date before saving.
+                  const r = validate(H.updateEmployeeSchema, { status: 'exited', dateOfExit: d, dateOfJoining: e.dateOfJoining });
+                  setExitError(firstError(r.errors));
+                  if (!r.errors) save.mutate({ status: 'exited', dateOfExit: d });
                 }}
                 disabled={save.isPending}
               >
@@ -95,7 +101,7 @@ export default function EmployeePage({ params }: { params: Promise<{ id: string 
           </div>
         )}
       </div>
-      {!editing && <ErrorBox error={save.error ? errorMessage(save.error) : null} />}
+      {!editing && <ErrorBox error={exitError ?? (save.error ? errorMessage(save.error) : null)} />}
 
       {editing ? (
         <EmployeeForm
@@ -172,6 +178,7 @@ function Licences({ employeeId }: { employeeId: string }) {
   const key = ['hr', 'licences', employeeId];
   const { data } = useQuery({ queryKey: key, queryFn: () => api.hr.licences.list(employeeId) });
   const [form, setForm] = React.useState<LicenceForm | null>(null);
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: key });
     queryClient.invalidateQueries({ queryKey: ['hr', 'employees', employeeId] });
@@ -205,7 +212,9 @@ function Licences({ employeeId }: { employeeId: string }) {
             className="grid gap-4 rounded-md border p-4 sm:grid-cols-5"
             onSubmit={(ev) => {
               ev.preventDefault();
-              save.mutate(form);
+              const r = validate(H.licenceInputSchema, { kind: form.kind, number: form.number, issuedBy: form.issuedBy || null, validFrom: form.validFrom || null, validUntil: form.validUntil || null });
+              setErrors(r.errors ?? {});
+              if (!r.errors) save.mutate(form);
             }}
           >
             <div className="sm:col-span-5">
@@ -220,17 +229,17 @@ function Licences({ employeeId }: { employeeId: string }) {
                 ))}
               </Select>
             </Field>
-            <Field id="ln" label="Number *">
-              <Input id="ln" value={form.number} onChange={(ev) => setForm({ ...form, number: ev.target.value })} required />
+            <Field id="ln" label="Number *" error={errors.number}>
+              <Input id="ln" maxLength={60} value={form.number} onChange={(ev) => setForm({ ...form, number: ev.target.value })} required />
             </Field>
             <Field id="li" label="Issued by" className="sm:col-span-2">
               <Input id="li" value={form.issuedBy} onChange={(ev) => setForm({ ...form, issuedBy: ev.target.value })} placeholder="e.g. Maharashtra Nursing Council" />
             </Field>
-            <Field id="lf" label="Valid from">
-              <Input id="lf" type="date" value={form.validFrom} onChange={(ev) => setForm({ ...form, validFrom: ev.target.value })} />
+            <Field id="lf" label="Valid from" error={errors.validFrom}>
+              <Input id="lf" type="date" max={todayIST()} value={form.validFrom} onChange={(ev) => setForm({ ...form, validFrom: ev.target.value })} />
             </Field>
-            <Field id="lu" label="Valid until">
-              <Input id="lu" type="date" value={form.validUntil} onChange={(ev) => setForm({ ...form, validUntil: ev.target.value })} />
+            <Field id="lu" label="Valid until" error={errors.validUntil}>
+              <Input id="lu" type="date" min={form.validFrom || undefined} value={form.validUntil} onChange={(ev) => setForm({ ...form, validUntil: ev.target.value })} />
             </Field>
             <div className="flex items-end justify-end gap-2 sm:col-span-3">
               <Button type="button" variant="outline" onClick={() => setForm(null)}>

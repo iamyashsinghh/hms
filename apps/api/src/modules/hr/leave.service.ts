@@ -99,6 +99,9 @@ export class LeaveService {
 
   apply(input: contracts.ApplyLeave): Promise<contracts.LeaveRequest> {
     const b = contracts.applyLeaveSchema.parse(input);
+    if (b.fromDate < addDays(todayIST(), -30)) {
+      throw badRequest('leave_too_old', 'Leave that started more than 30 days ago must be recorded by HR');
+    }
     return this.db.tx(async (tx) => {
       const me = await this.employees.requireSelf(tx);
       const id = await this.insert(tx, me, b);
@@ -181,6 +184,7 @@ export class LeaveService {
     const ctx = currentContext()!;
     if (emp.status === 'exited') throw badRequest('employee_exited', `${emp.fullName} has left`);
     EmployeesService.assertEmployedOn(emp, b.fromDate);
+    EmployeesService.assertEmployedOn(emp, b.toDate);
     if (b.fromDate.slice(0, 4) !== b.toDate.slice(0, 4)) throw badRequest('leave_spans_years', 'Split leave that crosses the new year into two requests');
     const types = await this.types(tx);
     const type = types.find((t) => t.id === b.leaveTypeId && t.isActive);

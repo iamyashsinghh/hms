@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Loader2, Send } from 'lucide-react';
 import { notifications as n, type Patient } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { firstError, validate } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { fullName } from '@/lib/format';
 import { PageHeader } from '@/components/page-header';
@@ -29,6 +30,7 @@ export default function SendMessagePage() {
   const [message, setMessage] = React.useState('');
   const [vars, setVars] = React.useState<Record<string, string>>({});
   const [channels, setChannels] = React.useState<n.Channel[]>(['sms']);
+  const [formError, setFormError] = React.useState<string | null>(null);
 
   const patients = useQuery({
     queryKey: ['patients', { q: search.trim(), pageSize: 5 }],
@@ -52,7 +54,13 @@ export default function SendMessagePage() {
     const to = mode === 'patient' ? { patientId: patient?.id } : { mobile: mobile.trim() };
     const data: Record<string, string> = { ...vars };
     if (template === 'custom.message') data.message = message;
-    send.mutate({ to, template, data, channels: channels.filter((c) => availableChannels.includes(c)) });
+    if (mode === 'patient' && !patient) return setFormError('Pick a patient');
+    if (mode === 'mobile' && !mobile.trim()) return setFormError('Enter a 10-digit Indian mobile number');
+    if (template === 'custom.message' && !message.trim()) return setFormError('Type the message to send');
+    const body: n.SendRequest = { to, template, data, channels: channels.filter((c) => availableChannels.includes(c)) };
+    const v = validate(n.sendRequestSchema, body);
+    setFormError(firstError(v.errors));
+    if (v.data) send.mutate(body);
   };
 
   const toggle = (c: n.Channel) => setChannels((cur) => (cur.includes(c) ? cur.filter((x) => x !== c) : [...cur, c]));
@@ -65,7 +73,7 @@ export default function SendMessagePage() {
       <PageHeader title="Send message" description="Send an SMS, WhatsApp, email or push to a patient. Opted-out numbers are skipped automatically." />
 
       <form onSubmit={submit} className="space-y-6">
-        {send.error && <ErrorBox>{errorMessage(send.error)}</ErrorBox>}
+        {(formError || send.error) && <ErrorBox>{formError ?? errorMessage(send.error)}</ErrorBox>}
         {send.data && (
           <Card className="border-accent/40">
             <CardContent className="space-y-2 p-4 text-sm">
@@ -128,7 +136,7 @@ export default function SendMessagePage() {
             ) : (
               <div>
                 <Label htmlFor="mobile">Mobile number</Label>
-                <Input id="mobile" className="mt-2 max-w-xs" type="tel" inputMode="numeric" placeholder="10-digit mobile" value={mobile} onChange={(e) => setMobile(e.target.value)} />
+                <Input id="mobile" className="mt-2 max-w-xs" type="tel" inputMode="numeric" placeholder="10-digit mobile" maxLength={14} value={mobile} onChange={(e) => setMobile(e.target.value)} />
               </div>
             )}
           </CardContent>
@@ -161,7 +169,7 @@ export default function SendMessagePage() {
                 {extraVars.map((v) => (
                   <div key={v}>
                     <Label htmlFor={`var-${v}`}>{v}</Label>
-                    <Input id={`var-${v}`} className="mt-2" value={vars[v] ?? ''} onChange={(e) => setVars({ ...vars, [v]: e.target.value })} />
+                    <Input id={`var-${v}`} className="mt-2" value={vars[v] ?? ''} maxLength={1000} onChange={(e) => setVars({ ...vars, [v]: e.target.value })} />
                   </div>
                 ))}
               </div>

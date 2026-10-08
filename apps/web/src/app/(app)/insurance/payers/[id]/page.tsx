@@ -5,8 +5,9 @@ import Link from 'next/link';
 import { use } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Loader2, Plus } from 'lucide-react';
-import { type billing as B, insurance as I } from '@hms/shared';
+import { billing as B, insurance as I } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { firstError, validate } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
 import { NoAccess } from '@/components/no-access';
@@ -256,30 +257,38 @@ function PriceListEditor({ payer, list, onDone }: { payer: I.Payer; list: B.Pric
   const [from, setFrom] = React.useState(list?.effectiveFrom ?? todayIST());
   const [to, setTo] = React.useState(list?.effectiveTo ?? '');
   const [prices, setPrices] = React.useState<Record<string, string>>(() => Object.fromEntries((list?.items ?? []).map((i) => [i.serviceId, String(i.price)])));
+  const [formError, setFormError] = React.useState<string | null>(null);
   const save = useMutation({
-    mutationFn: () => {
-      const body: B.PriceListInput = {
-        name,
-        payerId: payer.id,
-        effectiveFrom: from,
-        effectiveTo: to || null,
-        // Keep an inactive tariff inactive on edit (the API defaults isActive to true).
-        isActive: list?.isActive ?? true,
-        items: Object.entries(prices)
-          .filter(([, p]) => p.trim() !== '')
-          .map(([serviceId, p]) => ({ serviceId, price: Number(p) })),
-      };
-      return list ? api.billing.priceLists.update(list.id, body) : api.billing.priceLists.create(body);
-    },
+    mutationFn: (body: B.PriceListInput) => (list ? api.billing.priceLists.update(list.id, body) : api.billing.priceLists.create(body)),
     onSuccess: onDone,
   });
+  const submit = () => {
+    const r = validate(B.priceListInputSchema, {
+      name,
+      payerId: payer.id,
+      effectiveFrom: from,
+      effectiveTo: to || null,
+      // Keep an inactive tariff inactive on edit (the API defaults isActive to true).
+      isActive: list?.isActive ?? true,
+      items: Object.entries(prices)
+        .filter(([, p]) => p.trim() !== '')
+        .map(([serviceId, p]) => ({ serviceId, price: p })),
+    });
+    const msg = firstError(r.errors);
+    const key = r.errors && Object.keys(r.errors)[0];
+    const n = key ? /^items\.(\d+)\./.exec(key)?.[1] : undefined;
+    const svcId = n !== undefined ? Object.entries(prices).filter(([, p]) => p.trim() !== '')[Number(n)]?.[0] : undefined;
+    const svc = svcId ? services.data?.items.find((x) => x.id === svcId) : undefined;
+    setFormError(msg ? (svc ? `${svc.code}: ${msg}` : msg) : null);
+    if (r.data) save.mutate(r.data);
+  };
 
   return (
     <div className="space-y-3 rounded-md border p-4">
       <div className="flex flex-wrap gap-2">
-        <Input className="min-w-60 flex-1" value={name} onChange={(e) => setName(e.target.value)} aria-label="Price list name" />
+        <Input className="min-w-60 flex-1" maxLength={200} value={name} onChange={(e) => setName(e.target.value)} aria-label="Price list name" />
         <Input className="w-40" type="date" value={from} onChange={(e) => setFrom(e.target.value)} aria-label="Effective from" />
-        <Input className="w-40" type="date" value={to} onChange={(e) => setTo(e.target.value)} aria-label="Effective to" />
+        <Input className="w-40" type="date" min={from || undefined} value={to} onChange={(e) => setTo(e.target.value)} aria-label="Effective to" />
       </div>
       <div className="max-h-96 overflow-auto rounded border">
         <Table>
@@ -313,12 +322,12 @@ function PriceListEditor({ payer, list, onDone }: { payer: I.Payer; list: B.Pric
           </TableBody>
         </Table>
       </div>
-      <ErrorBox error={save.error ? errorMessage(save.error) : null} />
+      <ErrorBox error={formError ?? (save.error ? errorMessage(save.error) : null)} />
       <div className="flex justify-end gap-2">
         <Button variant="ghost" onClick={onDone}>
           Cancel
         </Button>
-        <Button disabled={save.isPending} onClick={() => save.mutate()}>
+        <Button disabled={save.isPending} onClick={submit}>
           {save.isPending && <Loader2 className="animate-spin" />}
           Save price list
         </Button>

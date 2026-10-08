@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Plus, Trash2 } from 'lucide-react';
 import { billing as B, type Patient } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { firstError, validate } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -114,6 +115,14 @@ export function BillForm({ invoice, presetPatient }: { invoice?: B.Invoice; pres
     if (used.some((r) => (r.price !== '' && (!isNum(r.price) || Number(r.price) < 0)) || (r.discount !== '' && (!isNum(r.discount) || Number(r.discount) < 0))))
       return setFormError('Price and discount must be zero or more.');
     const lines = toLines();
+    for (const [i, line] of lines.entries()) {
+      const r = validate(B.invoiceLineInputSchema, line);
+      if (r.errors) return setFormError(`Line ${i + 1}: ${firstError(r.errors)}`);
+      // Price from the master when left blank: the discount still cannot be more than the line.
+      const svc = line.serviceCode ? byCode.get(line.serviceCode) : undefined;
+      const price = line.unitPrice ?? svc?.basePrice;
+      if (price !== undefined && Number(line.discount ?? 0) > Number(line.qty) * Number(price)) return setFormError(`Line ${i + 1}: Discount is more than the line amount`);
+    }
     const parsed = B.updateInvoiceSchema.safeParse({ lines, notes: notes.trim(), supplyType });
     if (!parsed.success) return setFormError(parsed.error.issues[0]?.message ?? 'Check the bill lines.');
     save.mutate(finalize);
@@ -181,7 +190,7 @@ export function BillForm({ invoice, presetPatient }: { invoice?: B.Invoice; pres
                   maxLength={300}
                   onChange={(e) => update(r.key, { description: e.target.value })}
                 />
-                <Input className="sm:col-span-1" type="number" min={0} step="any" aria-label="Quantity" value={r.qty} onChange={(e) => update(r.key, { qty: e.target.value })} />
+                <Input className="sm:col-span-1" type="number" min={0.01} max={100000} step="any" aria-label="Quantity" value={r.qty} onChange={(e) => update(r.key, { qty: e.target.value })} />
                 <Input
                   className="sm:col-span-2"
                   type="number"

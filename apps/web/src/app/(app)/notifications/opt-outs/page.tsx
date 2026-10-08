@@ -5,6 +5,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { Loader2, Plus, Search, Trash2 } from 'lucide-react';
 import { notifications as n } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { firstError, validate } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
 import { PageHeader } from '@/components/page-header';
@@ -22,6 +23,7 @@ export default function OptOutsPage() {
   const [channel, setChannel] = React.useState<n.CreateOptOut['channel']>('all');
   const [address, setAddress] = React.useState('');
   const [reason, setReason] = React.useState('');
+  const [formError, setFormError] = React.useState<string | null>(null);
 
   const list = useQuery({
     queryKey: ['notifications', 'opt-outs', q],
@@ -54,7 +56,9 @@ export default function OptOutsPage() {
             className="flex flex-wrap items-end gap-3"
             onSubmit={(e) => {
               e.preventDefault();
-              add.mutate();
+              const v = validate(n.createOptOutSchema, { channel, address, reason: reason || undefined });
+              setFormError(firstError(v.errors));
+              if (v.data) add.mutate();
             }}
           >
             <Select aria-label="Channel" className="w-40" value={channel} onChange={(e) => setChannel(e.target.value as n.CreateOptOut['channel'])}>
@@ -64,15 +68,18 @@ export default function OptOutsPage() {
                 </option>
               ))}
             </Select>
-            <Input aria-label="Mobile or email" className="w-60" placeholder="Mobile or email" value={address} onChange={(e) => setAddress(e.target.value)} />
-            <Input aria-label="Reason" className="w-60" placeholder="Reason (optional)" value={reason} onChange={(e) => setReason(e.target.value)} />
+            <Input aria-label="Mobile or email" className="w-60" placeholder="Mobile or email" value={address} maxLength={254} onChange={(e) => {
+                setAddress(e.target.value);
+                setFormError(null);
+              }} />
+            <Input aria-label="Reason" className="w-60" placeholder="Reason (optional)" maxLength={200} value={reason} onChange={(e) => setReason(e.target.value)} />
             <Button type="submit" disabled={add.isPending || address.trim().length < 3}>
               {add.isPending ? <Loader2 className="animate-spin" /> : <Plus />} Add
             </Button>
           </form>
-          {add.error && (
+          {(formError || add.error) && (
             <div className="mt-3">
-              <ErrorBox>{errorMessage(add.error)}</ErrorBox>
+              <ErrorBox>{formError ?? errorMessage(add.error)}</ErrorBox>
             </div>
           )}
         </CardContent>

@@ -28,6 +28,7 @@ import {
   VEHICLE_TYPE_LABELS,
   formatDateTime,
   formatINR,
+  checked,
   num,
   opt,
   firstIssue,
@@ -146,7 +147,7 @@ function BookTripForm({ vehicles, onDone }: { vehicles: O.Vehicle[]; onDone: () 
   const [f, setF] = React.useState({ kind: 'emergency_pickup' as O.TripKind, contactName: '', contactMobile: '', pickupAddress: '', dropAddress: '', notes: '', vehicleId: '' });
   const book = useMutation({
     mutationFn: () =>
-      api.ops.ambulance.createTrip({
+      api.ops.ambulance.createTrip(checked(O.createTripSchema, {
         kind: f.kind,
         patientId: patient?.id,
         contactName: f.contactName.trim(),
@@ -155,7 +156,7 @@ function BookTripForm({ vehicles, onDone }: { vehicles: O.Vehicle[]; onDone: () 
         dropAddress: opt(f.dropAddress),
         notes: opt(f.notes),
         vehicleId: f.vehicleId || undefined,
-      }),
+      })),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['ops'] });
       onDone();
@@ -264,7 +265,7 @@ function TripActionForm({ trip, kind, vehicles, onDone }: { trip: O.Trip; kind: 
           : kind === 'complete'
             ? { action: 'complete', odometerEnd: num(odoEnd), distanceKm: num(distance), bill: !!trip.patientId && bill, charge: num(charge) }
             : { action: 'cancel', reason: reason.trim() };
-      return api.ops.ambulance.tripAction(trip.id, body);
+      return api.ops.ambulance.tripAction(trip.id, checked(O.tripActionSchema, body));
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['ops'] });

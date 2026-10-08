@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { config } from 'dotenv';
@@ -385,6 +386,66 @@ describe('cross-hospital isolation', () => {
     expect(otherStock.find((s: { name: string }) => s.name === `Bedsheet ${tag}`)).toBeUndefined();
     const otherHk = (await otherCall('GET', '/ops/housekeeping/tasks')).json();
     expect(otherHk.items.find((t: { location: string }) => t.location === `Room ${tag}`)).toBeUndefined();
+  });
+});
+
+describe('validation', () => {
+  const msg = (res: { json: () => { error: { message: string } } }) => res.json().error.message;
+
+  it('checks equipment and work order dates', async () => {
+    const base = { name: `Val pump ${tag}` };
+    expect(msg(await call(admin, 'POST', '/ops/assets', { ...base, purchaseDate: plusDays(1) }))).toContain('Purchase date cannot be in the future');
+    expect(msg(await call(admin, 'POST', '/ops/assets', { ...base, purchaseDate: plusDays(-10), warrantyUntil: plusDays(-20) }))).toContain(
+      'Warranty end date is before the purchase date',
+    );
+    expect(msg(await call(admin, 'POST', '/ops/assets', { ...base, purchaseDate: '2026-02-30' }))).toContain('valid date');
+    expect(msg(await call(admin, 'POST', '/ops/assets', { ...base, purchaseCost: -1 }))).toContain('cannot be negative');
+    expect(msg(await call(admin, 'POST', '/ops/assets', { name: '  ' }))).toContain('Enter the equipment name');
+    const a = await call(admin, 'POST', '/ops/assets', { ...base, purchaseDate: plusDays(-10), warrantyUntil: plusDays(365), purchaseCost: '', departmentId: '' });
+    expect(a.statusCode, a.body).toBe(201);
+    // An edit is checked against the saved purchase date.
+    expect(msg(await call(admin, 'PATCH', `/ops/assets/${a.json().id}`, { amcUntil: plusDays(-30) }))).toContain('AMC end date is before the purchase date');
+
+    const wo = await call(admin, 'POST', '/ops/work-orders', { assetId: a.json().id, type: 'calibration', problem: 'Annual calibration' });
+    expect(wo.statusCode, wo.body).toBe(201);
+    const past = await call(admin, 'PATCH', `/ops/work-orders/${wo.json().id}`, { status: 'completed', resolution: 'Done', nextCalibrationDue: plusDays(-1) });
+    expect(msg(past)).toContain('Next calibration due date cannot be in the past');
+  });
+
+  it('checks ambulance, diet, linen, CSSD and housekeeping forms', async () => {
+    expect(msg(await call(reception, 'POST', '/ops/ambulance/vehicles', { registrationNo: 'MH12AB1234', driverMobile: '12345' }))).toContain('10-digit');
+    expect(msg(await call(reception, 'POST', '/ops/ambulance/vehicles', { registrationNo: 'MH12@AB' }))).toContain('letters, digits, spaces and -');
+    const reg = `DL01${tag.slice(-6)}`;
+    const v = await call(reception, 'POST', '/ops/ambulance/vehicles', { registrationNo: reg, driverMobile: '+91 98100 00002', ratePerKm: '', baseCharge: '' });
+    expect(v.statusCode, v.body).toBe(201);
+    expect(v.json().driverMobile).toBe('9810000002');
+    expect(msg(await call(reception, 'POST', '/ops/ambulance/trips', { contactName: 'X', contactMobile: '98100', pickupAddress: 'Y' }))).toContain('10-digit');
+    expect(msg(await call(reception, 'POST', '/ops/ambulance/trips', { contactName: ' ', contactMobile: '9810000002', pickupAddress: 'Y' }))).toContain('Enter the contact name');
+    const trip = (await call(reception, 'POST', '/ops/ambulance/trips', { contactName: 'Val', contactMobile: '9810000002', pickupAddress: 'Y' })).json();
+    expect(msg(await call(reception, 'POST', `/ops/ambulance/trips/${trip.id}/actions`, { action: 'dispatch', vehicleId: v.json().id, odometerStart: -5 }))).toContain(
+      'Start reading cannot be negative',
+    );
+    expect((await call(reception, 'POST', `/ops/ambulance/trips/${trip.id}/actions`, { action: 'dispatch', vehicleId: v.json().id, odometerStart: 1000 })).statusCode).toBe(200);
+    const bad = await call(reception, 'POST', `/ops/ambulance/trips/${trip.id}/actions`, { action: 'complete', odometerEnd: 900 });
+    expect(msg(bad)).toContain('End reading must be at least the start reading');
+    expect((await call(reception, 'POST', `/ops/ambulance/trips/${trip.id}/actions`, { action: 'cancel', reason: '' })).statusCode).toBe(400);
+    expect((await call(reception, 'POST', `/ops/ambulance/trips/${trip.id}/actions`, { action: 'cancel', reason: 'Test' })).statusCode).toBe(200);
+
+    const diet = { patientId, location: 'Ward 9 / Bed 1', dietType: 'soft' };
+    expect(msg(await call(nurse, 'POST', '/ops/diet/orders', { ...diet, startDate: plusDays(3), endDate: plusDays(1) }))).toContain('End date is before the start date');
+    expect(msg(await call(nurse, 'POST', '/ops/diet/orders', { ...diet, endDate: plusDays(-1) }))).toContain('End date is before the start date');
+    expect(msg(await call(nurse, 'POST', '/ops/diet/orders', { ...diet, startDate: plusDays(-2) }))).toContain('Start date cannot be in the past');
+    expect(msg(await call(admin, 'POST', '/ops/diet/meals', { orderId: randomUUID(), meal: 'lunch', status: 'prepared', date: plusDays(1) }))).toContain(
+      'Meal date cannot be in the future',
+    );
+
+    expect(msg(await call(nurse, 'POST', '/ops/linen/txns', { itemId: randomUUID(), kind: 'stock_in', qty: 0 }))).toContain('Enter at least 1 piece');
+    expect(msg(await call(admin, 'POST', '/ops/cssd/sets', { name: `Val set ${tag}`, shelfLifeDays: 0 }))).toContain('Shelf life must be at least 1 day');
+    expect(msg(await call(admin, 'POST', '/ops/cssd/cycles', { sterilizer: 'Autoclave 1', setIds: [] }))).toContain('Pick at least one set');
+
+    const hk = { location: `Val ${tag}` };
+    expect(msg(await call(reception, 'POST', '/ops/housekeeping/tasks', { ...hk, dueAt: new Date(Date.now() - 3_600_000).toISOString() }))).toContain('Due time cannot be in the past');
+    expect((await call(reception, 'POST', '/ops/housekeeping/tasks', { ...hk, dueAt: new Date(Date.now() + 3_600_000).toISOString() })).statusCode).toBe(201);
   });
 });
 

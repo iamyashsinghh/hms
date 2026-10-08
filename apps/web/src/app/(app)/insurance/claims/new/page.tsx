@@ -5,8 +5,9 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Loader2 } from 'lucide-react';
-import type { insurance as I } from '@hms/shared';
+import { insurance as I, todayIso } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
 import { PageHeader } from '@/components/page-header';
@@ -50,25 +51,42 @@ function NewClaimPage() {
   const open = (bills.data?.items ?? []).filter((b) => b.balance > 0);
   const usable = (preauths.data?.items ?? []).filter((p) => p.policyId === policy?.id);
 
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const create = useMutation({
-    mutationFn: () =>
-      api.insurance.claims.create({
-        policyId: policy!.id,
-        preauthId: preauthId || null,
-        claimType,
-        invoices: Object.entries(picked)
-          .filter(([, x]) => x.on)
-          .map(([invoiceId, x]) => ({ invoiceId, payerAmount: x.share.trim() === '' ? undefined : Number(x.share) })),
-        admissionDate: v.admissionDate || null,
-        dischargeDate: v.dischargeDate || null,
-        diagnosis: opt(v.diagnosis) ?? null,
-        notes: opt(v.notes) ?? null,
-      }),
+    mutationFn: (body: I.ClaimInput) => api.insurance.claims.create(body),
     onSuccess: (c) => {
       queryClient.invalidateQueries({ queryKey: ['insurance', 'claims'] });
       router.push(`/insurance/claims/${c.id}`);
     },
   });
+
+  const submit = () => {
+    if (!policy) return;
+    const chosen = Object.entries(picked).filter(([, x]) => x.on);
+    const body: I.ClaimInput = {
+      policyId: policy.id,
+      preauthId: preauthId || null,
+      claimType,
+      invoices: chosen.map(([invoiceId, x]) => ({ invoiceId, payerAmount: x.share.trim() === '' ? undefined : Number(x.share) })),
+      admissionDate: v.admissionDate || null,
+      dischargeDate: v.dischargeDate || null,
+      diagnosis: opt(v.diagnosis) ?? null,
+      notes: opt(v.notes) ?? null,
+    };
+    const r = validate(I.claimInputSchema, body);
+    const errs: FieldErrors = { ...(r.errors ?? {}) };
+    // A payer share cannot be more than what is unpaid on that bill.
+    for (const [invoiceId, x] of chosen) {
+      const bill = open.find((b) => b.id === invoiceId);
+      if (bill && x.share.trim() !== '' && Number(x.share) > bill.balance) errs[`share.${invoiceId}`] = `More than the unpaid ${formatINR(bill.balance)}`;
+    }
+    for (const [k, m] of Object.entries(errs)) {
+      const n = /^invoices\.(\d+)\./.exec(k)?.[1];
+      if (n !== undefined && chosen[Number(n)]) errs[`share.${chosen[Number(n)]![0]}`] = m;
+    }
+    setErrors(errs);
+    if (r.data && !Object.keys(errs).length) create.mutate(body);
+  };
 
   if (!canManage) return <NoAccess />;
   const count = Object.values(picked).filter((x) => x.on).length;
@@ -86,7 +104,7 @@ function NewClaimPage() {
         className="space-y-6"
         onSubmit={(e) => {
           e.preventDefault();
-          if (policy && count) create.mutate();
+          if (policy && count) submit();
         }}
       >
         <Card>
@@ -117,17 +135,17 @@ function NewClaimPage() {
                     <option value="credit">Corporate / scheme credit</option>
                   </Select>
                 </Field>
-                <Field id="adm" label="Admission date">
-                  <Input id="adm" type="date" value={v.admissionDate} onChange={(e) => setV({ ...v, admissionDate: e.target.value })} />
+                <Field id="adm" label="Admission date" error={errors.admissionDate}>
+                  <Input id="adm" type="date" max={todayIso()} value={v.admissionDate} onChange={(e) => setV({ ...v, admissionDate: e.target.value })} />
                 </Field>
-                <Field id="dis" label="Discharge date">
-                  <Input id="dis" type="date" value={v.dischargeDate} onChange={(e) => setV({ ...v, dischargeDate: e.target.value })} />
+                <Field id="dis" label="Discharge date" error={errors.dischargeDate}>
+                  <Input id="dis" type="date" min={v.admissionDate || undefined} max={todayIso()} value={v.dischargeDate} onChange={(e) => setV({ ...v, dischargeDate: e.target.value })} />
                 </Field>
                 <Field id="dx" label="Final diagnosis" className="sm:col-span-2">
-                  <Input id="dx" value={v.diagnosis} onChange={(e) => setV({ ...v, diagnosis: e.target.value })} placeholder="Defaults to the pre-auth diagnosis" />
+                  <Input id="dx" maxLength={1000} value={v.diagnosis} onChange={(e) => setV({ ...v, diagnosis: e.target.value })} placeholder="Defaults to the pre-auth diagnosis" />
                 </Field>
                 <Field id="notes" label="Notes" className="sm:col-span-2">
-                  <Input id="notes" value={v.notes} onChange={(e) => setV({ ...v, notes: e.target.value })} />
+                  <Input id="notes" maxLength={1000} value={v.notes} onChange={(e) => setV({ ...v, notes: e.target.value })} />
                 </Field>
               </div>
             )}
@@ -181,6 +199,7 @@ function NewClaimPage() {
                             value={row.share}
                             onChange={(e) => setPicked((p) => ({ ...p, [b.id]: { ...row, share: e.target.value } }))}
                           />
+                          {errors[`share.${b.id}`] && <p className="mt-1 text-right text-xs text-destructive">{errors[`share.${b.id}`]}</p>}
                         </TableCell>
                       </TableRow>
                     );

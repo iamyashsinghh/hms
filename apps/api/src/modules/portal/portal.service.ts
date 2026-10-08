@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
 import { iso, sql, type Tx } from '@hms/db';
-import type { Paginated, portal } from '@hms/shared';
+import { portal, type Paginated } from '@hms/shared';
 import { DbService } from '../../common/db/db.service';
 import { currentContext } from '../../common/context/request-context';
 import { OutboxService } from '../../common/events/outbox.service';
@@ -19,7 +19,7 @@ import {
   type ReportRow,
 } from './portal.repository';
 
-const MAX_DAYS_AHEAD = 60;
+const MAX_DAYS_AHEAD = portal.PORTAL_MAX_BOOKING_DAYS;
 const LIVE = ['requested', 'booked', 'confirmed'];
 
 @Injectable()
@@ -221,6 +221,8 @@ export class PortalService {
       if (input.appointmentRequestId) {
         const appt = await this.repo.findAppointment(tx, input.appointmentRequestId);
         if (!appt || appt.patientId !== input.patientId) throw notFound('Appointment');
+        if (['cancelled', 'rejected'].includes(appt.status)) throw conflict('appointment_not_held', 'This appointment was cancelled, so it cannot be rated');
+        if (new Date(appt.slotStart).getTime() > Date.now()) throw badRequest('visit_not_done', 'You can give feedback after your visit');
       }
       const row = await this.repo.insertFeedback(tx, {
         tenantId: p.tenantId,

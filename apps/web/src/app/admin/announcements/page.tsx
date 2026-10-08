@@ -20,7 +20,12 @@ const toLocalInput = (iso: string | null | undefined) => {
   const d = new Date(iso);
   return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
 };
-const fromLocalInput = (v: string) => (v ? new Date(v).toISOString() : null);
+/** datetime-local value to ISO; text the browser could not parse stays as is so validation reports it. */
+const fromLocalInput = (v: string) => {
+  if (!v) return null;
+  const t = new Date(v);
+  return Number.isNaN(t.getTime()) ? v : t.toISOString();
+};
 
 const LABELS: Record<string, string> = { title: 'Title', body: 'Message', startsAt: 'Starts', endsAt: 'Ends', planCodes: 'Plans' };
 

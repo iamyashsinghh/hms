@@ -157,7 +157,18 @@ export function ActionForm({
 }: {
   label: string;
   variant?: 'default' | 'outline' | 'destructive' | 'secondary';
-  fields: { name: string; label: string; type?: 'text' | 'number' | 'date'; required?: boolean; defaultValue?: string }[];
+  fields: {
+    name: string;
+    label: string;
+    type?: 'text' | 'number' | 'date';
+    required?: boolean;
+    defaultValue?: string;
+    /** Browser-checked limits (e.g. a reason of at least 3 characters, an amount above 0, a date not in the past). */
+    minLength?: number;
+    maxLength?: number;
+    min?: string | number;
+    max?: string | number;
+  }[];
   submitLabel?: string;
   onSubmit: (values: Record<string, string>) => void;
   pending?: boolean;
@@ -193,6 +204,10 @@ export function ActionForm({
             type={f.type ?? 'text'}
             step={f.type === 'number' ? '0.01' : undefined}
             required={f.required}
+            minLength={f.minLength}
+            maxLength={f.maxLength ?? (f.type === 'number' || f.type === 'date' ? undefined : 1000)}
+            min={f.min ?? (f.type === 'number' ? 0 : undefined)}
+            max={f.max}
             value={values[f.name] ?? ''}
             onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
           />

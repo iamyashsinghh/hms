@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { use } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, FileStack, Pencil } from 'lucide-react';
-import type { insurance as I } from '@hms/shared';
+import { todayIso, type insurance as I } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { Can, usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
@@ -77,17 +77,17 @@ export default function PreauthPage({ params }: { params: Promise<{ id: string }
                 label="Record approval"
                 variant="default"
                 fields={[
-                  { name: 'approvedAmount', label: 'Approved ₹', type: 'number', required: true, defaultValue: String(pa.requestedAmount) },
+                  { name: 'approvedAmount', label: 'Approved ₹', type: 'number', required: true, min: 0.01, max: pa.requestedAmount, defaultValue: String(pa.requestedAmount) },
                   { name: 'payerRef', label: 'Authorisation no.' },
-                  { name: 'validUntil', label: 'Valid until', type: 'date' },
+                  { name: 'validUntil', label: 'Valid until', type: 'date', min: todayIso() },
                 ]}
                 pending={act.isPending}
                 onSubmit={(f) => run(() => pre.approve(id, { approvedAmount: Number(f.approvedAmount), payerRef: opt(f.payerRef!), validUntil: opt(f.validUntil!) }))}
               />
               {pa.status === 'submitted' && (
-                <ActionForm label="Payer query" fields={[{ name: 'note', label: 'What the payer asked', required: true }]} pending={act.isPending} onSubmit={(f) => run(() => pre.query(id, { note: f.note! }))} />
+                <ActionForm label="Payer query" fields={[{ name: 'note', label: 'What the payer asked', required: true, minLength: 3 }]} pending={act.isPending} onSubmit={(f) => run(() => pre.query(id, { note: f.note! }))} />
               )}
-              <ActionForm label="Rejected" variant="destructive" fields={[{ name: 'note', label: 'Reason', required: true }]} pending={act.isPending} onSubmit={(f) => run(() => pre.reject(id, { note: f.note! }))} />
+              <ActionForm label="Rejected" variant="destructive" fields={[{ name: 'note', label: 'Reason', required: true, minLength: 3 }]} pending={act.isPending} onSubmit={(f) => run(() => pre.reject(id, { note: f.note! }))} />
             </>
           )}
           {pa.status === 'approved' && (
@@ -100,8 +100,8 @@ export default function PreauthPage({ params }: { params: Promise<{ id: string }
               <ActionForm
                 label="Ask for enhancement"
                 fields={[
-                  { name: 'requestedAmount', label: 'New total ₹', type: 'number', required: true },
-                  { name: 'note', label: 'Why (e.g. longer stay)', required: true },
+                  { name: 'requestedAmount', label: 'New total ₹', type: 'number', required: true, min: (pa.approvedAmount ?? 0) + 0.01 },
+                  { name: 'note', label: 'Why (e.g. longer stay)', required: true, minLength: 3 },
                 ]}
                 pending={act.isPending}
                 onSubmit={(f) => run(() => pre.enhance(id, { requestedAmount: Number(f.requestedAmount), note: f.note! }))}
@@ -109,7 +109,7 @@ export default function PreauthPage({ params }: { params: Promise<{ id: string }
             </>
           )}
           {pa.status !== 'rejected' && pa.status !== 'cancelled' && (
-            <ActionForm label="Cancel" variant="destructive" fields={[{ name: 'note', label: 'Reason', required: true }]} pending={act.isPending} onSubmit={(f) => run(() => pre.cancel(id, { note: f.note! }))} />
+            <ActionForm label="Cancel" variant="destructive" fields={[{ name: 'note', label: 'Reason', required: true, minLength: 3 }]} pending={act.isPending} onSubmit={(f) => run(() => pre.cancel(id, { note: f.note! }))} />
           )}
         </div>
       </Can>

@@ -64,6 +64,9 @@ export class IndicatorsService {
     if (!ctx.facilityId) throw badRequest('facility_required', 'Pick a facility first');
     if (input.period > currentPeriod()) throw badRequest('future_period', 'Cannot enter values for a future month');
     if (def.denominator && input.denominator === undefined) throw badRequest('denominator_required', `Enter ${def.denominator.toLowerCase()}`);
+    if (def.unit === 'percent' && input.denominator !== undefined && input.numerator > input.denominator) {
+      throw badRequest('numerator_too_high', `${def.numerator} cannot be more than ${def.denominator?.toLowerCase() ?? 'the denominator'}`);
+    }
     const values = {
       numerator: input.numerator.toFixed(2),
       denominator: input.denominator === undefined ? null : input.denominator.toFixed(2),

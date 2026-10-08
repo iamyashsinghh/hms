@@ -325,7 +325,7 @@ describe('roles', () => {
     const nurse = before.find((r) => r.id === nurseId)!;
     const dropped = nurse.permissions[0]!;
     const kept = nurse.permissions.filter((p) => p !== dropped);
-    const res = await call(admin, 'PATCH', `/setup/roles/${nurseId}`, { permissions: [...kept, 'setup.department.read'] });
+    const res = await call(admin, 'PATCH', `/setup/roles/${nurseId}`, { permissions: [...new Set([...kept, 'setup.department.read'])] });
     expect(res.status).toBe(200);
     expect((res.body as { permissions: string[] }).permissions).toEqual(expect.arrayContaining(['setup.department.read']));
     expect((res.body as { permissions: string[] }).permissions).not.toContain(dropped);
@@ -458,5 +458,100 @@ describe('cross-hospital isolation', () => {
     const cityProfile = (await call(cityAdmin, 'GET', '/setup/profile')).body as { gstin: string | null; displayName: string };
     expect(cityProfile.gstin).toBeNull();
     expect(cityProfile.displayName).toBe('City Care Clinic');
+  });
+});
+
+describe('setup validation messages', () => {
+  const expect400 = async (res: { status: number; body: unknown }, message: string) => {
+    expect(res.status).toBe(400);
+    expect((res.body as { error: { message: string } }).error.message).toContain(message);
+  };
+  const isoDaysFromNow = (days: number) => new Date(Date.now() + days * 86_400_000 + 330 * 60_000).toISOString().slice(0, 10);
+
+  it('explains each bad hospital profile and facility field', async () => {
+    const res = await call(admin, 'PUT', '/setup/profile', {
+      legalName: 'Setup Test Hospital Pvt Ltd',
+      displayName: 'Setup Test Hospital',
+      gstin: '12345',
+      pan: 'ABC',
+      website: 'abc',
+      email: 'x@',
+      address: { pincode: '4110' },
+    });
+    expect(res.status).toBe(400);
+    const issues = (res.body as { error: { details: { path: string[]; message: string }[] } }).error.details;
+    const byField = Object.fromEntries(issues.map((i) => [i.path.join('.'), i.message]));
+    expect(byField).toMatchObject({
+      gstin: 'Enter a valid 15-character GSTIN',
+      pan: 'Enter a valid PAN (5 letters, 4 digits, 1 letter)',
+      website: 'Website must be a full web address starting with https://',
+      email: 'Enter a valid email address',
+      'address.pincode': 'Enter a 6-digit PIN code',
+    });
+    await expect400(await call(admin, 'PUT', '/setup/profile', { legalName: 'A', displayName: 'Setup Test' }), 'The legal name needs at least 2 characters');
+    await expect400(await call(admin, 'POST', '/setup/facilities', { code: `PH${run}`, name: 'Phone Test', phone: 'call me' }), 'Enter a valid phone number');
+    await expect400(await call(admin, 'POST', '/setup/facilities', { code: '', name: 'No code' }), 'Enter a code');
+    // Blank optional fields are treated as not given.
+    const ok = await call(admin, 'POST', '/setup/facilities', { code: `BL${run}`, name: 'Blank Fields', phone: '', gstin: '', address: { pincode: '' } });
+    expect(ok.status).toBe(201);
+  });
+
+  it('explains bad user details and passwords', async () => {
+    const nurse = [{ roleId: await roleId(admin, 'nurse') }];
+    await expect400(await call(admin, 'POST', '/setup/users', { name: 'No Contact', email: '', mobile: '', roles: nurse }), 'Enter an email or a mobile number');
+    await expect400(await call(admin, 'POST', '/setup/users', { name: '@@', email: `n1.${run}@x.test`, roles: nurse }), 'Name can only have letters');
+    await expect400(await call(admin, 'POST', '/setup/users', { name: 'Bad Mobile', mobile: '12345', roles: nurse }), 'Enter a 10-digit Indian mobile number');
+    await expect400(await call(admin, 'POST', '/setup/users', { name: 'Short Pass', email: `n2.${run}@x.test`, password: 'abc1', roles: nurse }), 'Password needs at least 8 characters');
+    await expect400(await call(admin, 'POST', '/setup/users', { name: 'No Digit', email: `n3.${run}@x.test`, password: 'abcdefgh', roles: nurse }), 'Password must include a digit');
+    await expect400(await call(admin, 'POST', '/setup/users', { name: 'No Role', email: `n4.${run}@x.test`, roles: [] }), 'Give the user at least one role');
+  });
+
+  it('checks fees, joining date, employee code, timings and leaves', async () => {
+    const doc = await call(admin, 'POST', '/setup/users', { name: `Dr. Valid ${run}`, email: `valid.${run.toLowerCase()}@${HOSPITAL}.test`, roles: [{ roleId: await roleId(admin, 'doctor') }] });
+    expect(doc.status).toBe(201);
+    const id = (doc.body as { id: string }).id;
+    const profile = (body: Record<string, unknown>) => call(admin, 'PUT', `/setup/staff/${id}/profile`, { staffType: 'doctor', ...body });
+    await expect400(await profile({ consultationFee: -10 }), 'Fee cannot be negative');
+    await expect400(await profile({ consultationFee: 12.345 }), 'Fee can have at most 2 decimal places');
+    await expect400(await profile({ consultationFee: 300, followUpFee: 500 }), 'Follow-up fee cannot be more than the consultation fee');
+    await expect400(await profile({ dateOfJoining: isoDaysFromNow(800) }), 'Date of joining can be at most a year from today');
+    await expect400(await profile({ followUpDays: 400 }), 'Follow-up days can be at most 365');
+    expect((await profile({ employeeCode: `EMP-${run}`, consultationFee: 500, followUpFee: 200, dateOfJoining: isoDaysFromNow(-30) })).status).toBe(200);
+
+    const other = await call(admin, 'POST', '/setup/users', { name: 'Code Clash', email: `clash.${run.toLowerCase()}@${HOSPITAL}.test`, roles: [{ roleId: await roleId(admin, 'nurse') }] });
+    const clash = await call(admin, 'PUT', `/setup/staff/${(other.body as { id: string }).id}/profile`, { staffType: 'nurse', employeeCode: `emp-${run}` });
+    expect(clash.status).toBe(409);
+    expect((clash.body as { error: { message: string } }).error.message).toContain('already given to another staff member');
+
+    const facilityId = ((await call(admin, 'GET', '/setup/facilities')).body as { id: string; code: string }[]).find((f) => f.code === 'MAIN')!.id;
+    await expect400(
+      await call(admin, 'PUT', `/setup/doctors/${id}/schedule`, { blocks: [{ facilityId, weekday: 1, startTime: '10:00', endTime: '10:10', slotMinutes: 15 }] }),
+      'The timing is shorter than one slot',
+    );
+    await expect400(
+      await call(admin, 'PUT', `/setup/doctors/${id}/schedule`, { blocks: [{ facilityId, weekday: 1, startTime: '25:00', endTime: '26:00' }] }),
+      'Use HH:MM (24 hour)',
+    );
+
+    const leave = (fromDate: string, toDate: string) => call(admin, 'POST', `/setup/doctors/${id}/leaves`, { fromDate, toDate });
+    await expect400(await leave(isoDaysFromNow(-10), isoDaysFromNow(-5)), 'Leave cannot end in the past');
+    await expect400(await leave(isoDaysFromNow(10), isoDaysFromNow(5)), 'To date must be on or after from date');
+    await expect400(await leave('2031-02-30', '2031-03-01'), 'Enter a valid date');
+    expect((await leave(isoDaysFromNow(20), isoDaysFromNow(22))).status).toBe(201);
+    const overlap = await leave(isoDaysFromNow(22), isoDaysFromNow(25));
+    expect(overlap.status).toBe(409);
+    expect((overlap.body as { error: { code: string } }).error.code).toBe('leave_overlap');
+  });
+
+  it('checks roles, number series and print templates', async () => {
+    await expect400(await call(admin, 'POST', '/setup/roles', { name: '', permissions: [] }), 'The role name needs at least 2 characters');
+    const twice = await call(admin, 'POST', '/setup/roles', { name: `Twice ${run}`, permissions: ['core.patient.read', 'core.patient.read'] });
+    expect(twice.status).toBe(201);
+    expect(twice.body.permissions).toEqual(['core.patient.read']);
+    const unknown = await call(admin, 'POST', '/setup/roles', { name: `Unknown ${run}`, permissions: ['setup.nothing.here'] });
+    await expect400(unknown, 'These permissions do not exist: setup.nothing.here');
+    await expect400(await call(admin, 'PUT', '/setup/number-series/uhid', { prefix: 'UH#1', width: 6 }), 'Letters, digits, / - _ only');
+    await expect400(await call(admin, 'PUT', '/setup/number-series/uhid', { prefix: 'UH', width: 13 }), 'Use at most 12 digits');
+    await expect400(await call(admin, 'PUT', '/setup/print-templates/invoice', { marginTopMm: -1 }), 'Margin cannot be negative');
   });
 });

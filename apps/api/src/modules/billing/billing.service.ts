@@ -305,7 +305,10 @@ export class BillingService {
         isActive: d.isActive,
         updatedBy: ctx.userId,
       };
-      const list = id ? await this.repo.updatePriceList(tx, id, values) : await this.repo.insertPriceList(tx, { ...values, createdBy: ctx.userId });
+      // An edit that does not send payerId keeps the list's payer, so a payer tariff never silently becomes a cash list (BIL-46).
+      const list = id
+        ? await this.repo.updatePriceList(tx, id, d.payerId === undefined ? { ...values, payerId: undefined } : values)
+        : await this.repo.insertPriceList(tx, { ...values, createdBy: ctx.userId });
       if (!list) throw notFound('Price list');
       await this.repo.replacePriceListItems(tx, list.id, d.items.map((i) => ({ serviceId: i.serviceId, price: rupees(paise(i.price)) })));
       return priceListDto(list, await this.repo.priceListItems(tx, [list.id]));

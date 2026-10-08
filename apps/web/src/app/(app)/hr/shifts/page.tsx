@@ -3,8 +3,9 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Plus } from 'lucide-react';
-import type { hr as H } from '@hms/shared';
+import { hr as H } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -33,6 +34,7 @@ export default function ShiftsPage() {
   const canManage = usePermission('hr.roster.manage');
   const queryClient = useQueryClient();
   const [form, setForm] = React.useState<Form | null>(null);
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const { data, isPending, error } = useQuery({ queryKey: ['hr', 'shifts'], queryFn: () => api.hr.shifts.list(), enabled: canRead });
   const save = useMutation({
     mutationFn: (f: Form) => {
@@ -77,31 +79,43 @@ export default function ShiftsPage() {
               className="grid gap-4 sm:grid-cols-4"
               onSubmit={(e) => {
                 e.preventDefault();
-                save.mutate(form);
+                const body = {
+                  code: form.id ? undefined : form.code,
+                  name: form.name,
+                  startTime: form.startTime,
+                  endTime: form.endTime,
+                  breakMinutes: form.breakMinutes,
+                  graceMinutes: form.graceMinutes,
+                  color: form.color || null,
+                  isActive: form.isActive,
+                };
+                const r = validate(form.id ? H.updateShiftSchema : H.shiftInputSchema, body);
+                setErrors(r.errors ?? {});
+                if (!r.errors) save.mutate(form);
               }}
             >
               <div className="sm:col-span-4">
                 <ErrorBox error={save.error ? errorMessage(save.error) : null} />
               </div>
-              <Field id="code" label="Code *">
+              <Field id="code" label="Code *" error={errors.code}>
                 <Input id="code" value={form.code} disabled={!!form.id} maxLength={10} onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase() })} required />
               </Field>
-              <Field id="name" label="Name *" className="sm:col-span-2">
-                <Input id="name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+              <Field id="name" label="Name *" className="sm:col-span-2" error={errors.name}>
+                <Input id="name" maxLength={60} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
               </Field>
               <Field id="color" label="Colour">
                 <Input id="color" type="color" value={form.color} onChange={(e) => setForm({ ...form, color: e.target.value })} />
               </Field>
-              <Field id="st" label="Starts">
+              <Field id="st" label="Starts" error={errors.startTime}>
                 <Input id="st" type="time" value={form.startTime} onChange={(e) => setForm({ ...form, startTime: e.target.value })} required />
               </Field>
-              <Field id="et" label="Ends">
+              <Field id="et" label="Ends" error={errors.endTime}>
                 <Input id="et" type="time" value={form.endTime} onChange={(e) => setForm({ ...form, endTime: e.target.value })} required />
               </Field>
-              <Field id="br" label="Break (minutes)">
+              <Field id="br" label="Break (minutes)" error={errors.breakMinutes}>
                 <Input id="br" type="number" min={0} max={240} value={form.breakMinutes} onChange={(e) => setForm({ ...form, breakMinutes: e.target.value })} />
               </Field>
-              <Field id="gr" label="Late after (grace minutes)">
+              <Field id="gr" label="Late after (grace minutes)" error={errors.graceMinutes}>
                 <Input id="gr" type="number" min={0} max={120} value={form.graceMinutes} onChange={(e) => setForm({ ...form, graceMinutes: e.target.value })} />
               </Field>
               <label className="flex items-center gap-2 text-sm">

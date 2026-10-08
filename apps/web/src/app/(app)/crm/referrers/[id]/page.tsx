@@ -7,6 +7,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Loader2, Pencil, Plus, UserPlus } from 'lucide-react';
 import { crm as C, type Patient } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { firstError, validate } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
 import { PageHeader } from '@/components/page-header';
@@ -16,7 +17,7 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ErrorBox, Field, PatientPicker, REFERRER_TYPE_LABELS, RULE_SCOPE_LABELS, Select, StatTile, firstIssue, formatINR, todayIST } from '@/modules/crm/ui';
+import { ErrorBox, Field, PatientPicker, REFERRER_TYPE_LABELS, RULE_SCOPE_LABELS, Select, StatTile, addDaysISO, firstIssue, formatINR, todayIST } from '@/modules/crm/ui';
 import { ReferrerForm } from '../referrer-form';
 
 export default function ReferrerPage({ params }: { params: Promise<{ id: string }> }) {
@@ -308,7 +309,7 @@ function RuleForm({ referrerId, initial, onSaved, onCancel }: { referrerId: stri
           </Select>
         </Field>
         <Field id="ru-rate" label={f.rateType === 'percent' ? 'Percent *' : 'Amount (₹) *'}>
-          <Input id="ru-rate" type="number" min={0} max={f.rateType === 'percent' ? 100 : undefined} step="0.01" value={f.rate} onChange={(e) => setF({ ...f, rate: e.target.value })} />
+          <Input id="ru-rate" type="number" min={0.01} max={f.rateType === 'percent' ? 100 : undefined} step="0.01" value={f.rate} onChange={(e) => setF({ ...f, rate: e.target.value })} />
         </Field>
         <Field id="ru-from" label="From *">
           <Input id="ru-from" type="date" value={f.effectiveFrom} onChange={(e) => setF({ ...f, effectiveFrom: e.target.value })} />
@@ -343,11 +344,10 @@ function AddReferral({ referrerId, onSaved }: { referrerId: string; onSaved: () 
   const [patient, setPatient] = React.useState<Patient | null>(null);
   const [referredOn, setReferredOn] = React.useState(todayIST());
   const [days, setDays] = React.useState(String(C.DEFAULT_REFERRAL_DAYS));
+  const [refError, setRefError] = React.useState<string | null>(null);
+  const referralBody = () => ({ patientId: patient?.id, referrerId, referredOn, validUntil: days ? addDaysISO(referredOn, Number(days)) : null });
   const m = useMutation({
-    mutationFn: () => {
-      const end = days ? new Date(new Date(`${referredOn}T00:00:00Z`).getTime() + Number(days) * 86_400_000).toISOString().slice(0, 10) : null;
-      return api.crm.referrals.create({ patientId: patient!.id, referrerId, referredOn, validUntil: end });
-    },
+    mutationFn: () => api.crm.referrals.create({ ...referralBody(), patientId: patient!.id }),
     onSuccess: () => {
       setOpen(false);
       setPatient(null);
@@ -362,21 +362,31 @@ function AddReferral({ referrerId, onSaved }: { referrerId: string; onSaved: () 
     );
   return (
     <div className="space-y-3 rounded-md border p-3">
-      <ErrorBox error={m.error ? errorMessage(m.error) : null} />
+      <ErrorBox error={refError ?? (m.error ? errorMessage(m.error) : null)} />
       <PatientPicker value={patient} onChange={setPatient} />
       <div className="grid grid-cols-2 gap-3">
         <Field id="rl-on" label="Referred on">
-          <Input id="rl-on" type="date" value={referredOn} onChange={(e) => setReferredOn(e.target.value)} />
+          <Input id="rl-on" type="date" min={addDaysISO(todayIST(), -366)} max={todayIST()} value={referredOn} onChange={(e) => setReferredOn(e.target.value)} />
         </Field>
         <Field id="rl-days" label="Earns for (days, blank = no end)">
-          <Input id="rl-days" type="number" min={0} value={days} onChange={(e) => setDays(e.target.value)} />
+          <Input id="rl-days" type="number" min={1} max={3650} step={1} value={days} onChange={(e) => setDays(e.target.value)} />
         </Field>
       </div>
       <div className="flex justify-end gap-2">
         <Button variant="outline" size="sm" onClick={() => setOpen(false)}>
           Cancel
         </Button>
-        <Button size="sm" disabled={m.isPending || !patient} onClick={() => m.mutate()}>
+        <Button
+          size="sm"
+          disabled={m.isPending || !patient}
+          onClick={() => {
+            const n = Number(days || 0);
+            const problem =
+              days && (!Number.isInteger(n) || n < 1 || n > 3650) ? 'Earning days must be a whole number from 1 to 3650' : firstError(validate(C.referralInputSchema, referralBody()).errors);
+            setRefError(problem);
+            if (!problem) m.mutate();
+          }}
+        >
           {m.isPending && <Loader2 className="animate-spin" />}
           Save referral
         </Button>

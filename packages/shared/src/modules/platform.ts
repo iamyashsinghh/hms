@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
 import { patchSchema } from '../patch';
+import { END_BEFORE_START, datesInOrder, emailAddress, indianMobile, personName, requiredText } from '../validation';
 
 /**
  * SaaS Platform: hospital signup, plans, subscriptions, entitlements, super-admin console,
@@ -79,26 +80,27 @@ export interface Plan {
   sortOrder: number;
 }
 
-const limitValue = z.number().int().min(0).nullable();
+const limitValue = z.number({ error: 'Enter a number' }).int('Must be a whole number').min(0, 'Cannot be negative').max(100_000, 'Too large').nullable();
 const money = z
   .union([z.number(), z.string()])
   .transform((v) => String(v))
-  .refine((v) => /^\d{1,12}(\.\d{1,2})?$/.test(v), 'Enter an amount like 2499 or 2499.00');
+  .refine((v) => !v.trim().startsWith('-'), 'Price cannot be negative')
+  .refine((v) => /^\d{1,12}(\.\d{1,2})?$/.test(v.trim()), 'Enter an amount like 2499 or 2499.00');
 
 export const planCodeSchema = z.string().trim().toLowerCase().regex(/^[a-z][a-z0-9_-]{1,30}$/, 'Use 2-31 lowercase letters, digits, - or _');
 
 export const upsertPlanSchema = z.object({
   code: planCodeSchema,
-  name: z.string().trim().min(2).max(60),
-  description: z.string().trim().max(500).default(''),
+  name: requiredText('the plan name', 60, 2),
+  description: z.string().trim().max(500, 'Description can be at most 500 characters').default(''),
   priceMonthly: money.nullable().default(null),
   priceYearly: money.nullable().default(null),
-  trialDays: z.number().int().min(0).max(90).default(14),
+  trialDays: z.number({ error: 'Enter trial days' }).int('Trial days must be a whole number').min(0, 'Trial days cannot be negative').max(90, 'Trial can be at most 90 days').default(14),
   modules: z.array(z.enum(ENTITLEMENT_MODULES)).default([]),
   limits: z.object({ facilities: limitValue, users: limitValue, beds: limitValue }).partial().default({}),
   isPublic: z.boolean().default(true),
   isActive: z.boolean().default(true),
-  sortOrder: z.number().int().default(0),
+  sortOrder: z.number().int('Must be a whole number').min(-1000).max(1000).default(0),
 });
 export type UpsertPlan = z.input<typeof upsertPlanSchema>;
 export const updatePlanSchema = patchSchema(upsertPlanSchema.omit({ code: true }));
@@ -129,25 +131,26 @@ export const tenantCodeSchema = z
   .string()
   .trim()
   .toLowerCase()
-  .regex(/^[a-z0-9][a-z0-9-]{2,30}$/, 'Use 3-31 lowercase letters, digits or -');
+  .regex(/^[a-z0-9][a-z0-9-]{2,30}$/, 'Use 3-31 lowercase letters, digits or -')
+  .refine((v) => !v.endsWith('-') && !v.includes('--'), 'Hospital code cannot end with - or have two - in a row');
 
-const mobileSchema = z.string().regex(/^[6-9]\d{9}$/, 'Enter a 10-digit Indian mobile number');
+const mobileSchema = indianMobile;
 const passwordSchema = z
   .string()
   .min(8, 'At least 8 characters')
-  .max(200)
+  .max(200, 'Password is too long')
   .regex(/[a-z]/i, 'Include a letter')
   .regex(/\d/, 'Include a number');
 
 export const signupSchema = z.object({
-  hospitalName: z.string().trim().min(3).max(120),
+  hospitalName: requiredText('the hospital name', 120, 3),
   /** Hospital code, also the login code and subdomain. */
   code: tenantCodeSchema,
   facilityType: z.enum(['hospital', 'clinic', 'diagnostic_centre', 'pharmacy']).default('hospital'),
-  city: z.string().trim().max(80).optional(),
-  state: z.string().trim().max(80).optional(),
-  adminName: z.string().trim().min(2).max(100),
-  email: z.email().transform((e) => e.toLowerCase()),
+  city: z.string().trim().max(80, 'City can be at most 80 characters').regex(/^[\p{L}\p{M} .'-]*$/u, 'City can only have letters, spaces and . \' -').optional(),
+  state: z.string().trim().max(80, 'State can be at most 80 characters').regex(/^[\p{L}\p{M} .'-]*$/u, 'State can only have letters, spaces and . \' -').optional(),
+  adminName: personName('your name').refine((v) => v.length >= 2, 'Name needs at least 2 characters'),
+  email: emailAddress,
   mobile: mobileSchema,
   password: passwordSchema,
   planCode: planCodeSchema.default('starter'),
@@ -235,7 +238,7 @@ export type PayInvoice = z.input<typeof payInvoiceSchema>;
 export const cancelSubscriptionSchema = z.object({
   /** false = undo a pending cancellation. */
   cancel: z.boolean().default(true),
-  reason: z.string().trim().max(500).optional(),
+  reason: z.string().trim().max(500, 'Reason can be at most 500 characters').optional(),
 });
 export type CancelSubscription = z.input<typeof cancelSubscriptionSchema>;
 
@@ -286,20 +289,32 @@ export interface Announcement {
   createdAt: string;
 }
 
-export const upsertAnnouncementSchema = z.object({
-  title: z.string().trim().min(3).max(150),
-  body: z.string().trim().min(1).max(5000),
+const announcementFields = z.object({
+  title: requiredText('the title', 150, 3),
+  body: requiredText('the message', 5000),
   severity: z.enum(ANNOUNCEMENT_SEVERITIES).default('info'),
   /** Empty = every plan. */
   planCodes: z.array(planCodeSchema).default([]),
   /** Empty = every hospital. */
   tenantIds: z.array(z.uuid()).default([]),
-  startsAt: z.iso.datetime({ offset: true }).optional(),
-  endsAt: z.iso.datetime({ offset: true }).nullable().optional(),
+  startsAt: z.iso.datetime({ offset: true, error: 'Enter a valid start date and time' }).optional(),
+  /** When it stops showing; must be after the start and not already in the past. */
+  endsAt: z.iso
+    .datetime({ offset: true, error: 'Enter a valid end date and time' })
+    .refine((v) => Date.parse(v) > Date.now(), 'End time is already in the past')
+    .nullable()
+    .optional(),
   isPublished: z.boolean().default(true),
 });
+const announcementOrder = (a: { startsAt?: string; endsAt?: string | null }) =>
+  !a.endsAt || Date.parse(a.endsAt) > (a.startsAt ? Date.parse(a.startsAt) : Date.now());
+export const upsertAnnouncementSchema = announcementFields.refine(announcementOrder, { message: 'End time must be after the start time', path: ['endsAt'] });
 export type UpsertAnnouncement = z.input<typeof upsertAnnouncementSchema>;
-export const updateAnnouncementSchema = patchSchema(upsertAnnouncementSchema);
+// patchSchema, not .partial(): no defaults (planCodes, tenantIds, isPublished) on a partial update.
+export const updateAnnouncementSchema = patchSchema(announcementFields).refine(
+  (a) => !a.startsAt || !a.endsAt || datesInOrder(a.startsAt, a.endsAt),
+  { message: END_BEFORE_START, path: ['endsAt'] },
+);
 export type UpdateAnnouncement = z.input<typeof updateAnnouncementSchema>;
 
 export interface HelpArticle {
@@ -321,11 +336,11 @@ export const helpQuerySchema = z.object({
 export type HelpQuery = z.input<typeof helpQuerySchema>;
 
 export const upsertHelpArticleSchema = z.object({
-  slug: z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]{2,80}$/),
-  title: z.string().trim().min(3).max(150),
+  slug: z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]{2,80}$/, 'Slug: 3-81 lowercase letters, digits or -'),
+  title: requiredText('the title', 150, 3),
   moduleKey: z.string().trim().max(40).nullable().default(null),
   summary: z.string().trim().max(300).default(''),
-  body: z.string().trim().min(1).max(20000),
+  body: requiredText('the article text', 20000),
   sortOrder: z.number().int().default(0),
   isPublished: z.boolean().default(true),
 });
@@ -372,15 +387,15 @@ export interface TicketDetail extends Ticket {
 }
 
 export const createTicketSchema = z.object({
-  subject: z.string().trim().min(5).max(200),
+  subject: requiredText('the subject', 200, 5),
   category: z.enum(TICKET_CATEGORIES).default('technical'),
   priority: z.enum(TICKET_PRIORITIES).default('normal'),
-  body: z.string().trim().min(5).max(10000),
+  body: requiredText('a description of the problem', 10000, 5),
 });
 export type CreateTicket = z.input<typeof createTicketSchema>;
 
 export const ticketReplySchema = z.object({
-  body: z.string().trim().min(1).max(10000),
+  body: requiredText('a reply', 10000),
   /** Platform team only. */
   isInternal: z.boolean().default(false),
 });
@@ -415,8 +430,8 @@ export interface PlatformAccessTokenClaims {
 }
 
 export const platformLoginSchema = z.object({
-  email: z.email().transform((e) => e.toLowerCase()),
-  password: z.string().min(8).max(200),
+  email: emailAddress,
+  password: z.string().min(1, 'Enter your password').max(200, 'Password is too long'),
 });
 export type PlatformLogin = z.input<typeof platformLoginSchema>;
 
@@ -437,15 +452,15 @@ export interface PlatformLoginResponse {
 }
 
 export const createPlatformAdminSchema = z.object({
-  email: z.email().transform((e) => e.toLowerCase()),
-  name: z.string().trim().min(2).max(100),
+  email: emailAddress,
+  name: personName('the name').refine((v) => v.length >= 2, 'Name needs at least 2 characters'),
   role: z.enum(PLATFORM_ADMIN_ROLES).default('support'),
   password: passwordSchema,
 });
 export type CreatePlatformAdmin = z.input<typeof createPlatformAdminSchema>;
 
 export const updatePlatformAdminSchema = z.object({
-  name: z.string().trim().min(2).max(100).optional(),
+  name: personName('the name').refine((v) => v.length >= 2, 'Name needs at least 2 characters').optional(),
   role: z.enum(PLATFORM_ADMIN_ROLES).optional(),
   status: z.enum(['active', 'disabled']).optional(),
   password: passwordSchema.optional(),
@@ -507,18 +522,18 @@ export const adminCreateTenantSchema = signupSchema
   .extend({
     /** Skip the trial and start active (e.g. a signed contract). */
     startActive: z.boolean().default(false),
-    trialDays: z.number().int().min(0).max(180).optional(),
+    trialDays: z.number({ error: 'Enter trial days' }).int('Trial days must be a whole number').min(0, 'Trial days cannot be negative').max(180, 'Trial can be at most 180 days').optional(),
   });
 export type AdminCreateTenant = z.input<typeof adminCreateTenantSchema>;
 
 export const adminUpdateTenantSchema = z.object({
-  name: z.string().trim().min(3).max(120).optional(),
+  name: requiredText('the hospital name', 120, 3).optional(),
 });
 export type AdminUpdateTenant = z.input<typeof adminUpdateTenantSchema>;
 
 export const adminSetTenantStatusSchema = z.object({
   status: z.enum(['active', 'suspended', 'closed']),
-  reason: z.string().trim().min(3).max(500),
+  reason: requiredText('the reason', 500, 3),
 });
 export type AdminSetTenantStatus = z.input<typeof adminSetTenantStatusSchema>;
 
@@ -528,7 +543,11 @@ export const adminSetSubscriptionSchema = z.object({
   /** Custom price per cycle (enterprise deals); defaults to the plan price. */
   price: money.nullable().optional(),
   /** Put the hospital on (or extend) a trial ending at this time. */
-  trialEndsAt: z.iso.datetime({ offset: true }).optional(),
+  trialEndsAt: z.iso
+    .datetime({ offset: true, error: 'Enter a valid trial end date' })
+    .refine((v) => Date.parse(v) > Date.now(), 'Trial end must be in the future')
+    .refine((v) => Date.parse(v) <= Date.now() + 366 * 86_400_000, 'Trial can end at most a year from today')
+    .optional(),
   /** Activate now for one billing period without an invoice (e.g. paid offline under contract). */
   activateNow: z.boolean().default(false),
 });
@@ -538,8 +557,8 @@ export const adminSetEntitlementsSchema = z.object({
   /** module key → true (add), false (remove), null (back to plan default). */
   modules: z.partialRecord(z.enum(ENTITLEMENT_MODULES), z.boolean().nullable()).default({}),
   /** limit → number, or null to go back to the plan limit. Use -1 for unlimited. */
-  limits: z.partialRecord(z.enum(LIMIT_KEYS), z.number().int().min(-1).nullable()).default({}),
-  note: z.string().trim().max(300).optional(),
+  limits: z.partialRecord(z.enum(LIMIT_KEYS), z.number().int('Must be a whole number').min(-1, 'Use -1 for unlimited, or 0 or more').max(100_000, 'Too large').nullable()).default({}),
+  note: z.string().trim().max(300, 'Note can be at most 300 characters').optional(),
 });
 export type AdminSetEntitlements = z.input<typeof adminSetEntitlementsSchema>;
 
@@ -553,7 +572,7 @@ export type InvoiceListQuery = z.input<typeof invoiceListQuerySchema>;
 
 export const markInvoicePaidSchema = z.object({
   mode: z.enum(PAYMENT_MODES).exclude(['sandbox']).default('manual'),
-  ref: z.string().trim().max(100).optional(),
+  ref: z.string().trim().max(100, 'Reference can be at most 100 characters').optional(),
 });
 export type MarkInvoicePaid = z.input<typeof markInvoicePaidSchema>;
 

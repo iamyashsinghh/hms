@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { defineModule } from '../manifest';
 import { patchSchema } from '../patch';
 import { GST_RATES, payNowSchema } from './billing';
+import { isoDate, isoDateTime, money as moneyField, requiredText } from '../validation';
 import type { ImportColumn } from '../imports';
 
 /**
@@ -76,18 +77,24 @@ export type ReportStatus = (typeof REPORT_STATUSES)[number];
 
 const text = (max: number) => z.string().trim().max(max);
 const optionalText = (max: number) => text(max).optional().or(z.literal('').transform(() => undefined));
-const money = z.coerce.number().min(0).max(10_000_000).multipleOf(0.01);
+const money = moneyField(10_000_000);
 
 // ---------- modalities ----------
 
 export const modalityInputSchema = z.object({
-  code: z.string().trim().toUpperCase().min(1).max(20).regex(/^[A-Z0-9_-]+$/, 'Use letters, digits, - or _'),
-  name: text(100).min(1),
+  code: z.string().trim().toUpperCase().min(1, 'Enter a code').max(20, 'Code can be at most 20 characters').regex(/^[A-Z0-9_-]+$/, 'Use letters, digits, - or _'),
+  name: requiredText('the machine name', 100),
   kind: z.enum(MODALITY_KINDS),
   facilityId: z.uuid().optional().nullable(),
   room: optionalText(60),
   /** DICOM AE title of the machine, for the PACS / modality worklist link. */
-  aeTitle: optionalText(16),
+  aeTitle: z
+    .string()
+    .trim()
+    .max(16, 'AE title can be at most 16 characters')
+    .regex(/^[\x20-\x5B\x5D-\x7E]*$/, 'AE title can only have plain letters, digits, spaces and symbols (no backslash)')
+    .optional()
+    .or(z.literal('').transform(() => undefined)),
   isActive: z.boolean().default(true),
 });
 export type ModalityInput = z.input<typeof modalityInputSchema>;
@@ -108,16 +115,24 @@ export interface Modality {
 // ---------- tests (study master) ----------
 
 export const testInputSchema = z.object({
-  code: z.string().trim().toUpperCase().min(1).max(30).regex(/^[A-Z0-9_.-]+$/, 'Use letters, digits, ., - or _'),
-  name: text(200).min(1),
-  modalityId: z.uuid(),
+  code: z.string().trim().toUpperCase().min(1, 'Enter a code').max(30, 'Code can be at most 30 characters').regex(/^[A-Z0-9_.-]+$/, 'Use letters, digits, ., - or _'),
+  name: requiredText('the test name', 200),
+  modalityId: z.uuid({ error: 'Pick the machine (modality)' }),
   bodyPart: optionalText(60),
   /** Billing service code. When set, the price comes from billing's service master and price lists. */
   serviceCode: z.string().trim().toUpperCase().max(40).optional().or(z.literal('').transform(() => undefined)),
   /** Used when no service code is set. */
   price: money.optional(),
-  taxRate: z.coerce.number().min(0).max(28).default(0),
-  durationMinutes: z.coerce.number().int().min(5).max(480).default(15),
+  taxRate: z.coerce
+    .number({ error: 'GST: enter a number' })
+    .refine((v) => (GST_RATES as readonly number[]).includes(v), `Use a GST slab: ${GST_RATES.join(', ')}`)
+    .default(0),
+  durationMinutes: z.coerce
+    .number({ error: 'Slot length: enter a number of minutes' })
+    .int('Slot length must be whole minutes')
+    .min(5, 'Slot length must be between 5 and 480 minutes')
+    .max(480, 'Slot length must be between 5 and 480 minutes')
+    .default(15),
   contrast: z.boolean().default(false),
   /** Patient preparation, printed on the appointment slip (e.g. "6 hours fasting"). */
   preparation: optionalText(500),
@@ -180,7 +195,7 @@ export type MasterQuery = z.input<typeof masterQuerySchema>;
 // ---------- report templates ----------
 
 export const templateInputSchema = z.object({
-  name: text(120).min(1),
+  name: requiredText('the template name', 120),
   modalityId: z.uuid().optional().nullable(),
   technique: optionalText(4000),
   findings: optionalText(20000),
@@ -219,8 +234,14 @@ export type CreateOrder = z.input<typeof createOrderSchema>;
 export const updateOrderSchema = patchSchema(createOrderSchema.pick({ testId: true, priority: true, referringDoctorName: true, clinicalNotes: true }));
 export type UpdateOrder = z.input<typeof updateOrderSchema>;
 
+/** How far back a slot may start (a booking made a few minutes late) and how far ahead it may be. */
+export const SCHEDULE_GRACE_MINUTES = 15;
+export const SCHEDULE_MAX_DAYS_AHEAD = 366;
+
 export const scheduleOrderSchema = z.object({
-  scheduledAt: z.iso.datetime({ offset: true }),
+  scheduledAt: isoDateTime
+    .refine((v) => Date.parse(v) >= Date.now() - SCHEDULE_GRACE_MINUTES * 60_000, 'Slot time cannot be in the past')
+    .refine((v) => Date.parse(v) <= Date.now() + SCHEDULE_MAX_DAYS_AHEAD * 86_400_000, 'Slot time can be at most a year ahead'),
   /** Defaults to the test's modality. Pick another machine of the same kind if needed. */
   modalityId: z.uuid().optional(),
 });
@@ -228,14 +249,24 @@ export type ScheduleOrder = z.input<typeof scheduleOrderSchema>;
 
 export const completeScanSchema = z.object({
   /** DICOM Study Instance UID from the machine / PACS. */
-  studyUid: optionalText(128),
+  studyUid: z
+    .string()
+    .trim()
+    .max(64, 'Study UID can be at most 64 characters')
+    .regex(/^\d+(\.\d+)+$/, 'Study UID is digits separated by dots, e.g. 1.2.840.113619.2.1')
+    .optional()
+    .or(z.literal('').transform(() => undefined)),
   /** Viewer link (PACS / OHIF). */
-  imagesUrl: z.url().max(1000).optional().or(z.literal('').transform(() => undefined)),
+  imagesUrl: z
+    .url({ protocol: /^https?$/, error: 'Enter a valid link starting with http:// or https://' })
+    .max(1000, 'Link can be at most 1000 characters')
+    .optional()
+    .or(z.literal('').transform(() => undefined)),
   techNotes: optionalText(1000),
 });
 export type CompleteScan = z.input<typeof completeScanSchema>;
 
-export const cancelOrderSchema = z.object({ reason: text(500).min(3) });
+export const cancelOrderSchema = z.object({ reason: requiredText('a reason', 500, 3) });
 export type CancelOrder = z.input<typeof cancelOrderSchema>;
 
 export const billOrderSchema = z.object({ payNow: payNowSchema.optional() });
@@ -253,7 +284,7 @@ export const orderQuerySchema = z.object({
   modalityId: z.uuid().optional(),
   patientId: z.uuid().optional(),
   /** Orders created or scheduled on this day (Asia/Kolkata). */
-  date: z.iso.date().optional(),
+  date: isoDate.optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(50),
 });
@@ -302,7 +333,7 @@ export interface RadiologyOrder {
 }
 
 export const scheduleQuerySchema = z.object({
-  date: z.iso.date(),
+  date: isoDate,
   modalityId: z.uuid().optional(),
 });
 export type ScheduleQuery = z.input<typeof scheduleQuerySchema>;
@@ -331,7 +362,7 @@ export const saveReportSchema = z.object({
 });
 export type SaveReport = z.input<typeof saveReportSchema>;
 
-export const amendReportSchema = z.object({ reason: text(500).min(3) });
+export const amendReportSchema = z.object({ reason: requiredText('a reason', 500, 3) });
 export type AmendReport = z.input<typeof amendReportSchema>;
 
 export interface RadiologyReport {

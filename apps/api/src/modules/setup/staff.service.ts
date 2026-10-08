@@ -6,8 +6,10 @@ import {
   facilities,
   inArray,
   iso,
+  setupDepartments,
   setupDoctorLeaves,
   setupDoctorSchedules,
+  setupSpecializations,
   setupStaffProfiles,
   sql,
   users,
@@ -15,7 +17,7 @@ import {
 } from '@hms/db';
 import { setup as S } from '@hms/shared';
 import { DbService } from '../../common/db/db.service';
-import { badRequest, notFound } from '../../common/errors/errors';
+import { badRequest, conflict, notFound } from '../../common/errors/errors';
 import { OutboxService } from '../../common/events/outbox.service';
 import { ctx, hhmm, money, num } from './setup.util';
 
@@ -112,6 +114,30 @@ export class StaffService {
     const c = ctx();
     const [user] = await tx.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1);
     if (!user) throw notFound('Staff member');
+    // A switched-off department/specialization is refused only when newly picked, so old profiles still save.
+    const [current] = await tx
+      .select({ departmentId: setupStaffProfiles.departmentId, specializationId: setupStaffProfiles.specializationId })
+      .from(setupStaffProfiles)
+      .where(eq(setupStaffProfiles.userId, userId))
+      .limit(1);
+    if (input.departmentId) {
+      const [d] = await tx.select({ isActive: setupDepartments.isActive }).from(setupDepartments).where(eq(setupDepartments.id, input.departmentId)).limit(1);
+      if (!d) throw badRequest('invalid_department', 'Department not found');
+      if (!d.isActive && current?.departmentId !== input.departmentId) throw badRequest('inactive_department', 'This department is switched off; pick an active one');
+    }
+    if (input.specializationId) {
+      const [sp] = await tx.select({ isActive: setupSpecializations.isActive }).from(setupSpecializations).where(eq(setupSpecializations.id, input.specializationId)).limit(1);
+      if (!sp) throw badRequest('invalid_specialization', 'Specialization not found');
+      if (!sp.isActive && current?.specializationId !== input.specializationId) throw badRequest('inactive_specialization', 'This specialization is switched off; pick an active one');
+    }
+    if (input.employeeCode) {
+      const [dup] = await tx
+        .select({ userId: setupStaffProfiles.userId })
+        .from(setupStaffProfiles)
+        .where(and(sql`lower(${setupStaffProfiles.employeeCode}) = lower(${input.employeeCode})`, sql`${setupStaffProfiles.userId} <> ${userId}`))
+        .limit(1);
+      if (dup) throw conflict('duplicate_employee_code', `Employee code ${input.employeeCode} is already given to another staff member`);
+    }
     const values = {
       staffType: input.staffType,
       employeeCode: input.employeeCode || null,
@@ -155,7 +181,7 @@ export class StaffService {
 
   async getDoctor(tx: Tx, userId: string): Promise<S.Doctor> {
     const res = await tx.execute<StaffRow>(sql`${STAFF_SELECT} where u.id = ${userId} and ${IS_DOCTOR}`);
-    if (!res.rows[0]) throw notFound('S.Doctor');
+    if (!res.rows[0]) throw notFound('Doctor');
     return doctorDto(res.rows[0]);
   }
 
@@ -252,6 +278,12 @@ export class StaffService {
     const c = ctx();
     return this.db.tx(async (tx) => {
       await this.getDoctor(tx, userId);
+      const [overlap] = await tx
+        .select({ fromDate: setupDoctorLeaves.fromDate, toDate: setupDoctorLeaves.toDate })
+        .from(setupDoctorLeaves)
+        .where(and(eq(setupDoctorLeaves.userId, userId), sql`${setupDoctorLeaves.fromDate} <= ${input.toDate}`, sql`${setupDoctorLeaves.toDate} >= ${input.fromDate}`))
+        .limit(1);
+      if (overlap) throw conflict('leave_overlap', `This leave overlaps an existing leave (${overlap.fromDate} to ${overlap.toDate})`);
       const [row] = await tx
         .insert(setupDoctorLeaves)
         .values({ tenantId: c.tenantId, userId, fromDate: input.fromDate, toDate: input.toDate, reason: input.reason || null, createdBy: c.userId })

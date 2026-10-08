@@ -6,6 +6,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { Loader2, Plus, Search } from 'lucide-react';
 import { quality as Q } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -149,8 +150,9 @@ function NewDocument({ onDone }: { onDone: (id?: string) => void }) {
   const [title, setTitle] = React.useState('');
   const [chapter, setChapter] = React.useState<Q.NabhChapter | ''>('');
   const [docType, setDocType] = React.useState<Q.DocumentType | ''>('policy');
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const create = useMutation({
-    mutationFn: () => api.quality.documents.create({ code, title, chapter: chapter as Q.NabhChapter, docType: docType as Q.DocumentType }),
+    mutationFn: (body: Q.CreateDocument) => api.quality.documents.create(body),
     onSuccess: (d) => {
       queryClient.invalidateQueries({ queryKey: ['quality', 'documents'] });
       onDone(d.id);
@@ -166,17 +168,20 @@ function NewDocument({ onDone }: { onDone: (id?: string) => void }) {
           className="grid gap-4 sm:grid-cols-4"
           onSubmit={(e) => {
             e.preventDefault();
-            create.mutate();
+            const body: Q.CreateDocument = { code, title, chapter: chapter as Q.NabhChapter, docType: docType as Q.DocumentType };
+            const { errors: found } = validate(Q.createDocumentSchema, body);
+            setErrors(found ?? {});
+            if (!found) create.mutate(body);
           }}
         >
           <div className="sm:col-span-4">
-            <ErrorBox error={create.error} />
+            <ErrorBox error={Object.keys(errors).length ? 'Please correct the highlighted fields' : create.error} />
           </div>
-          <Field id="d-code" label="Code *" hint="e.g. HIC-POL-01">
-            <Input id="d-code" required value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} />
+          <Field id="d-code" label="Code *" hint="e.g. HIC-POL-01" error={errors.code}>
+            <Input id="d-code" required maxLength={40} value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} />
           </Field>
-          <Field id="d-title" label="Title *" className="sm:col-span-3">
-            <Input id="d-title" required value={title} onChange={(e) => setTitle(e.target.value)} />
+          <Field id="d-title" label="Title *" className="sm:col-span-3" error={errors.title}>
+            <Input id="d-title" required maxLength={200} value={title} onChange={(e) => setTitle(e.target.value)} />
           </Field>
           <Field id="d-chapter" label="NABH chapter *" className="sm:col-span-2">
             <EnumSelect id="d-chapter" value={chapter} onChange={setChapter} options={CHAPTERS} labels={CHAPTER_LABELS} placeholder="Choose…" />

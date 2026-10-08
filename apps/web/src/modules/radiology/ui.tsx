@@ -61,6 +61,13 @@ export const timeOnly = (iso: string) => new Date(iso).toLocaleTimeString('en-IN
 /** `<input type="datetime-local">` value → ISO string with the browser's offset. */
 export const localToIso = (v: string) => new Date(v).toISOString();
 
+/** A datetime-local value ("YYYY-MM-DDTHH:mm") for now plus `offsetMinutes`, in the browser's time zone. */
+export function localInputValue(offsetMinutes = 0, now = new Date()): string {
+  const d = new Date(now.getTime() + offsetMinutes * 60_000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export const rupees = (n: number | null | undefined) => (n == null ? '—' : `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`);
 
 export function patientLine(p: radiology.OrderPatient) {
