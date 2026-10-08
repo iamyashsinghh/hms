@@ -36,7 +36,7 @@ A second hospital `city` (`admin@city.hms`) exists to prove isolation.
 
 ## Deploy on a server (Docker)
 
-Needs Docker with the Compose plugin. Everything runs on one port, **4001**: web at `/`, API at `/api/v1`,
+Needs Docker with the Compose plugin. Everything runs on one port, **4001** (only on 127.0.0.1, so it is reachable through nginx and not from the internet; `HMS_BIND=0.0.0.0` in `.env.prod` opens it): web at `/`, API at `/api/v1`,
 database viewer (Adminer) at `/db/`.
 
 ```bash

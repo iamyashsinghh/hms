@@ -20,10 +20,12 @@ if [ ! -f "$ENV_FILE" ]; then
   ip=$(hostname -I 2>/dev/null | awk '{print $1}')
   cat > "$ENV_FILE" <<EOT
 # HMS production settings, created by deploy.sh. Keep this file private and backed up.
-# After pointing a domain at this server, set PUBLIC_URL=https://your-domain and run ./deploy.sh again.
+# Put a domain in front with:  sudo ./infra/setup-domain.sh <domain> <email>   (sets PUBLIC_URL to https).
 PUBLIC_URL=http://${ip:-localhost}:4001
 HMS_PORT=4001
-HMS_BIND=0.0.0.0
+# 127.0.0.1 = port 4001 is reachable only from this server (through nginx). 0.0.0.0 opens it to the
+# internet; Docker publishes ports past ufw/firewalld, so the firewall does not close it.
+HMS_BIND=127.0.0.1
 # auto = load the demo hospitals only when the database is empty; never = don't.
 SEED_DEMO=auto
 EOT
@@ -59,6 +61,7 @@ docker image prune -f >/dev/null 2>&1 || true
 
 val() { grep "^$1=" "$ENV_FILE" | tail -1 | cut -d= -f2-; }
 url=$(val PUBLIC_URL)
+bind=$(val HMS_BIND)
 cat <<EOT
 
 HMS is live on port $(val HMS_PORT)   ->   $url
@@ -67,3 +70,8 @@ HMS is live on port $(val HMS_PORT)   ->   $url
   DB viewer      : $url/db/     (server postgres, user postgres, password = POSTGRES_PASSWORD in $ENV_FILE)
 Logs: docker compose -f docker-compose.prod.yml logs -f api
 EOT
+if [ "$bind" = 127.0.0.1 ] && [ "${url#https://}" = "$url" ]; then
+  echo "Port $(val HMS_PORT) is closed to the internet. Open it through a domain: sudo ./infra/setup-domain.sh <domain> <email>"
+elif [ "$bind" != 127.0.0.1 ]; then
+  echo "WARNING: port $(val HMS_PORT) is open to the internet (HMS_BIND=$bind). To close it: set HMS_BIND=127.0.0.1 in $ENV_FILE and run ./deploy.sh"
+fi
