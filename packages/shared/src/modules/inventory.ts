@@ -455,6 +455,12 @@ export type DecideIndent = z.input<typeof decideIndentSchema>;
 
 export const issueIndentSchema = z.object({
   notes: optText(500),
+  /**
+   * Issued for a patient (consumables used on them). With an admission the charges join the IPD bill; a patient
+   * alone is looked up for a current admission. Charged per the hospital's billing rule `consumables`.
+   */
+  patientId: z.uuid().optional(),
+  admissionId: z.uuid().optional(),
   /** Picks batches first-expiry-first-out unless batchId is given. */
   lines: z
     .array(z.object({ indentLineId: z.uuid(), qty, batchId: z.uuid().optional() }))
@@ -506,6 +512,10 @@ export interface Issue {
   fromStoreId: string;
   toStoreId: string;
   notes: string | null;
+  /** Set when the goods were issued for a patient / IPD admission. */
+  patientId: string | null;
+  admissionId: string | null;
+  patientName: string | null;
   createdAt: string;
   lines: IssueLine[];
 }
@@ -556,5 +566,9 @@ export interface InventoryIndentIssuedEvent {
   issueId: string;
   fromStoreId: string;
   toStoreId: string;
+  patientId?: string | null;
+  admissionId?: string | null;
+  /** The issued lines were charged to the patient account (billing rule consumables = 'charge'). */
+  chargedToPatient?: boolean;
   lines: { itemId: string; batchId: string; qty: number }[];
 }

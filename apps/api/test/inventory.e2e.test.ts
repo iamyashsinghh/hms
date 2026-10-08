@@ -264,6 +264,66 @@ describe('indents and issues', () => {
   });
 });
 
+describe('consumables issued for a patient', () => {
+  let admission: { id: string; ipdNo: string; patientId: string };
+  let item: { id: string; name: string };
+  let indent: { id: string; lines: { id: string }[] };
+  const ipd = (method: Method, url: string, payload?: unknown) => raw(admin, method, `/ipd${url}`, payload);
+  const accountCharges = async () =>
+    (await ok(ipd('GET', `/admissions/${admission.id}/bill`))).charges.filter((c: { sourceModule: string }) => c.sourceModule === 'inventory');
+  const rules = (r: Record<string, unknown>, replace = false) => app.inject({ method: 'PUT', url: '/api/v1/billing/rules', headers: bearer(admin), payload: { facilityId, replace, rules: r } });
+
+  beforeAll(async () => {
+    const ward = await ok(ipd('POST', '/wards', { facilityId, code: `CW${run}`.slice(0, 20), name: `Consumables ward ${run}`, wardType: 'general', defaultDailyRate: 800 }), 201);
+    const [bed] = await ok(ipd('POST', '/beds/bulk', { wardId: ward.id, prefix: 'C', from: 1, to: 1 }), 201);
+    const patient = await ok(raw(admin, 'POST', '/patients', { firstName: 'Gauze', lastName: `User${run}`, gender: 'male', ageYears: 45, mobile: '9876500003' }), 201);
+    const doctorId = (await login(app, 'doctor@demo.hms')).user.id;
+    admission = await ok(ipd('POST', '/admissions', { patientId: patient.id, bedId: bed.id, doctorId, reason: 'Wound care' }), 201);
+
+    item = await newItem(12);
+    const po = await approvedPo(item.id, 20, 8);
+    await ok(call(admin, 'POST', '/grns', { purchaseOrderId: po.id, lines: [{ poLineId: po.lines[0].id, qty: 20, batchNo: 'PT1', expiryDate: '2030-01-31', mrp: 10 }] }), 201);
+    indent = await ok(call(nurse, 'POST', '/indents', { toStoreId: wardStoreId, fromStoreId: mainStoreId, lines: [{ itemId: item.id, qty: 10 }] }), 201);
+    await ok(call(admin, 'POST', `/indents/${indent.id}/decision`, { approve: true }));
+  });
+  afterAll(() => rules({}, true));
+
+  it('lists admitted patients to issue for', async () => {
+    const found = await ok(call(admin, 'GET', `/indents/admitted-patients?q=${encodeURIComponent(`user${run}`.toLowerCase())}`));
+    expect(found.items).toEqual([expect.objectContaining({ id: admission.id, ipdNo: admission.ipdNo })]);
+    expect((await call(nurse, 'GET', '/indents/admitted-patients')).statusCode).toBe(403);
+  });
+
+  it('charges each issued line to the admission at the sale rate (GST inside)', async () => {
+    const res = await ok(call(admin, 'POST', `/indents/${indent.id}/issue`, { admissionId: admission.id, lines: [{ indentLineId: indent.lines[0]!.id, qty: 4 }] }), 201);
+    expect(res.issues[0]).toMatchObject({ admissionId: admission.id, patientId: admission.patientId, patientName: `Gauze User${run}` });
+    const charges = await accountCharges();
+    expect(charges).toEqual([expect.objectContaining({ itemId: item.id, qty: 4, unitPrice: 10, taxRate: 12, priceIncludesTax: true, amount: 40, status: 'pending' })]);
+    expect(charges[0].description).toContain('batch PT1');
+  });
+
+  it('charges nothing when the hospital treats consumables as its own cost', async () => {
+    expect((await rules({ consumables: 'hospital_cost' })).statusCode).toBe(200);
+    const res = await ok(call(admin, 'POST', `/indents/${indent.id}/issue`, { patientId: admission.patientId, lines: [{ indentLineId: indent.lines[0]!.id, qty: 1 }] }), 201);
+    // A patient alone is matched to their current admission.
+    expect(res.issues[1]).toMatchObject({ admissionId: admission.id, patientId: admission.patientId });
+    expect(await accountCharges()).toHaveLength(1);
+    await rules({}, true);
+  });
+
+  it('checks the patient and admission', async () => {
+    const other = await ok(raw(admin, 'POST', '/patients', { firstName: 'Other', lastName: `Pt${run}`, gender: 'female', ageYears: 30, mobile: '9876500004' }), 201);
+    const bad = await call(admin, 'POST', `/indents/${indent.id}/issue`, { admissionId: admission.id, patientId: other.id, lines: [{ indentLineId: indent.lines[0]!.id, qty: 1 }] });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json().error.code).toBe('admission_other_patient');
+    expect((await call(admin, 'POST', `/indents/${indent.id}/issue`, { admissionId: crypto.randomUUID(), lines: [{ indentLineId: indent.lines[0]!.id, qty: 1 }] })).statusCode).toBe(404);
+    // Issued for a patient who is not admitted: the charge waits on their account.
+    await ok(call(admin, 'POST', `/indents/${indent.id}/issue`, { patientId: other.id, lines: [{ indentLineId: indent.lines[0]!.id, qty: 1 }] }), 201);
+    const account = await ok(raw(admin, 'GET', `/billing/patients/${other.id}/charges`));
+    expect(account).toMatchObject({ pendingTotal: 10, groups: [expect.objectContaining({ account: 'other' })] });
+  });
+});
+
 describe('editing', () => {
   const ist = (days = 0) => new Date(Date.now() + days * 86_400_000).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
