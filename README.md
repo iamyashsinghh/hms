@@ -51,9 +51,10 @@ git pull origin staging && ./deploy.sh
   database (`SEED_DEMO=auto`; set `never` to skip). Permissions and system roles are synced every deploy.
 - Super admin console: `/admin`, login `super@hms.local` with `PLATFORM_ADMIN_PASSWORD` from `.env.prod`.
   Its **Database** button opens `/db/`: server `postgres`, user `postgres`, password `POSTGRES_PASSWORD`, database `hms`.
-- Domain + HTTPS: see [infra/nginx/hms.conf.example](infra/nginx/hms.conf.example), then set
-  `PUBLIC_URL=https://your-domain` in `.env.prod` and run `./deploy.sh` again. To hide port 4001 from the
-  internet once nginx is in front, set `HMS_BIND=127.0.0.1`.
+- Domain + HTTPS in one command (DNS A record must already point at the server):
+  `sudo ./infra/setup-domain.sh hms.example.com you@example.com`. It writes the nginx site from
+  [infra/nginx/hms.conf.example](infra/nginx/hms.conf.example), gets the certificate with certbot, sets
+  `PUBLIC_URL=https://<domain>` and `HMS_BIND=127.0.0.1` in `.env.prod` and redeploys. Safe to re-run.
 - Logs: `docker compose -f docker-compose.prod.yml logs -f api worker`. Backup:
   `docker compose -f docker-compose.prod.yml exec postgres pg_dump -U postgres hms > backup.sql`.
 
