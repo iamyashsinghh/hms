@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
 import { patchSchema } from '../patch';
+import type { ImportColumn } from '../imports';
 
 /**
  * HR & Roster: permissions and API contracts (Zod schemas + types).
@@ -149,6 +150,41 @@ export const createEmployeeSchema = z.object({
   employeeCode: blankToUndef(z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9_/-]{0,29}$/, 'Letters, digits, - _ /').optional()),
 });
 export type CreateEmployee = z.input<typeof createEmployeeSchema>;
+
+/** Columns of the staff import sheet. Format account numbers and UAN as text in Excel so leading zeros survive. */
+export const EMPLOYEE_IMPORT_COLUMNS: readonly ImportColumn[] = [
+  { key: 'employeeCode', header: 'Employee code', type: 'text', example: 'EMP00101', help: 'Leave blank for the next EMP number' },
+  { key: 'fullName', header: 'Full name', type: 'text', required: true, example: 'Anita Sharma' },
+  { key: 'gender', header: 'Gender', type: 'enum', options: ['male', 'female', 'other'], example: 'female' },
+  { key: 'dateOfBirth', header: 'Date of birth', type: 'date', example: '15/08/1990' },
+  { key: 'mobile', header: 'Mobile', type: 'text', example: '9876543210' },
+  { key: 'email', header: 'Email', type: 'text', example: 'anita@example.com' },
+  { key: 'category', header: 'Category', type: 'enum', options: EMPLOYEE_CATEGORIES, example: 'nurse' },
+  { key: 'designation', header: 'Designation', type: 'text', example: 'Staff nurse' },
+  { key: 'department', header: 'Department', type: 'text', example: 'Nursing' },
+  { key: 'employmentType', header: 'Employment type', type: 'enum', options: EMPLOYMENT_TYPES, example: 'permanent' },
+  { key: 'dateOfJoining', header: 'Date of joining', type: 'date', required: true, example: '01/04/2024' },
+  { key: 'address', header: 'Address', type: 'text', example: '' },
+  { key: 'emergencyContactName', header: 'Emergency contact', type: 'text', example: '' },
+  { key: 'emergencyContactPhone', header: 'Emergency phone', type: 'text', example: '' },
+  { key: 'pan', header: 'PAN', type: 'text', example: 'ABCDE1234F' },
+  { key: 'uan', header: 'UAN', type: 'text', example: '' },
+  { key: 'esicNo', header: 'ESIC no', type: 'text', example: '' },
+  { key: 'bankAccountNo', header: 'Bank account no', type: 'text', example: '' },
+  { key: 'bankIfsc', header: 'IFSC', type: 'text', example: '' },
+  { key: 'bankName', header: 'Bank name', type: 'text', example: '' },
+  { key: 'basic', header: 'Basic', type: 'number', example: 25000 },
+  { key: 'hra', header: 'HRA', type: 'number', example: 10000 },
+  { key: 'otherAllowances', header: 'Other allowances', type: 'number', example: 0 },
+  { key: 'pfApplicable', header: 'PF', type: 'boolean', example: 'Yes' },
+  { key: 'esiApplicable', header: 'ESI', type: 'boolean', example: 'No' },
+  { key: 'professionalTax', header: 'Professional tax', type: 'number', example: 200 },
+  { key: 'tdsMonthly', header: 'TDS monthly', type: 'number', example: 0 },
+];
+export const employeeImportRowSchema = createEmployeeSchema
+  .omit({ userId: true, facilityId: true })
+  .refine((r) => !r.dateOfBirth || r.dateOfBirth < r.dateOfJoining, { path: ['dateOfBirth'], message: 'Date of birth must be before joining' });
+export type EmployeeImportRow = z.output<typeof employeeImportRowSchema>;
 
 // patchSchema, not .partial(): Zod 4 keeps defaults inside .partial(), so a partial update would reset them.
 export const updateEmployeeSchema = patchSchema(

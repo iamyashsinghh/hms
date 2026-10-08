@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
 import { patchSchema } from '../patch';
+import type { ImportColumn } from '../imports';
 
 /**
  * Billing: permissions and API contracts (Zod schemas + types).
@@ -125,6 +126,21 @@ export type CreateService = z.input<typeof createServiceSchema>;
 // patchSchema, not .partial(): Zod 4 keeps defaults inside .partial(), so a PATCH would reset omitted fields.
 export const updateServiceSchema = patchSchema(createServiceSchema.omit({ code: true }));
 export type UpdateService = z.input<typeof updateServiceSchema>;
+
+/** Columns of the service / price master import sheet. Packages are built on the form (they need their items). */
+export const SERVICE_IMPORT_COLUMNS: readonly ImportColumn[] = [
+  { key: 'code', header: 'Code', type: 'text', required: true, example: 'CONS-GEN' },
+  { key: 'name', header: 'Name', type: 'text', required: true, example: 'General consultation' },
+  { key: 'category', header: 'Category', type: 'enum', options: SERVICE_CATEGORIES.filter((c) => c !== 'package'), example: 'consultation' },
+  { key: 'hsnSac', header: 'HSN/SAC', type: 'text', example: '999312' },
+  { key: 'basePrice', header: 'Price', type: 'number', required: true, example: 500 },
+  { key: 'taxRate', header: 'GST %', type: 'enum', options: GST_RATES, example: 0 },
+  { key: 'isActive', header: 'Active', type: 'boolean', example: 'Yes' },
+];
+export const serviceImportRowSchema = createServiceSchema
+  .omit({ departmentId: true, packageItems: true })
+  .refine((r) => r.category !== 'package', { path: ['category'], message: 'Create packages on the service form' });
+export type ServiceImportRow = z.output<typeof serviceImportRowSchema>;
 
 export interface Service {
   id: string;

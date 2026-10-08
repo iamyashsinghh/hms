@@ -1,6 +1,7 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { formatSeries, iso, nextCounter, type Tx } from '@hms/db';
-import type { Paginated } from '@hms/shared';
+import type { ImportRequest, ImportResult, Paginated } from '@hms/shared';
+import { runImport } from '../../common/imports/bulk-import';
 import type { billing as B } from '@hms/shared';
 type BillingSettings = B.BillingSettings;
 type BillingSettingsInput = B.BillingSettingsInput;
@@ -214,6 +215,22 @@ export class BillingService {
       if (d.category === 'package' && d.packageItems?.length) await this.setPackageItems(tx, row.id, d.packageItems);
       return serviceDto(row, d.category === 'package' ? await this.repo.packageItems(tx, row.id) : undefined);
     });
+  }
+
+  /** Bulk import of the service / price master from Excel / CSV. */
+  importServices(input: ImportRequest & { dryRun: boolean; updateExisting: boolean }): Promise<ImportResult> {
+    return runImport<B.ServiceImportRow>(
+      {
+        columns: contracts.SERVICE_IMPORT_COLUMNS,
+        schema: contracts.serviceImportRowSchema,
+        key: (r) => r.code,
+        label: (r) => r.name,
+        existing: (codes) => this.db.tx(async (tx) => new Map((await this.repo.servicesByCode(tx, codes)).map((s) => [s.code, s.id]))),
+        create: (r) => this.createService(r),
+        update: (id, { code: _code, ...given }) => this.updateService(id, given),
+      },
+      input,
+    );
   }
 
   updateService(id: string, input: UpdateService): Promise<Service> {

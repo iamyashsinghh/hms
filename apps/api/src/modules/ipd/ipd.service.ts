@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { iso, type Tx } from '@hms/db';
-import { ipd as contracts, type Paginated } from '@hms/shared';
+import { ipd as contracts, type ImportRequest, type ImportResult, type Paginated } from '@hms/shared';
+import { runImport } from '../../common/imports/bulk-import';
 import type { ipd as I } from '@hms/shared';
 import type { z } from 'zod';
 import { DbService } from '../../common/db/db.service';
@@ -132,6 +133,46 @@ export class IpdService {
     const specs = [];
     for (let n = d.from; n <= d.to; n++) specs.push({ code: `${d.prefix}${n}`, roomNo: d.roomNo, dailyRate: d.dailyRate, chargeServiceCode: d.chargeServiceCode });
     return this.addBeds(d.wardId, specs);
+  }
+
+  /** Bulk import of beds from Excel / CSV, matched to wards of the current facility by code or name. */
+  importBeds(input: ImportRequest & { dryRun: boolean; updateExisting: boolean }): Promise<ImportResult> {
+    type Row = I.BedImportRow;
+    const wards = new Map<string, string>();
+    const wardId = (ward: string) => wards.get(ward.toUpperCase());
+    const keyOf = (r: Row) => `${r.ward.toUpperCase()}/${r.code.toUpperCase()}`;
+    const loadWards = async (tx: Tx) => {
+      if (wards.size) return;
+      for (const w of await this.repo.wards(tx, currentContext()?.facilityId ?? null)) {
+        wards.set(w.code.toUpperCase(), w.id);
+        if (!wards.has(w.name.toUpperCase())) wards.set(w.name.toUpperCase(), w.id);
+      }
+    };
+    return runImport<Row>(
+      {
+        columns: contracts.BED_IMPORT_COLUMNS,
+        schema: contracts.bedImportRowSchema,
+        key: keyOf,
+        label: (r) => `${r.ward} ${r.code}`,
+        existing: (keys) =>
+          this.db.tx(async (tx) => {
+            await loadWards(tx);
+            const beds = await this.repo.beds(tx, { includeInactive: true });
+            const out = new Map<string, string>();
+            for (const k of keys) {
+              const [ward, code] = k.split('/') as [string, string];
+              const bed = beds.find((b) => b.wardId === wardId(ward) && b.code.toUpperCase() === code);
+              if (bed) out.set(k, bed.id);
+            }
+            return out;
+          }),
+        prepare: () => this.db.tx(loadWards),
+        check: (r) => (wardId(r.ward) ? [] : [{ column: 'Ward', message: `No active ward "${r.ward}" in this facility` }]),
+        create: (r) => this.addBeds(wardId(r.ward)!, [r]),
+        update: (id, { ward: _w, code: _c, ...given }) => this.updateBed(id, given),
+      },
+      input,
+    );
   }
 
   private async addBeds(wardId: string, specs: { code: string; roomNo?: string; dailyRate?: number; chargeServiceCode?: string }[]): Promise<I.Bed[]> {

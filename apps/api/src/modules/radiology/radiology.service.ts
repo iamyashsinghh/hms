@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { formatSeries, iso, nextCounter, type Tx } from '@hms/db';
-import { radiology, type Paginated } from '@hms/shared';
+import { radiology, type ImportRequest, type ImportResult, type Paginated } from '@hms/shared';
+import { runImport } from '../../common/imports/bulk-import';
 import type { z } from 'zod';
 import { DbService } from '../../common/db/db.service';
 import { AuditService } from '../../common/db/audit.service';
@@ -227,6 +228,38 @@ export class RadiologyService {
       if (!row) throw notFound('Template');
       return toTemplate(row);
     });
+  }
+
+  /** Bulk import of the study master from Excel / CSV. Modalities are matched by code or name. */
+  importTests(input: ImportRequest & { dryRun: boolean; updateExisting: boolean }): Promise<ImportResult> {
+    type Row = radiology.TestImportRow;
+    const modalities = new Map<string, string>();
+    const modalityId = (r: Partial<Row>) => (r.modality === undefined ? undefined : modalities.get(r.modality.toUpperCase()));
+    return runImport<Row>(
+      {
+        columns: radiology.TEST_IMPORT_COLUMNS,
+        schema: radiology.testImportRowSchema,
+        key: (r) => r.code,
+        label: (r) => r.name,
+        existing: (codes) => this.tx(async (tx) => new Map((await this.repo.testsByCodes(tx, codes)).map((t) => [t.code, t.id]))),
+        prepare: async () => {
+          for (const m of await this.tx((tx) => this.repo.modalities(tx, false))) {
+            modalities.set(m.code.toUpperCase(), m.id);
+            if (!modalities.has(m.name.toUpperCase())) modalities.set(m.name.toUpperCase(), m.id);
+          }
+        },
+        check: (r) => (modalityId(r) ? [] : [{ column: 'Modality', message: `No active modality "${r.modality}"; add it under Masters first` }]),
+        create: (r) => {
+          const { modality: _m, ...test } = r;
+          return this.createTest({ ...test, modalityId: modalityId(r)! });
+        },
+        update: (id, given) => {
+          const { modality: _m, code: _c, ...test } = given;
+          return this.updateTest(id, { ...test, ...(given.modality !== undefined && { modalityId: modalityId(given) }) });
+        },
+      },
+      input,
+    );
   }
 
   /**

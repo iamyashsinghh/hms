@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
 import { patchSchema } from '../patch';
+import type { ImportColumn } from '../imports';
 
 /**
  * IPD & Nursing: permissions and API contracts (Zod schemas + types).
@@ -132,6 +133,17 @@ export const bedInputSchema = z.object({
   chargeServiceCode: z.string().trim().toUpperCase().max(40).optional(),
 });
 export type BedInput = z.input<typeof bedInputSchema>;
+
+/** Columns of the bed import sheet. `Ward` is the ward code (or name) in the current facility. */
+export const BED_IMPORT_COLUMNS: readonly ImportColumn[] = [
+  { key: 'ward', header: 'Ward', type: 'text', required: true, example: 'GW', help: 'Ward code or name' },
+  { key: 'code', header: 'Bed', type: 'text', required: true, example: 'GW-1' },
+  { key: 'roomNo', header: 'Room no', type: 'text', example: '101' },
+  { key: 'dailyRate', header: 'Daily rate', type: 'number', example: 1500, help: "Defaults to the ward's rate" },
+  { key: 'chargeServiceCode', header: 'Charge service code', type: 'text', example: '' },
+];
+export const bedImportRowSchema = bedInputSchema.omit({ wardId: true }).extend({ ward: z.string().trim().min(1).max(100) });
+export type BedImportRow = z.output<typeof bedImportRowSchema>;
 
 /** Add several beds at once: prefix + numbers, e.g. "GW-" 1..10 → GW-1 … GW-10. */
 export const bulkBedsSchema = z

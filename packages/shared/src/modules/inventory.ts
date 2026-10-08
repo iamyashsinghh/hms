@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
 import { patchSchema } from '../patch';
+import type { ImportColumn } from '../imports';
 
 /**
  * Inventory & Procurement: permissions and API contracts (Zod schemas + types).
@@ -73,6 +74,20 @@ export const createVendorSchema = z.object({
   notes: optText(500),
 });
 export type CreateVendor = z.input<typeof createVendorSchema>;
+
+/** Columns of the vendor import sheet. */
+export const VENDOR_IMPORT_COLUMNS: readonly ImportColumn[] = [
+  { key: 'code', header: 'Code', type: 'text', required: true, example: 'V-SURGI' },
+  { key: 'name', header: 'Name', type: 'text', required: true, example: 'Surgi Supplies Pvt Ltd' },
+  { key: 'contactPerson', header: 'Contact person', type: 'text', example: 'Ravi Kumar' },
+  { key: 'phone', header: 'Phone', type: 'text', example: '9876543210' },
+  { key: 'email', header: 'Email', type: 'text', example: 'orders@surgi.example' },
+  { key: 'gstin', header: 'GSTIN', type: 'text', example: '07AABCS1429B1ZB' },
+  { key: 'pan', header: 'PAN', type: 'text', example: 'AABCS1429B' },
+  { key: 'address', header: 'Address', type: 'text', example: 'Okhla Phase 2, New Delhi' },
+  { key: 'paymentTermsDays', header: 'Payment terms (days)', type: 'integer', example: 30 },
+  { key: 'notes', header: 'Notes', type: 'text', example: '' },
+];
 
 /** Empty string clears an optional contact field on edit. */
 export const updateVendorSchema = patchSchema(createVendorSchema.omit({ code: true })).extend({

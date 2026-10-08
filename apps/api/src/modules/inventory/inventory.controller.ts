@@ -1,5 +1,5 @@
 import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
-import { inventory, type Paginated } from '@hms/shared';
+import { importRequestSchema, inventory, type ImportResult, type Paginated } from '@hms/shared';
 import type { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
@@ -32,6 +32,14 @@ export class InventoryVendorsController {
   @RequirePermissions('inventory.vendor.manage')
   create(@Body(new ZodPipe(inventory.createVendorSchema)) body: Out<typeof inventory.createVendorSchema>): Promise<inventory.Vendor> {
     return this.vendors.create(body);
+  }
+
+  /** Bulk import from Excel / CSV. `dryRun` validates only (the preview). */
+  @Post('import')
+  @HttpCode(200)
+  @RequirePermissions('inventory.vendor.manage')
+  importVendors(@Body(new ZodPipe(importRequestSchema)) body: Out<typeof importRequestSchema>): Promise<ImportResult> {
+    return this.vendors.import(body);
   }
 
   @Patch(':id')
