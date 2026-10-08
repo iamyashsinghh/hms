@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
 import { patchSchema } from '../patch';
+import { payNowSchema, type SourcePaymentState } from './billing';
 import {
   blankToUndefined,
   datesInOrder,
@@ -491,8 +492,12 @@ export const tripActionSchema = z.discriminatedUnion('action', [
     odometerEnd: blankToUndefined(odometer('End reading').optional()),
     /** Distance in km if odometers are not used. */
     distanceKm: blankToUndefined(z.coerce.number({ error: 'Enter the distance in km' }).min(0, 'Distance cannot be negative').max(5000, 'Distance can be at most 5,000 km').optional()),
-    /** Bill the patient for this trip through Billing (needs a registered patient). */
+    /**
+     * The trip is always posted to a linked patient's account as a charge (billed later at the desk).
+     * `bill` also makes the bill now; `payNow` takes the money on it (needs a registered patient).
+     */
     bill: z.boolean().default(false),
+    payNow: payNowSchema.optional(),
     /** Override the computed charge. */
     charge: blankToUndefined(money.optional()),
   }),
@@ -519,6 +524,8 @@ export interface Trip {
   distanceKm: number | null;
   charge: number | null;
   invoiceId: string | null;
+  /** Billing state of the trip's charge: 'pending' = on the patient's account, not billed yet. null without a patient. */
+  paymentState: SourcePaymentState | null;
   cancelReason: string | null;
   requestedAt: string;
   dispatchedAt: string | null;

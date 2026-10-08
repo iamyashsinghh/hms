@@ -1,12 +1,13 @@
-import { Injectable } from '@nestjs/common';
-import { and, count, desc, eq, iso, formatSeries, nextCounter, opsTrips, opsVehicles, sql, type Tx } from '@hms/db';
-import type { Paginated, ops as O } from '@hms/shared';
+import { Injectable, OnModuleInit } from '@nestjs/common';
+import { and, count, desc, eq, inArray, iso, formatSeries, isNull, nextCounter, opsTrips, opsVehicles, sql, type Tx } from '@hms/db';
+import type { billing as B, Paginated, ops as O } from '@hms/shared';
 import type { z } from 'zod';
 import { DbService } from '../../common/db/db.service';
+import { EventBus } from '../../common/events/event-bus';
 import { OutboxService } from '../../common/events/outbox.service';
 import { currentContext } from '../../common/context/request-context';
 import { badRequest, conflict, notFound } from '../../common/errors/errors';
-import { BillingService } from '../billing/billing.service';
+import { ChargesService } from '../billing/charges.service';
 import { PatientsService } from '../patients/patients.service';
 import { actorId, dec, defined, facilityCond, num, requireFacility } from './ops.common';
 
@@ -23,15 +24,34 @@ const KIND_LABEL: Record<O.TripKind, string> = {
   other: 'trip',
 };
 
-/** Ambulance fleet and trips: request -> dispatch -> patient on board -> complete (optionally billed). */
+/**
+ * Ambulance fleet and trips: request -> dispatch -> patient on board -> complete. Completing a trip of a
+ * registered patient posts the charge to the patient's account (source { module: 'ops', refId: tripId });
+ * it is billed at once ("bill") or later at the billing desk, and the trip keeps the bill once billed.
+ */
 @Injectable()
-export class AmbulanceService {
+export class AmbulanceService implements OnModuleInit {
   constructor(
     private readonly db: DbService,
     private readonly outbox: OutboxService,
-    private readonly billing: BillingService,
+    private readonly bus: EventBus,
+    private readonly charges: ChargesService,
     private readonly patients: PatientsService,
   ) {}
+
+  onModuleInit() {
+    // A trip's charge billed at the desk (or by Collect now): keep the bill on the trip. Idempotent.
+    this.bus.on<B.ChargesBilledEvent>('billing.charges.billed', (e) => {
+      const tripIds = [...new Set((e.payload.charges ?? []).filter((c) => c.module === 'ops').map((c) => c.refId))];
+      if (!tripIds.length) return Promise.resolve();
+      return this.db.asTenant({ tenantId: e.tenantId }, async (tx) => {
+        await tx
+          .update(opsTrips)
+          .set({ invoiceId: e.payload.invoiceId })
+          .where(and(inArray(opsTrips.id, tripIds), isNull(opsTrips.invoiceId)));
+      });
+    });
+  }
 
   listVehicles(): Promise<O.Vehicle[]> {
     return this.db.tx(async (tx) =>
@@ -102,7 +122,8 @@ export class AmbulanceService {
         this.tripQuery(tx).where(where).orderBy(desc(opsTrips.requestedAt)).limit(q.pageSize).offset((q.page - 1) * q.pageSize),
         tx.select({ total: count() }).from(opsTrips).where(where),
       ]);
-      return { items: rows.map((r) => tripDto(r.t, r.reg)), page: q.page, pageSize: q.pageSize, total };
+      const states = await this.paymentStates(tx, rows.map((r) => r.t));
+      return { items: rows.map((r) => tripDto(r.t, r.reg, states.get(r.t.id))), page: q.page, pageSize: q.pageSize, total };
     });
   }
 
@@ -186,19 +207,28 @@ export class AmbulanceService {
     const computed = Number(v!.baseCharge) + Number(v!.ratePerKm) * (distance ?? 0);
     const charge = Math.round((input.charge ?? computed) * 100) / 100;
 
+    if (input.bill && !trip.patientId) throw badRequest('patient_required', 'Link a registered patient to bill this trip');
+    if (input.bill && charge <= 0) throw badRequest('no_charge', 'Set a charge for this trip (or a base charge / rate per km on the ambulance)');
+
+    // A registered patient owes the trip: it goes on their account, billed now or later at the desk.
     let invoiceId: string | null = null;
-    if (input.bill) {
-      if (!trip.patientId) throw badRequest('patient_required', 'Link a registered patient to bill this trip');
-      if (charge <= 0) throw badRequest('no_charge', 'Set a charge for this trip (or a base charge / rate per km on the ambulance)');
+    if (trip.patientId && charge > 0) {
       const km = distance !== null ? ` (${distance} km)` : '';
-      const inv = await this.billing.createInvoice(tx, {
+      const source = { module: 'ops', refId: trip.id };
+      await this.charges.postCharge(tx, {
         patientId: trip.patientId,
         facilityId: trip.facilityId,
-        source: { module: 'ops', refId: trip.id },
-        lines: [{ description: `Ambulance ${KIND_LABEL[trip.kind as O.TripKind]} ${v!.registrationNo}${km}`, qty: 1, unitPrice: charge, taxRate: 0 }],
+        source,
+        description: `Ambulance ${KIND_LABEL[trip.kind as O.TripKind]} ${v!.registrationNo}${km}`,
+        qty: 1,
+        unitPrice: charge,
+        taxRate: 0,
         notes: `Trip ${trip.number}`,
       });
-      invoiceId = inv.invoiceId;
+      if (input.bill) {
+        const inv = await this.charges.billSource(tx, source, { source, notes: `Trip ${trip.number}`, payNow: input.payNow });
+        invoiceId = inv.id;
+      }
     }
     await tx
       .update(opsTrips)
@@ -231,7 +261,13 @@ export class AmbulanceService {
   private async loadTrip(tx: Tx, id: string): Promise<O.Trip> {
     const [r] = await this.tripQuery(tx).where(eq(opsTrips.id, id));
     if (!r) throw notFound('Trip');
-    return tripDto(r.t, r.reg);
+    return tripDto(r.t, r.reg, (await this.paymentStates(tx, [r.t])).get(r.t.id));
+  }
+
+  /** Billing state of completed trips' charges (patients only). */
+  private async paymentStates(tx: Tx, trips: TripRow[]): Promise<Map<string, B.SourcePaymentState>> {
+    const refIds = trips.filter((t) => t.patientId && t.status === 'completed').map((t) => t.id);
+    return refIds.length ? this.charges.paymentStates(tx, { module: 'ops', refIds }) : new Map();
   }
 }
 
@@ -249,7 +285,7 @@ function vehicleDto(r: VehicleRow): O.Vehicle {
   };
 }
 
-function tripDto(r: TripRow, reg: string | null): O.Trip {
+function tripDto(r: TripRow, reg: string | null, paymentState?: B.SourcePaymentState): O.Trip {
   return {
     id: r.id,
     number: r.number,
@@ -269,6 +305,7 @@ function tripDto(r: TripRow, reg: string | null): O.Trip {
     distanceKm: num(r.distanceKm),
     charge: num(r.charge),
     invoiceId: r.invoiceId,
+    paymentState: r.patientId ? (paymentState ?? 'none') : null,
     cancelReason: r.cancelReason,
     requestedAt: iso(r.requestedAt),
     dispatchedAt: iso(r.dispatchedAt),
