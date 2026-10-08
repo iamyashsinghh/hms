@@ -5,6 +5,7 @@ import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight, Search, X } from 'lucide-react';
 import type { Paginated, Patient, crm as C } from '@hms/shared';
+import type { z } from 'zod';
 import { api } from '@/lib/api';
 import { fullName } from '@/lib/format';
 import { cn } from '@/lib/utils';
@@ -284,6 +285,31 @@ export function CampSelect({ id, value, onChange, enabled = true }: { id?: strin
       {data?.items.map((c) => (
         <option key={c.id} value={c.id}>
           {c.name} ({c.startsOn})
+        </option>
+      ))}
+    </Select>
+  );
+}
+
+/** First validation problem from a shared Zod schema, as one readable line (null when the body is valid). */
+export function firstIssue(schema: z.ZodType, body: unknown, labels: Record<string, string> = {}): string | null {
+  const r = schema.safeParse(body);
+  if (r.success) return null;
+  const issue = r.error.issues[0]!;
+  const key = String(issue.path[0] ?? '');
+  const label = labels[key] ?? key;
+  return label ? `${label}: ${issue.message}` : issue.message;
+}
+
+/** Active staff for assigning enquiries and follow-ups (needs crm.lead.manage or crm.followup.manage). */
+export function StaffSelect({ id, value, onChange, enabled = true }: { id?: string; value: string; onChange: (id: string) => void; enabled?: boolean }) {
+  const { data } = useQuery({ queryKey: ['crm', 'staff'], queryFn: () => api.crm.staff(), enabled, staleTime: 5 * 60_000 });
+  return (
+    <Select id={id} value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="">— Unassigned —</option>
+      {data?.map((u) => (
+        <option key={u.id} value={u.id}>
+          {u.name}
         </option>
       ))}
     </Select>

@@ -14,7 +14,9 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { ErrorBox, Field, S, SuccessBox, titleCase } from '@/modules/setup/ui';
 
-function TemplateCard({ t, profile }: { t: setup.PrintTemplate; profile?: setup.HospitalProfile }) {
+const clampMm = (v: string) => Math.min(100, Math.max(0, Math.round(Number(v) || 0)));
+
+function TemplateCard({ t, profile, facilityId }: { t: setup.PrintTemplate; profile?: setup.HospitalProfile; facilityId?: string }) {
   const queryClient = useQueryClient();
   const [v, setV] = React.useState({
     paperSize: t.paperSize,
@@ -26,14 +28,21 @@ function TemplateCard({ t, profile }: { t: setup.PrintTemplate; profile?: setup.
     marginBottomMm: t.marginBottomMm,
   });
   const save = useMutation({
-    mutationFn: () => api.setup.savePrintTemplate(t.key, { ...v, headerText: v.headerText || undefined, footerText: v.footerText || undefined }),
+    mutationFn: () =>
+      api.setup.savePrintTemplate(t.key, { ...v, facilityId: facilityId ?? null, headerText: v.headerText || undefined, footerText: v.footerText || undefined }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['setup', 'print-templates'] }),
   });
   return (
     <Card>
       <CardHeader className="flex-row items-center justify-between space-y-0">
         <CardTitle>{titleCase(t.key)}</CardTitle>
-        {t.saved ? <Badge>Customised</Badge> : <Badge variant="secondary">Default</Badge>}
+        {!t.saved ? (
+          <Badge variant="secondary">Default</Badge>
+        ) : facilityId && !t.facilityId ? (
+          <Badge variant="secondary">Hospital-wide</Badge>
+        ) : (
+          <Badge>{facilityId ? 'Customised for this branch' : 'Customised'}</Badge>
+        )}
       </CardHeader>
       <CardContent className="grid gap-4 md:grid-cols-2">
         <div className="space-y-3">
@@ -50,10 +59,10 @@ function TemplateCard({ t, profile }: { t: setup.PrintTemplate; profile?: setup.
               </Select>
             </Field>
             <Field id={`${t.key}-mt`} label="Top margin (mm)">
-              <Input id={`${t.key}-mt`} type="number" min={0} max={100} value={v.marginTopMm} onChange={(e) => setV({ ...v, marginTopMm: Number(e.target.value) })} />
+              <Input id={`${t.key}-mt`} type="number" min={0} max={100} value={v.marginTopMm} onChange={(e) => setV({ ...v, marginTopMm: clampMm(e.target.value) })} />
             </Field>
             <Field id={`${t.key}-mb`} label="Bottom (mm)">
-              <Input id={`${t.key}-mb`} type="number" min={0} max={100} value={v.marginBottomMm} onChange={(e) => setV({ ...v, marginBottomMm: Number(e.target.value) })} />
+              <Input id={`${t.key}-mb`} type="number" min={0} max={100} value={v.marginBottomMm} onChange={(e) => setV({ ...v, marginBottomMm: clampMm(e.target.value) })} />
             </Field>
           </div>
           <div className="flex gap-4 text-sm">
@@ -65,10 +74,10 @@ function TemplateCard({ t, profile }: { t: setup.PrintTemplate; profile?: setup.
             </label>
           </div>
           <Field id={`${t.key}-header`} label="Extra header text">
-            <Input id={`${t.key}-header`} value={v.headerText} onChange={(e) => setV({ ...v, headerText: e.target.value })} />
+            <Input id={`${t.key}-header`} maxLength={2000} value={v.headerText} onChange={(e) => setV({ ...v, headerText: e.target.value })} />
           </Field>
           <Field id={`${t.key}-footer`} label="Footer text">
-            <Input id={`${t.key}-footer`} value={v.footerText} onChange={(e) => setV({ ...v, footerText: e.target.value })} placeholder="e.g. Goods once sold will not be taken back" />
+            <Input id={`${t.key}-footer`} maxLength={2000} value={v.footerText} onChange={(e) => setV({ ...v, footerText: e.target.value })} placeholder="e.g. Goods once sold will not be taken back" />
           </Field>
           <div className="flex justify-end">
             <Button size="sm" onClick={() => save.mutate()} disabled={save.isPending}>
@@ -109,16 +118,37 @@ function TemplateCard({ t, profile }: { t: setup.PrintTemplate; profile?: setup.
 
 export default function PrintTemplatesPage() {
   const canManage = usePermission('setup.template.manage');
-  const templates = useQuery({ queryKey: ['setup', 'print-templates'], queryFn: () => api.setup.listPrintTemplates(), enabled: canManage });
+  const [facilityId, setFacilityId] = React.useState('');
+  const facilities = useQuery({ queryKey: ['setup', 'facilities'], queryFn: () => api.setup.listFacilities(), enabled: canManage });
+  const templates = useQuery({
+    queryKey: ['setup', 'print-templates', facilityId],
+    queryFn: () => api.setup.listPrintTemplates(facilityId || undefined),
+    enabled: canManage,
+  });
   const profile = useQuery({ queryKey: ['setup', 'profile'], queryFn: () => api.setup.getProfile(), enabled: canManage });
   if (!canManage) return <NoAccess />;
   if (templates.isPending) return <p className="text-sm text-muted-foreground">Loading…</p>;
   if (templates.error) return <p className="text-sm text-destructive">{errorMessage(templates.error)}</p>;
   return (
     <div className="space-y-6">
-      <PageHeader title="Print templates" description="Paper size, letterhead and footer for each printout. Hospital name and GSTIN come from the hospital profile." />
+      <PageHeader
+        title="Print templates"
+        description="Paper size, letterhead and footer for each printout. Hospital name and GSTIN come from the hospital profile."
+        actions={
+          (facilities.data?.length ?? 0) > 1 && (
+            <Select aria-label="Branch" className="w-64" value={facilityId} onChange={(e) => setFacilityId(e.target.value)}>
+              <option value="">All branches (hospital-wide)</option>
+              {facilities.data?.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name} only
+                </option>
+              ))}
+            </Select>
+          )
+        }
+      />
       {templates.data.map((t) => (
-        <TemplateCard key={`${t.key}:${t.saved}`} t={t} profile={profile.data} />
+        <TemplateCard key={`${facilityId}:${t.key}:${t.saved}:${t.facilityId}`} t={t} profile={profile.data} facilityId={facilityId || undefined} />
       ))}
     </div>
   );

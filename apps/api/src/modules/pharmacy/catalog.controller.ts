@@ -1,20 +1,32 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
-import { pharmacy, type Paginated } from '@hms/shared';
+import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
+import { pharmacy, type ImportResult, type Paginated } from '@hms/shared';
 import type { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
 import { RequireEntitlement } from '../platform';
 import { PharmacyCatalogService } from './catalog.service';
+import { PharmacyImportService } from './import.service';
 
 @Controller('pharmacy')
 @RequireEntitlement('pharmacy')
 export class PharmacyCatalogController {
-  constructor(private readonly catalog: PharmacyCatalogService) {}
+  constructor(
+    private readonly catalog: PharmacyCatalogService,
+    private readonly imports: PharmacyImportService,
+  ) {}
 
   @Get('items')
   @RequirePermissions('pharmacy.item.read')
   searchItems(@Query(new ZodPipe(pharmacy.itemSearchQuerySchema)) q: z.output<typeof pharmacy.itemSearchQuerySchema>): Promise<Paginated<pharmacy.Item>> {
     return this.catalog.searchItems(q);
+  }
+
+  /** Bulk import from Excel / CSV. `dryRun` validates only (the preview). */
+  @Post('items/import')
+  @HttpCode(200)
+  @RequirePermissions('pharmacy.item.manage')
+  importItems(@Body(new ZodPipe(pharmacy.itemImportSchema)) body: z.output<typeof pharmacy.itemImportSchema>): Promise<ImportResult> {
+    return this.imports.importItems(body);
   }
 
   @Get('items/:id')

@@ -1,6 +1,7 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { formatSeries, iso, nextCounter, type Tx } from '@hms/db';
-import type { Paginated } from '@hms/shared';
+import type { ImportRequest, ImportResult, Paginated } from '@hms/shared';
+import { runImport } from '../../common/imports/bulk-import';
 import type { billing as B } from '@hms/shared';
 type BillingSettings = B.BillingSettings;
 type BillingSettingsInput = B.BillingSettingsInput;
@@ -216,6 +217,22 @@ export class BillingService {
     });
   }
 
+  /** Bulk import of the service / price master from Excel / CSV. */
+  importServices(input: ImportRequest & { dryRun: boolean; updateExisting: boolean }): Promise<ImportResult> {
+    return runImport<B.ServiceImportRow>(
+      {
+        columns: contracts.SERVICE_IMPORT_COLUMNS,
+        schema: contracts.serviceImportRowSchema,
+        key: (r) => r.code,
+        label: (r) => r.name,
+        existing: (codes) => this.db.tx(async (tx) => new Map((await this.repo.servicesByCode(tx, codes)).map((s) => [s.code, s.id]))),
+        create: (r) => this.createService(r),
+        update: (id, { code: _code, ...given }) => this.updateService(id, given),
+      },
+      input,
+    );
+  }
+
   updateService(id: string, input: UpdateService): Promise<Service> {
     const d = contracts.updateServiceSchema.parse(input);
     const ctx = currentContext()!;
@@ -276,9 +293,13 @@ export class BillingService {
       const ids = [...new Set(d.items.map((i) => i.serviceId))];
       if (ids.length !== d.items.length) throw badRequest('duplicate_items', 'A service appears twice in the price list');
       if ((await this.repo.servicesByIds(tx, ids)).length !== ids.length) throw notFound('Service');
+      // On update an omitted payerId keeps the list's payer (BIL-46: editing a payer tariff must not
+      // silently turn it into a general cash list); an explicit null clears it.
+      const existing = id ? await this.repo.priceListById(tx, id) : undefined;
+      if (id && !existing) throw notFound('Price list');
       const values = {
         name: d.name,
-        payerId: d.payerId ?? null,
+        payerId: d.payerId !== undefined ? d.payerId : (existing?.payerId ?? null),
         effectiveFrom: d.effectiveFrom,
         effectiveTo: d.effectiveTo ?? null,
         isActive: d.isActive,

@@ -3,9 +3,9 @@
 import { use } from 'react';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Pencil } from 'lucide-react';
 import { api, errorMessage } from '@/lib/api';
-import { usePermission } from '@/lib/auth';
+import { Can, usePermission } from '@/lib/auth';
 import { ageOf, formatDate, fullName, genderLabel } from '@/lib/format';
 import { NoAccess } from '@/components/no-access';
 import { Badge } from '@/components/ui/badge';
@@ -60,6 +60,11 @@ export default function PatientDetailPage({ params }: { params: Promise<{ id: st
                 {p.bloodGroup && <Badge variant="accent">{p.bloodGroup}</Badge>}
               </div>
             </div>
+            <Can permission="core.patient.update">
+              <Link href={`/patients/${p.id}/edit`} className={buttonVariants({ variant: 'outline', className: 'ml-auto' })}>
+                <Pencil /> Edit patient
+              </Link>
+            </Can>
           </div>
 
           <div className="grid gap-6 lg:grid-cols-3">

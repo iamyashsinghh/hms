@@ -4,7 +4,7 @@ import * as React from 'react';
 import { use } from 'react';
 import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Loader2, PhoneCall, UserCheck, XCircle } from 'lucide-react';
+import { ArrowLeft, Loader2, Pencil, PhoneCall, UserCheck, XCircle } from 'lucide-react';
 import type { Patient, crm as C } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { usePermission } from '@/lib/auth';
@@ -26,6 +26,7 @@ import {
   fromLocalInput,
   toLocalInput,
 } from '@/modules/crm/ui';
+import { LeadForm } from '@/modules/crm/lead-form';
 
 const OPEN = ['new', 'contacted', 'qualified'];
 
@@ -44,12 +45,20 @@ export default function LeadPage({ params }: { params: Promise<{ id: string }> }
   const canFollowUp = usePermission('crm.followup.manage');
   const queryClient = useQueryClient();
   const { data: lead, error } = useQuery({ queryKey: ['crm', 'lead', id], queryFn: () => api.crm.leads.get(id), enabled: canRead });
+  const [editing, setEditing] = React.useState(false);
 
   const done = (l: C.LeadDetail) => {
     queryClient.setQueryData(['crm', 'lead', id], l);
     queryClient.invalidateQueries({ queryKey: ['crm', 'leads'] });
     queryClient.invalidateQueries({ queryKey: ['crm', 'dashboard'] });
   };
+  const update = useMutation({
+    mutationFn: (body: C.UpdateLead) => api.crm.leads.update(id, body),
+    onSuccess: (l) => {
+      setEditing(false);
+      done(l);
+    },
+  });
 
   if (!canRead) return <NoAccess />;
   if (error) return <p className="text-sm text-destructive">{errorMessage(error)}</p>;
@@ -71,8 +80,20 @@ export default function LeadPage({ params }: { params: Promise<{ id: string }> }
             {lead.referrerName && ` · referred by ${lead.referrerName}`}
           </>
         }
-        actions={<LeadStatusBadge status={lead.status} />}
+        actions={
+          <>
+            <LeadStatusBadge status={lead.status} />
+            {open && canManage && !editing && (
+              <Button variant="outline" onClick={() => setEditing(true)}>
+                <Pencil /> Edit
+              </Button>
+            )}
+          </>
+        }
       />
+      {editing && open && canManage && (
+        <LeadForm initial={lead} saving={update.isPending} error={update.error} onCancel={() => setEditing(false)} onSave={(b) => update.mutate(b)} />
+      )}
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">

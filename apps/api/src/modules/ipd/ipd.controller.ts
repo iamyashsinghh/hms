@@ -1,5 +1,6 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Put, Query } from '@nestjs/common';
-import { ipd as contracts, type Paginated } from '@hms/shared';
+import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Put, Query } from '@nestjs/common';
+import { importRequestSchema, ipd as contracts, type ImportResult, type Paginated } from '@hms/shared';
+import type { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
 import { RequireEntitlement } from '../platform';
@@ -48,6 +49,14 @@ export class IpdController {
   @RequirePermissions('ipd.ward.manage')
   createBeds(@Body(new ZodPipe(contracts.bulkBedsSchema)) body: contracts.BulkBeds): Promise<contracts.Bed[]> {
     return this.ipd.createBeds(body);
+  }
+
+  /** Bulk import from Excel / CSV. `dryRun` validates only (the preview). */
+  @Post('beds/import')
+  @HttpCode(200)
+  @RequirePermissions('ipd.ward.manage')
+  importBeds(@Body(new ZodPipe(importRequestSchema)) body: z.output<typeof importRequestSchema>): Promise<ImportResult> {
+    return this.ipd.importBeds(body);
   }
 
   @Patch('beds/:id')

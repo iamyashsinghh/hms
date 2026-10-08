@@ -109,7 +109,7 @@ export class OpsController {
   @RequirePermissions('ops.cssd.manage')
   updateSet(
     @Param('id', ParseUUIDPipe) id: string,
-    @Body(new ZodPipe(O.cssdSetInputSchema.partial())) body: Partial<Out<typeof O.cssdSetInputSchema>>,
+    @Body(new ZodPipe(O.updateCssdSetSchema)) body: Out<typeof O.updateCssdSetSchema>,
   ): Promise<O.CssdSet> {
     return this.cssd.updateSet(id, body);
   }
@@ -173,7 +173,7 @@ export class OpsController {
   @RequirePermissions('ops.linen.manage')
   updateLinenItem(
     @Param('id', ParseUUIDPipe) id: string,
-    @Body(new ZodPipe(O.linenItemInputSchema.partial())) body: Partial<Out<typeof O.linenItemInputSchema>>,
+    @Body(new ZodPipe(O.updateLinenItemSchema)) body: Out<typeof O.updateLinenItemSchema>,
   ): Promise<O.LinenItem> {
     return this.linen.updateItem(id, body);
   }
@@ -214,7 +214,7 @@ export class OpsController {
   @RequirePermissions('ops.ambulance.manage')
   updateVehicle(
     @Param('id', ParseUUIDPipe) id: string,
-    @Body(new ZodPipe(O.vehicleInputSchema.partial())) body: Partial<Out<typeof O.vehicleInputSchema>>,
+    @Body(new ZodPipe(O.updateVehicleSchema)) body: Out<typeof O.updateVehicleSchema>,
   ): Promise<O.Vehicle> {
     return this.ambulance.updateVehicle(id, body);
   }

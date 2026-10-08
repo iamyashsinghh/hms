@@ -290,6 +290,91 @@ describe('claims and settlement', () => {
   });
 });
 
+describe('editing', () => {
+  it('edits a scheme package but not its code, and only with payer.manage', async () => {
+    const pkg = await call(admin, 'POST', `/insurance/payers/${schemeId}/packages`, { code: `ED-${tag}`, name: 'Hernia repair', rate: 15000, losDays: 2 });
+    expect(pkg.statusCode, pkg.body).toBe(201);
+    const url = `/insurance/payers/${schemeId}/packages/${pkg.json().id}`;
+    const ok = await call(admin, 'PATCH', url, { name: 'Hernia repair (mesh)', rate: 16500, losDays: 3, specialty: 'General surgery' });
+    expect(ok.statusCode, ok.body).toBe(200);
+    expect(ok.json()).toMatchObject({ code: `ED-${tag}`, name: 'Hernia repair (mesh)', rate: 16500, losDays: 3 });
+    // Editing an inactive package keeps it inactive (no schema defaults leak into a PATCH).
+    await call(admin, 'PATCH', url, { isActive: false, preauthRequired: false });
+    expect((await call(admin, 'PATCH', url, { rate: 17000 })).json()).toMatchObject({ rate: 17000, isActive: false, preauthRequired: false });
+    expect((await call(admin, 'PATCH', url, { rate: -1 })).statusCode).toBe(400);
+    expect((await call(admin, 'PATCH', url, { losDays: 400 })).statusCode).toBe(400);
+    expect((await call(reception, 'PATCH', url, { rate: 1 })).statusCode).toBe(403);
+  });
+
+  it('edits a pre-auth only while it is a draft or under query', async () => {
+    const res = await call(clerk, 'POST', '/insurance/preauths', { policyId, diagnosis: 'Cholelithiasis', estimatedAmount: 40000 });
+    expect(res.statusCode, res.body).toBe(201);
+    const id = res.json().id;
+    const ok = await call(clerk, 'PATCH', `/insurance/preauths/${id}`, {
+      diagnosis: 'Symptomatic cholelithiasis',
+      icdCodes: ['K80.2'],
+      procedure: 'Lap cholecystectomy',
+      expectedAdmission: nextYear,
+      expectedLosDays: 2,
+      estimatedAmount: 42000,
+      requestedAmount: 41000,
+      notes: null,
+    });
+    expect(ok.statusCode, ok.body).toBe(200);
+    expect(ok.json()).toMatchObject({ status: 'draft', diagnosis: 'Symptomatic cholelithiasis', icdCodes: ['K80.2'], expectedAdmission: nextYear, estimatedAmount: 42000, requestedAmount: 41000 });
+    // Partial edit leaves the rest alone.
+    const partial = await call(clerk, 'PATCH', `/insurance/preauths/${id}`, { notes: 'Patient prefers next month' });
+    expect(partial.json()).toMatchObject({ diagnosis: 'Symptomatic cholelithiasis', icdCodes: ['K80.2'], estimatedAmount: 42000, notes: 'Patient prefers next month' });
+    // Validation.
+    expect((await call(clerk, 'PATCH', `/insurance/preauths/${id}`, { estimatedAmount: -5 })).statusCode).toBe(400);
+    expect((await call(clerk, 'PATCH', `/insurance/preauths/${id}`, { expectedAdmission: '2026-02-30' })).statusCode).toBe(400);
+    expect((await call(clerk, 'PATCH', `/insurance/preauths/${id}`, { icdCodes: ['not-icd'] })).statusCode).toBe(400);
+    expect((await call(clerk, 'PATCH', `/insurance/preauths/${id}`, { diagnosis: '' })).statusCode).toBe(400);
+    expect((await call(doctor, 'PATCH', `/insurance/preauths/${id}`, { notes: 'x' })).statusCode).toBe(403);
+    // Query → editable again; submitted → locked.
+    await call(clerk, 'POST', `/insurance/preauths/${id}/submit`, {});
+    const locked = await call(clerk, 'PATCH', `/insurance/preauths/${id}`, { notes: 'late' });
+    expect(locked.statusCode).toBe(409);
+    expect(locked.json().error.code).toBe('preauth_locked');
+    await call(clerk, 'POST', `/insurance/preauths/${id}/query`, { note: 'Send LFT' });
+    expect((await call(clerk, 'PATCH', `/insurance/preauths/${id}`, { requestedAmount: 39000 })).json()).toMatchObject({ status: 'query', requestedAmount: 39000 });
+    await call(clerk, 'POST', `/insurance/preauths/${id}/cancel`, { note: 'Not needed' });
+  });
+
+  it('edits claim details, bill shares only while a draft, and never a closed claim', async () => {
+    const inv = await bill(3000, tpaId);
+    const res = await call(clerk, 'POST', '/insurance/claims', { policyId, claimType: 'credit', invoices: [{ invoiceId: inv, payerAmount: 3000 }] });
+    expect(res.statusCode, res.body).toBe(201);
+    const id = res.json().id;
+    const ok = await call(clerk, 'PATCH', `/insurance/claims/${id}`, {
+      admissionDate: yearAgo,
+      dischargeDate: today,
+      diagnosis: 'Dengue fever',
+      notes: 'Credit claim',
+      invoices: [{ invoiceId: inv, payerAmount: 2500 }],
+    });
+    expect(ok.statusCode, ok.body).toBe(200);
+    expect(ok.json()).toMatchObject({ admissionDate: yearAgo, dischargeDate: today, diagnosis: 'Dengue fever', claimedAmount: 2500 });
+    expect(ok.json().invoices[0]).toMatchObject({ payerAmount: 2500, patientAmount: 500 });
+    const backwards = await call(clerk, 'PATCH', `/insurance/claims/${id}`, { dischargeDate: '2000-01-01' });
+    expect(backwards.statusCode).toBe(400);
+    expect(backwards.json().error.code).toBe('invalid_dates');
+    expect((await call(clerk, 'PATCH', `/insurance/claims/${id}`, { invoices: [{ invoiceId: inv, payerAmount: -1 }] })).statusCode).toBe(400);
+    expect((await call(doctor, 'PATCH', `/insurance/claims/${id}`, { notes: 'x' })).statusCode).toBe(403);
+
+    for (const d of ok.json().documents.filter((x: { required: boolean }) => x.required)) {
+      await call(clerk, 'PATCH', `/insurance/claims/${id}/documents/${d.id}`, { received: true });
+    }
+    expect((await call(clerk, 'POST', `/insurance/claims/${id}/submit`, {})).statusCode).toBe(200);
+    // Submitted: details still editable, shares are not.
+    expect((await call(clerk, 'PATCH', `/insurance/claims/${id}`, { notes: 'Chased by email' })).json().notes).toBe('Chased by email');
+    const shares = await call(clerk, 'PATCH', `/insurance/claims/${id}`, { invoices: [{ invoiceId: inv, payerAmount: 3000 }] });
+    expect(shares.statusCode).toBe(409);
+    expect((await call(clerk, 'POST', `/insurance/claims/${id}/cancel`, { note: 'Duplicate' })).statusCode).toBe(200);
+    expect((await call(clerk, 'PATCH', `/insurance/claims/${id}`, { notes: 'too late' })).statusCode).toBe(409);
+  });
+});
+
 describe('permissions and isolation', () => {
   it('enforces insurance permissions', async () => {
     expect((await call(nurse, 'GET', '/insurance/payers')).statusCode).toBe(403);

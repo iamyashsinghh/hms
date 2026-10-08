@@ -133,7 +133,15 @@ export const createPatientSchema = z.object({
 });
 export type CreatePatient = z.infer<typeof createPatientSchema>;
 
-export const updatePatientSchema = createPatientSchema.partial();
+/** Partial update. Optional fields also take `null` to clear them. */
+export const updatePatientSchema = createPatientSchema.partial().extend({
+  lastName: createPatientSchema.shape.lastName.nullable(),
+  dateOfBirth: createPatientSchema.shape.dateOfBirth.nullable(),
+  mobile: createPatientSchema.shape.mobile.nullable(),
+  email: createPatientSchema.shape.email.nullable(),
+  bloodGroup: createPatientSchema.shape.bloodGroup.nullable(),
+  abhaNumber: createPatientSchema.shape.abhaNumber.nullable(),
+});
 export type UpdatePatient = z.infer<typeof updatePatientSchema>;
 
 export const patientSchema = createPatientSchema.extend({

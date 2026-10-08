@@ -1,4 +1,4 @@
-import type { Paginated, radiology as r } from '@hms/shared';
+import type { ImportRequest, ImportResult, Paginated, radiology as r } from '@hms/shared';
 import type { Http } from '../http';
 
 /** Radiology endpoints. Owned by the "radiology" workstream. Types come from @hms/shared (radiology.*). */
@@ -10,6 +10,7 @@ export const radiologyApi = (http: Http) => ({
   tests: (q: r.MasterQuery = {}) => http.get<r.RadiologyTest[]>('/radiology/tests', q),
   test: (id: string) => http.get<r.RadiologyTest>(`/radiology/tests/${id}`),
   createTest: (body: r.TestInput) => http.post<r.RadiologyTest>('/radiology/tests', body),
+  importTests: (body: ImportRequest) => http.post<ImportResult>('/radiology/tests/import', body),
   updateTest: (id: string, body: r.UpdateTest) => http.patch<r.RadiologyTest>(`/radiology/tests/${id}`, body),
 
   templates: (q: r.MasterQuery = {}) => http.get<r.ReportTemplate[]>('/radiology/templates', q),

@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Flame, Loader2, Plus, Search } from 'lucide-react';
+import { Flame, Loader2, Pencil, Plus, Search } from 'lucide-react';
 import { ops as O, type Patient } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { Can, usePermission } from '@/lib/auth';
@@ -22,33 +22,38 @@ import {
   PatientPicker,
   StatusBadge,
   Textarea,
+  firstIssue,
   formatDateTime,
   num,
   opt,
   useDebounced,
 } from '@/modules/ops/ui';
 
-interface SetForm {
-  name: string;
-  department: string;
-  contents: string;
-  shelfLifeDays: string;
-}
-
-function AddSetForm({ onDone }: { onDone: () => void }) {
+/** New instrument set; with `initial` it edits that set (name, department, contents, shelf life, active). */
+function SetForm({ initial, onDone }: { initial?: O.CssdSet; onDone: () => void }) {
   const queryClient = useQueryClient();
-  const [f, setF] = React.useState<SetForm>({ name: '', department: '', contents: '', shelfLifeDays: '30' });
+  const [f, setF] = React.useState({
+    name: initial?.name ?? '',
+    department: initial?.department ?? '',
+    contents: initial?.contents.join('\n') ?? '',
+    shelfLifeDays: String(initial?.shelfLifeDays ?? 30),
+    isActive: initial?.isActive ?? true,
+  });
+  const [invalid, setInvalid] = React.useState<string | null>(null);
+  const body = (): O.UpdateCssdSet & { name: string } => ({
+    name: f.name.trim(),
+    // An emptied department is cleared on edit; omitted on create.
+    department: initial ? f.department.trim() || null : opt(f.department),
+    contents: f.contents
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean),
+    shelfLifeDays: num(f.shelfLifeDays),
+    ...(initial ? { isActive: f.isActive } : {}),
+  });
   const save = useMutation({
-    mutationFn: () =>
-      api.ops.cssd.createSet({
-        name: f.name.trim(),
-        department: opt(f.department),
-        contents: f.contents
-          .split('\n')
-          .map((l) => l.trim())
-          .filter(Boolean),
-        shelfLifeDays: num(f.shelfLifeDays),
-      }),
+    mutationFn: (b: O.UpdateCssdSet & { name: string }) =>
+      initial ? api.ops.cssd.updateSet(initial.id, b) : api.ops.cssd.createSet({ ...b, department: b.department ?? undefined }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['ops'] });
       onDone();
@@ -57,31 +62,39 @@ function AddSetForm({ onDone }: { onDone: () => void }) {
   return (
     <Card className="mb-6">
       <CardHeader>
-        <CardTitle>New instrument set</CardTitle>
+        <CardTitle>{initial ? `Edit ${initial.code}` : 'New instrument set'}</CardTitle>
       </CardHeader>
       <CardContent>
         <form
           className="grid gap-4 sm:grid-cols-3"
           onSubmit={(e) => {
             e.preventDefault();
-            save.mutate();
+            const b = body();
+            const problem = firstIssue(initial ? O.updateCssdSetSchema : O.cssdSetInputSchema, b, { name: 'Set name', shelfLifeDays: 'Shelf life', contents: 'Contents', department: 'Department' });
+            setInvalid(problem);
+            if (!problem) save.mutate(b);
           }}
         >
           <div className="sm:col-span-3">
-            <ErrorBox error={save.error ? errorMessage(save.error) : null} />
+            <ErrorBox error={invalid ?? (save.error ? errorMessage(save.error) : null)} />
           </div>
           <Field id="set-name" label="Set name *">
-            <Input id="set-name" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="e.g. Major laparotomy set" required />
+            <Input id="set-name" maxLength={200} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="e.g. Major laparotomy set" required />
           </Field>
           <Field id="set-dept" label="Department">
-            <Input id="set-dept" value={f.department} onChange={(e) => setF({ ...f, department: e.target.value })} placeholder="e.g. OT 1" />
+            <Input id="set-dept" maxLength={100} value={f.department} onChange={(e) => setF({ ...f, department: e.target.value })} placeholder="e.g. OT 1" />
           </Field>
           <Field id="set-shelf" label="Shelf life (days)">
-            <Input id="set-shelf" type="number" min={1} max={365} value={f.shelfLifeDays} onChange={(e) => setF({ ...f, shelfLifeDays: e.target.value })} />
+            <Input id="set-shelf" type="number" min={1} max={365} step={1} value={f.shelfLifeDays} onChange={(e) => setF({ ...f, shelfLifeDays: e.target.value })} />
           </Field>
           <Field id="set-contents" label="Contents (one instrument per line)" className="sm:col-span-3">
             <Textarea id="set-contents" rows={5} value={f.contents} onChange={(e) => setF({ ...f, contents: e.target.value })} placeholder={'Artery forceps x4\nMayo scissors x2'} />
           </Field>
+          {initial && (
+            <label className="flex items-center gap-2 text-sm sm:col-span-3">
+              <input type="checkbox" checked={f.isActive} onChange={(e) => setF({ ...f, isActive: e.target.checked })} /> Active (inactive sets are not offered for cycles or issue)
+            </label>
+          )}
           <div className="flex justify-end gap-2 sm:col-span-3">
             <Button type="button" variant="outline" onClick={onDone}>
               Cancel
@@ -282,6 +295,7 @@ export default function CssdPage() {
   const [status, setStatus] = React.useState('');
   const [completing, setCompleting] = React.useState<string | null>(null);
   const [issuing, setIssuing] = React.useState<string | null>(null);
+  const [editingSet, setEditingSet] = React.useState<O.CssdSet | null>(null);
   const q = useDebounced(search.trim());
 
   const setQuery = { q: q || undefined, status: (status || undefined) as O.CssdSetStatus | undefined };
@@ -318,7 +332,8 @@ export default function CssdPage() {
         }
       />
 
-      {canManage && panel === 'set' && <AddSetForm onDone={() => setPanel(null)} />}
+      {canManage && panel === 'set' && <SetForm onDone={() => setPanel(null)} />}
+      {canManage && editingSet && <SetForm key={editingSet.id} initial={editingSet} onDone={() => setEditingSet(null)} />}
       {canManage && panel === 'cycle' && (dirty.data ? <StartCycleForm dirty={dirty.data} onDone={() => setPanel(null)} /> : <p className="mb-6 text-sm text-muted-foreground">Loading dirty sets…</p>)}
 
       <Card className="mb-6">
@@ -456,7 +471,12 @@ export default function CssdPage() {
                           {s.issuedTo ?? '—'}
                           {issue && <div className="text-muted-foreground">{formatDateTime(issue.issuedAt)}</div>}
                         </TableCell>
-                        <TableCell className="text-right">
+                        <TableCell className="space-x-1 text-right">
+                          {canManage && (
+                            <Button size="sm" variant="ghost" aria-label={`Edit ${s.code}`} onClick={() => setEditingSet(s)}>
+                              <Pencil />
+                            </Button>
+                          )}
                           {canManage && s.status === 'sterile' && !s.expired && (
                             <Button size="sm" variant="outline" onClick={() => setIssuing(issuing === s.id ? null : s.id)}>
                               Issue

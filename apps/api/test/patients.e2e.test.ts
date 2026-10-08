@@ -78,6 +78,42 @@ describe('patients', () => {
   });
 });
 
+describe('editing a patient', () => {
+  const mk = async (payload: Record<string, unknown>) =>
+    (await app.inject({ method: 'POST', url: '/api/v1/patients', headers: bearer(reception), payload: { gender: 'male', ...payload } })).json();
+  const patch = (token: string, id: string, payload: Record<string, unknown>) =>
+    app.inject({ method: 'PATCH', url: `/api/v1/patients/${id}`, headers: bearer(token), payload });
+
+  it('updates fields and clears optional ones with null', async () => {
+    const p = await mk({ firstName: 'Edit', lastName: `Me${Date.now()}`, mobile: '9123456781', email: 'edit@example.com', bloodGroup: 'A+', dateOfBirth: '1990-01-01' });
+    const res = await patch(reception, p.id, { firstName: 'Edited', mobile: null, email: null, bloodGroup: null, dateOfBirth: null, ageYears: 40 });
+    expect(res.statusCode).toBe(200);
+    const u = res.json();
+    expect(u).toMatchObject({ firstName: 'Edited', uhid: p.uhid, mobile: null, email: null, bloodGroup: null, lastName: p.lastName });
+    expect(new Date().getFullYear() - Number(u.dateOfBirth.slice(0, 4))).toBe(40);
+
+    const bad = await patch(reception, p.id, { mobile: '12345', firstName: '' });
+    expect(bad.statusCode).toBe(400);
+  });
+
+  it('refuses an ABHA number another patient already has', async () => {
+    const abha = `9${String(Date.now()).slice(-13).padStart(13, '0')}`;
+    await mk({ firstName: 'Abha', abhaNumber: abha });
+    const other = await mk({ firstName: 'Other' });
+    const res = await patch(reception, other.id, { abhaNumber: abha });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('duplicate_abha');
+  });
+
+  it('needs core.patient.update', async () => {
+    const p = await mk({ firstName: 'Perm' });
+    const nurse = (await login(app, 'nurse@demo.hms')).accessToken;
+    const res = await patch(nurse, p.id, { firstName: 'Nope' });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.details.missing).toEqual(['core.patient.update']);
+  });
+});
+
 describe('PatientsService.markMerged', () => {
   it('retires the duplicate into the surviving record', async () => {
     const mk = async (n: string) =>
@@ -92,5 +128,7 @@ describe('PatientsService.markMerged', () => {
     const merged = await db.asTenant({ tenantId }, (tx) => svc.markMerged(tx, a.id, b.id));
     expect(merged.id).toBe(a.id);
     await expect(db.asTenant({ tenantId }, (tx) => svc.markMerged(tx, a.id, b.id))).rejects.toThrow(/already been merged/);
+    const edit = await app.inject({ method: 'PATCH', url: `/api/v1/patients/${a.id}`, headers: bearer(reception), payload: { firstName: 'Late' } });
+    expect(edit.statusCode).toBe(409);
   });
 });

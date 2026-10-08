@@ -3,7 +3,7 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Plus } from 'lucide-react';
-import type { billing as B } from '@hms/shared';
+import { billing as B } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { Can, usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
@@ -18,6 +18,8 @@ import { ErrorBox, Field, formatINR, todayIST } from '@/modules/billing/ui';
 
 interface Form {
   id?: string;
+  /** Payer whose tariff this is; kept as-is on edit so a payer list never turns into a cash list (BIL-46). */
+  payerId: string | null;
   name: string;
   effectiveFrom: string;
   effectiveTo: string;
@@ -38,21 +40,25 @@ export default function PriceListsPage() {
     enabled: !!form,
   });
 
+  const [formError, setFormError] = React.useState<string | null>(null);
+  const toBody = (f: Form): B.PriceListInput => ({
+    name: f.name.trim(),
+    payerId: f.payerId,
+    effectiveFrom: f.effectiveFrom,
+    effectiveTo: f.effectiveTo || null,
+    isActive: f.isActive,
+    items: Object.entries(f.prices)
+      .filter(([, v]) => v !== '')
+      .map(([serviceId, price]) => ({ serviceId, price: Number(price) })),
+  });
   const save = useMutation({
     mutationFn: (f: Form) => {
-      const body: B.PriceListInput = {
-        name: f.name,
-        effectiveFrom: f.effectiveFrom,
-        effectiveTo: f.effectiveTo || null,
-        isActive: f.isActive,
-        items: Object.entries(f.prices)
-          .filter(([, v]) => v !== '')
-          .map(([serviceId, price]) => ({ serviceId, price: Number(price) })),
-      };
+      const body = toBody(f);
       return f.id ? api.billing.priceLists.update(f.id, body) : api.billing.priceLists.create(body);
     },
     onSuccess: () => {
       setForm(null);
+      setFormError(null);
       queryClient.invalidateQueries({ queryKey: ['billing', 'price-lists'] });
     },
   });
@@ -66,7 +72,7 @@ export default function PriceListsPage() {
         description="Dated price lists override base prices. The newest active list covering the bill date wins; payer-specific lists (insurance, corporate) come with the insurance module."
         actions={
           <Can permission="billing.service.manage">
-            <Button onClick={() => setForm({ name: '', effectiveFrom: todayIST(), effectiveTo: '', isActive: true, prices: {} })}>
+            <Button onClick={() => setForm({ payerId: null, name: '', effectiveFrom: todayIST(), effectiveTo: '', isActive: true, prices: {} })}>
               <Plus /> New price list
             </Button>
           </Can>
@@ -79,7 +85,7 @@ export default function PriceListsPage() {
             <CardTitle>{form.id ? `Edit ${form.name}` : 'New price list'}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <ErrorBox error={save.error ? errorMessage(save.error) : null} />
+            <ErrorBox error={formError ?? (save.error ? errorMessage(save.error) : null)} />
             <div className="grid gap-4 sm:grid-cols-4">
               <Field id="pl-name" label="Name *" className="sm:col-span-2">
                 <Input id="pl-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Cash rates 2026-27" />
@@ -127,10 +133,26 @@ export default function PriceListsPage() {
               </Table>
             </div>
             <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setForm(null)}>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setForm(null);
+                  setFormError(null);
+                }}
+              >
                 Cancel
               </Button>
-              <Button disabled={save.isPending || !form.name.trim()} onClick={() => save.mutate(form)}>
+              <Button
+                disabled={save.isPending || !form.name.trim()}
+                onClick={() => {
+                  const bad = Object.values(form.prices).find((v) => v !== '' && !(Number(v) >= 0));
+                  if (bad !== undefined) return setFormError('Prices must be zero or more');
+                  const parsed = B.priceListInputSchema.safeParse(toBody(form));
+                  if (!parsed.success) return setFormError(parsed.error.issues[0]?.message ?? 'Check the form');
+                  setFormError(null);
+                  save.mutate(form);
+                }}
+              >
                 {save.isPending && <Loader2 className="animate-spin" />}
                 Save
               </Button>
@@ -169,7 +191,7 @@ export default function PriceListsPage() {
                 lists.map((l) => (
                   <TableRow key={l.id}>
                     <TableCell className="font-medium">
-                      {l.name} {!l.isActive && <Badge variant="secondary">Inactive</Badge>}
+                      {l.name} {l.payerId && <Badge variant="outline">Payer tariff</Badge>} {!l.isActive && <Badge variant="secondary">Inactive</Badge>}
                     </TableCell>
                     <TableCell>
                       {formatDate(l.effectiveFrom)} – {l.effectiveTo ? formatDate(l.effectiveTo) : 'open'}
@@ -183,6 +205,7 @@ export default function PriceListsPage() {
                           onClick={() =>
                             setForm({
                               id: l.id,
+                              payerId: l.payerId,
                               name: l.name,
                               effectiveFrom: l.effectiveFrom,
                               effectiveTo: l.effectiveTo ?? '',

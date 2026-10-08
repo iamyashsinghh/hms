@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Put, Query } from '@nestjs/common';
-import { billing as contracts, type Paginated } from '@hms/shared';
+import { billing as contracts, importRequestSchema, type ImportResult, type Paginated } from '@hms/shared';
 import { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
@@ -59,6 +59,14 @@ export class BillingController {
   @RequirePermissions('billing.service.manage')
   createService(@Body(new ZodPipe(contracts.createServiceSchema)) body: contracts.CreateService): Promise<contracts.Service> {
     return this.billing.createService(body);
+  }
+
+  /** Bulk import from Excel / CSV. `dryRun` validates only (the preview). */
+  @Post('services/import')
+  @HttpCode(200)
+  @RequirePermissions('billing.service.manage')
+  importServices(@Body(new ZodPipe(importRequestSchema)) body: z.output<typeof importRequestSchema>): Promise<ImportResult> {
+    return this.billing.importServices(body);
   }
 
   @Patch('services/:id')

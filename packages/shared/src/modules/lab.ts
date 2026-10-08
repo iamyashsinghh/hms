@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { patchSchema } from '../patch';
+import type { ImportColumn } from '../imports';
 
 /**
  * Laboratory (LIS): permissions and API contracts (Zod schemas + types).
@@ -126,8 +128,48 @@ export const testInputSchema = z.object({
   ranges: z.array(rangeInputSchema).max(20).default([]),
 });
 export type TestInput = z.input<typeof testInputSchema>;
-export const updateTestSchema = testInputSchema.omit({ code: true }).partial();
+export const updateTestSchema = patchSchema(testInputSchema.omit({ code: true }));
 export type UpdateTest = z.input<typeof updateTestSchema>;
+
+/** Columns of the lab test import sheet. One reference range per test (any gender, all ages); edit the test for more. */
+export const TEST_IMPORT_COLUMNS: readonly ImportColumn[] = [
+  { key: 'code', header: 'Code', type: 'text', required: true, example: 'HB' },
+  { key: 'name', header: 'Name', type: 'text', required: true, example: 'Haemoglobin' },
+  { key: 'section', header: 'Section', type: 'enum', options: LAB_SECTIONS, example: 'haematology' },
+  { key: 'sampleType', header: 'Sample', type: 'enum', options: SAMPLE_TYPES, example: 'blood' },
+  { key: 'container', header: 'Container', type: 'text', example: 'EDTA (purple)' },
+  { key: 'unit', header: 'Unit', type: 'text', example: 'g/dL' },
+  { key: 'method', header: 'Method', type: 'text', example: 'Cyanmethemoglobin' },
+  { key: 'resultType', header: 'Result type', type: 'enum', options: RESULT_TYPES, example: 'numeric' },
+  { key: 'options', header: 'Options', type: 'list', example: '', help: 'For option results: Positive | Negative' },
+  { key: 'decimals', header: 'Decimals', type: 'integer', example: 1 },
+  { key: 'price', header: 'Price', type: 'number', example: 150 },
+  { key: 'serviceCode', header: 'Billing service code', type: 'text', example: '' },
+  { key: 'tatHours', header: 'TAT hours', type: 'integer', example: 6 },
+  { key: 'refLow', header: 'Normal low', type: 'number', example: 12 },
+  { key: 'refHigh', header: 'Normal high', type: 'number', example: 16 },
+  { key: 'criticalLow', header: 'Critical low', type: 'number', example: 7 },
+  { key: 'criticalHigh', header: 'Critical high', type: 'number', example: 20 },
+  { key: 'refText', header: 'Normal text', type: 'text', example: '', help: 'Shown instead of low–high, e.g. Negative' },
+  { key: 'isActive', header: 'Active', type: 'boolean', example: 'Yes' },
+];
+
+export const testImportRowSchema = testInputSchema
+  .omit({ ranges: true })
+  .extend({
+    refLow: z.number().optional(),
+    refHigh: z.number().optional(),
+    criticalLow: z.number().optional(),
+    criticalHigh: z.number().optional(),
+    refText: optText(200),
+  })
+  .superRefine((r, ctx) => {
+    if (r.refLow !== undefined && r.refHigh !== undefined && r.refHigh < r.refLow) ctx.addIssue({ code: 'custom', path: ['refHigh'], message: 'Normal high must be at least normal low' });
+    if (r.criticalLow !== undefined && r.refLow !== undefined && r.criticalLow > r.refLow) ctx.addIssue({ code: 'custom', path: ['criticalLow'], message: 'Critical low must be at or below normal low' });
+    if (r.criticalHigh !== undefined && r.refHigh !== undefined && r.criticalHigh < r.refHigh) ctx.addIssue({ code: 'custom', path: ['criticalHigh'], message: 'Critical high must be at or above normal high' });
+    if (r.resultType === 'option' && r.options.length < 2) ctx.addIssue({ code: 'custom', path: ['options'], message: 'Give at least two options, e.g. Positive | Negative' });
+  });
+export type TestImportRow = z.output<typeof testImportRowSchema>;
 
 export interface LabTest {
   id: string;
@@ -157,7 +199,7 @@ export const panelInputSchema = z.object({
   testIds: z.array(z.uuid()).min(1).max(60),
 });
 export type PanelInput = z.input<typeof panelInputSchema>;
-export const updatePanelSchema = panelInputSchema.omit({ code: true }).partial();
+export const updatePanelSchema = patchSchema(panelInputSchema.omit({ code: true }));
 export type UpdatePanel = z.input<typeof updatePanelSchema>;
 
 export interface LabPanel {
@@ -207,6 +249,16 @@ export const createOrderSchema = z.object({
   payNow: z.object({ mode: z.enum(['cash', 'upi', 'card']), amount: z.number().positive(), ref: optText(100) }).optional(),
 });
 export type CreateOrder = z.input<typeof createOrderSchema>;
+
+/** Correct an order's details before the report is complete. Blank ('' or null) clears a field. */
+export const updateOrderSchema = z.object({
+  priority: z.enum(ORDER_PRIORITIES).optional(),
+  /** Referring doctor on staff; null removes them. */
+  doctorId: z.uuid().nullable().optional(),
+  referredBy: z.string().trim().max(200).nullable().optional(),
+  clinicalNotes: z.string().trim().max(1000).nullable().optional(),
+});
+export type UpdateOrder = z.input<typeof updateOrderSchema>;
 
 export const cancelOrderSchema = z.object({ reason: z.string().trim().min(3).max(500) });
 export type CancelOrder = z.input<typeof cancelOrderSchema>;

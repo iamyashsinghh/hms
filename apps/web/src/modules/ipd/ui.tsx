@@ -108,3 +108,13 @@ export const daysLabel = (n: number) => `${n} day${n === 1 ? '' : 's'}`;
 
 /** Local datetime-local input value → ISO string with offset, or undefined. */
 export const fromLocalInput = (v: string) => (v ? new Date(v).toISOString() : undefined);
+
+/** First message per field from a failed Zod parse, keyed by the top-level field name. */
+export function fieldErrors(issues: readonly { path: readonly PropertyKey[]; message: string }[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const i of issues) {
+    const key = String(i.path[0] ?? '_');
+    out[key] ??= i.message;
+  }
+  return out;
+}

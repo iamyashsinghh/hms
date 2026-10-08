@@ -387,3 +387,58 @@ describe('cross-hospital isolation', () => {
     expect(otherHk.items.find((t: { location: string }) => t.location === `Room ${tag}`)).toBeUndefined();
   });
 });
+
+describe('editing facility-services masters', () => {
+  it('edits a CSSD set without resetting fields it did not send', async () => {
+    const set = (await call(admin, 'POST', '/ops/cssd/sets', { name: `Edit set ${tag}`, department: 'OT 2', contents: ['Forceps x2'], shelfLifeDays: 20 })).json();
+    const renamed = await call(admin, 'PATCH', `/ops/cssd/sets/${set.id}`, { name: `Edited set ${tag}` });
+    expect(renamed.statusCode, renamed.body).toBe(200);
+    // Partial update keeps contents and shelf life (Zod defaults are not re-applied).
+    expect(renamed.json()).toMatchObject({ name: `Edited set ${tag}`, contents: ['Forceps x2'], shelfLifeDays: 20, department: 'OT 2' });
+    const cleared = (await call(admin, 'PATCH', `/ops/cssd/sets/${set.id}`, { department: null, contents: ['Forceps x4', 'Scissors'], isActive: false })).json();
+    expect(cleared).toMatchObject({ department: null, contents: ['Forceps x4', 'Scissors'], isActive: false, shelfLifeDays: 20 });
+    expect((await call(admin, 'PATCH', `/ops/cssd/sets/${set.id}`, { shelfLifeDays: 0 })).statusCode).toBe(400);
+    expect((await call(admin, 'PATCH', `/ops/cssd/sets/${set.id}`, { name: '' })).statusCode).toBe(400);
+    expect((await call(nurse, 'PATCH', `/ops/cssd/sets/${set.id}`, { name: 'Nope' })).statusCode).toBe(403);
+  });
+
+  it('edits a linen item: keeps par level, refuses duplicates and negatives', async () => {
+    const a = (await call(admin, 'POST', '/ops/linen/items', { name: `Pillow cover ${tag}`, parLevel: 25 })).json();
+    const b = (await call(admin, 'POST', '/ops/linen/items', { name: `Towel ${tag}`, parLevel: 10 })).json();
+    const off = (await call(admin, 'PATCH', `/ops/linen/items/${a.id}`, { isActive: false })).json();
+    expect(off).toMatchObject({ isActive: false, parLevel: 25 });
+    expect((await call(admin, 'PATCH', `/ops/linen/items/${a.id}`, { name: `towel ${tag}` })).statusCode).toBe(409);
+    expect((await call(admin, 'PATCH', `/ops/linen/items/${a.id}`, { parLevel: -1 })).statusCode).toBe(400);
+    expect((await call(admin, 'PATCH', `/ops/linen/items/${b.id}`, { name: `Bath towel ${tag}` })).json().name).toBe(`Bath towel ${tag}`);
+    expect((await call(doctor, 'PATCH', `/ops/linen/items/${b.id}`, { parLevel: 1 })).statusCode).toBe(403);
+  });
+
+  it('edits an ambulance: keeps its type, clears the driver, refuses a taken registration and bad mobile', async () => {
+    const r1 = `MH14${tag.slice(-6)}`;
+    const r2 = `MH15${tag.slice(-6)}`;
+    const v1 = (await call(admin, 'POST', '/ops/ambulance/vehicles', { registrationNo: r1, type: 'als', driverName: 'Ravi', driverMobile: '9876500000' })).json();
+    await call(admin, 'POST', '/ops/ambulance/vehicles', { registrationNo: r2 });
+    const edited = (await call(admin, 'PATCH', `/ops/ambulance/vehicles/${v1.id}`, { baseCharge: 750 })).json();
+    expect(edited).toMatchObject({ type: 'als', baseCharge: 750, driverName: 'Ravi' });
+    const cleared = (await call(admin, 'PATCH', `/ops/ambulance/vehicles/${v1.id}`, { driverName: null, driverMobile: null })).json();
+    expect(cleared).toMatchObject({ driverName: null, driverMobile: null });
+    expect((await call(admin, 'PATCH', `/ops/ambulance/vehicles/${v1.id}`, { registrationNo: r2 })).statusCode).toBe(409);
+    expect((await call(admin, 'PATCH', `/ops/ambulance/vehicles/${v1.id}`, { driverMobile: '12345' })).statusCode).toBe(400);
+    expect((await call(admin, 'PATCH', `/ops/ambulance/vehicles/${v1.id}`, { ratePerKm: -2 })).statusCode).toBe(400);
+    expect((await call(doctor, 'PATCH', `/ops/ambulance/vehicles/${v1.id}`, { baseCharge: 1 })).statusCode).toBe(403);
+  });
+
+  it('edits an open housekeeping task, not a closed one', async () => {
+    const t = (await call(reception, 'POST', '/ops/housekeeping/tasks', { location: `Bay ${tag}`, priority: 'low' })).json();
+    const due = new Date(Date.now() + 3 * 3_600_000).toISOString();
+    const res = await call(admin, 'PATCH', `/ops/housekeeping/tasks/${t.id}`, { location: `Bay 2 ${tag}`, kind: 'spill', priority: 'urgent', description: 'Spill near bed', dueAt: due });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ location: `Bay 2 ${tag}`, kind: 'spill', priority: 'urgent', description: 'Spill near bed', status: 'pending' });
+    expect((await call(admin, 'PATCH', `/ops/housekeeping/tasks/${t.id}`, { description: null, dueAt: null })).json()).toMatchObject({ description: null, dueAt: null });
+    expect((await call(admin, 'PATCH', `/ops/housekeeping/tasks/${t.id}`, { location: '' })).statusCode).toBe(400);
+    expect((await call(admin, 'PATCH', `/ops/housekeeping/tasks/${t.id}`, { priority: 'asap' })).statusCode).toBe(400);
+    expect((await call(reception, 'PATCH', `/ops/housekeeping/tasks/${t.id}`, { location: 'x' })).statusCode).toBe(403);
+    await call(admin, 'PATCH', `/ops/housekeeping/tasks/${t.id}`, { status: 'done' });
+    expect((await call(admin, 'PATCH', `/ops/housekeeping/tasks/${t.id}`, { location: 'Late' })).json().error.code).toBe('task_closed');
+  });
+});

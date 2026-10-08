@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus } from 'lucide-react';
+import { Loader2, Pencil, Plus } from 'lucide-react';
 import { ops as O } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { Can, usePermission } from '@/lib/auth';
@@ -17,20 +17,50 @@ import { ErrorBox, Field, HK_KIND_LABELS, HK_STATUS, MessageRow, Pager, Priority
 
 const PAGE_SIZE = 30;
 
-function RequestForm({ onDone }: { onDone: () => void }) {
+/** datetime-local value (local time) from an ISO timestamp. */
+const toLocalInput = (iso: string | null | undefined) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+};
+
+/** New housekeeping request; with `initial` a supervisor edits an open task's details. */
+function TaskForm({ initial, onDone }: { initial?: O.HkTask; onDone: () => void }) {
   const queryClient = useQueryClient();
   const canManage = usePermission('ops.housekeeping.manage');
-  const [f, setF] = React.useState({ location: '', kind: 'routine' as O.HkKind, priority: 'normal' as O.HkPriority, description: '', dueAt: '', assignedTo: '' });
+  const [f, setF] = React.useState({
+    location: initial?.location ?? '',
+    kind: initial?.kind ?? ('routine' as O.HkKind),
+    priority: initial?.priority ?? ('normal' as O.HkPriority),
+    description: initial?.description ?? '',
+    dueAt: toLocalInput(initial?.dueAt),
+    assignedTo: initial?.assignedTo ?? '',
+  });
   const save = useMutation({
-    mutationFn: () =>
-      api.ops.housekeeping.create({
+    mutationFn: () => {
+      if (!f.location.trim()) throw new Error('Location is required');
+      const dueAt = f.dueAt ? new Date(f.dueAt).toISOString() : null;
+      const dueChanged = f.dueAt !== toLocalInput(initial?.dueAt);
+      if (dueAt && dueChanged && new Date(dueAt).getTime() < Date.now() - 60_000) throw new Error('Due by cannot be in the past');
+      if (initial) {
+        return api.ops.housekeeping.update(initial.id, {
+          location: f.location.trim(),
+          kind: f.kind,
+          priority: f.priority,
+          description: f.description.trim() || null,
+          dueAt,
+          ...(f.assignedTo.trim() ? { assignedTo: f.assignedTo.trim() } : {}),
+        });
+      }
+      return api.ops.housekeeping.create({
         location: f.location.trim(),
         kind: f.kind,
         priority: f.priority,
         description: opt(f.description),
         assignedTo: canManage ? opt(f.assignedTo) : undefined,
-        dueAt: f.dueAt ? new Date(f.dueAt).toISOString() : undefined,
-      }),
+        dueAt: dueAt ?? undefined,
+      });
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['ops'] });
       onDone();
@@ -39,7 +69,7 @@ function RequestForm({ onDone }: { onDone: () => void }) {
   return (
     <Card className="mb-6">
       <CardHeader>
-        <CardTitle>New housekeeping request</CardTitle>
+        <CardTitle>{initial ? `Edit task ${initial.number}` : 'New housekeeping request'}</CardTitle>
       </CardHeader>
       <CardContent>
         <form
@@ -53,7 +83,7 @@ function RequestForm({ onDone }: { onDone: () => void }) {
             <ErrorBox error={save.error ? errorMessage(save.error) : null} />
           </div>
           <Field id="hk-loc" label="Location *" className="sm:col-span-2">
-            <Input id="hk-loc" value={f.location} onChange={(e) => setF({ ...f, location: e.target.value })} placeholder="e.g. Ward 3 / Bed 7, OPD washroom" required />
+            <Input id="hk-loc" maxLength={200} value={f.location} onChange={(e) => setF({ ...f, location: e.target.value })} placeholder="e.g. Ward 3 / Bed 7, OPD washroom" required />
           </Field>
           <Field id="hk-kind" label="Type">
             <Select id="hk-kind" value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value as O.HkKind })}>
@@ -72,14 +102,14 @@ function RequestForm({ onDone }: { onDone: () => void }) {
             </Select>
           </Field>
           <Field id="hk-desc" label="Description" className="sm:col-span-2">
-            <Input id="hk-desc" value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} />
+            <Input id="hk-desc" maxLength={1000} value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} />
           </Field>
           <Field id="hk-due" label="Due by (optional)">
             <Input id="hk-due" type="datetime-local" value={f.dueAt} onChange={(e) => setF({ ...f, dueAt: e.target.value })} />
           </Field>
           {canManage && (
             <Field id="hk-assign" label="Assign to">
-              <Input id="hk-assign" value={f.assignedTo} onChange={(e) => setF({ ...f, assignedTo: e.target.value })} placeholder="Staff name" />
+              <Input id="hk-assign" maxLength={100} value={f.assignedTo} onChange={(e) => setF({ ...f, assignedTo: e.target.value })} placeholder="Staff name" />
             </Field>
           )}
           <div className="flex justify-end gap-2 sm:col-span-4">
@@ -88,7 +118,7 @@ function RequestForm({ onDone }: { onDone: () => void }) {
             </Button>
             <Button type="submit" disabled={save.isPending}>
               {save.isPending && <Loader2 className="animate-spin" />}
-              Raise request
+              {initial ? 'Save changes' : 'Raise request'}
             </Button>
           </div>
         </form>
@@ -139,6 +169,7 @@ export default function HousekeepingPage() {
   const [kind, setKind] = React.useState('');
   const [page, setPage] = React.useState(1);
   const [assigning, setAssigning] = React.useState<string | null>(null);
+  const [editing, setEditing] = React.useState<O.HkTask | null>(null);
 
   const query: O.HkTaskQuery = {
     open: status === 'open' ? 'true' : undefined,
@@ -180,7 +211,8 @@ export default function HousekeepingPage() {
         }
       />
 
-      {requesting && <RequestForm onDone={() => setRequesting(false)} />}
+      {requesting && <TaskForm onDone={() => setRequesting(false)} />}
+      {editing && canManage && <TaskForm key={editing.id} initial={editing} onDone={() => setEditing(null)} />}
 
       <Card>
         <div className="flex flex-wrap items-center gap-3 border-b p-4">
@@ -276,6 +308,11 @@ export default function HousekeepingPage() {
                         <TableCell className="text-right">
                           {canManage && (
                             <div className="flex justify-end gap-1">
+                              {open && (
+                                <Button size="sm" variant="ghost" aria-label={`Edit ${t.number}`} onClick={() => setEditing(t)}>
+                                  <Pencil />
+                                </Button>
+                              )}
                               {open && (
                                 <Button size="sm" variant="ghost" onClick={() => setAssigning(assigning === t.id ? null : t.id)}>
                                   {t.assignedTo ? 'Reassign' : 'Assign'}

@@ -8,6 +8,7 @@ import { hr as H } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { Can, usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
+import { BulkImportButton } from '@/components/bulk-import';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
 import { buttonVariants } from '@/components/ui/button';
@@ -39,9 +40,12 @@ export default function EmployeesPage() {
         description="Everyone on the hospital's rolls: doctors, nurses, technicians, office and support staff (with or without a login)."
         actions={
           <Can permission="hr.employee.manage">
-            <Link href="/hr/employees/new" className={buttonVariants()}>
-              <Plus /> Add employee
-            </Link>
+            <div className="flex gap-2">
+              <BulkImportButton noun="employees" columns={H.EMPLOYEE_IMPORT_COLUMNS} run={(req) => api.hr.employees.import(req)} invalidate={[['hr']]} />
+              <Link href="/hr/employees/new" className={buttonVariants()}>
+                <Plus /> Add employee
+              </Link>
+            </div>
           </Can>
         }
       />

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { patchSchema } from '../patch';
 import { paginationQuerySchema } from '../common';
 
 /**
@@ -112,7 +113,7 @@ export const referrerInputSchema = z.object({
   isActive: z.boolean().default(true),
 });
 export type ReferrerInput = z.input<typeof referrerInputSchema>;
-export const updateReferrerSchema = referrerInputSchema.partial();
+export const updateReferrerSchema = patchSchema(referrerInputSchema);
 export type UpdateReferrer = z.input<typeof updateReferrerSchema>;
 
 export const referrerQuerySchema = paginationQuerySchema.extend({
@@ -581,11 +582,18 @@ export interface FollowUp {
   sourceRef: string | null;
   status: FollowUpStatus;
   assignedTo: string | null;
+  assignedToName: string | null;
   reminderCount: number;
   lastRemindedAt: string | null;
   outcome: string | null;
   completedAt: string | null;
   createdAt: string;
+}
+
+/** A staff user who can be assigned an enquiry or a follow-up (GET /crm/staff). */
+export interface CrmStaff {
+  id: string;
+  name: string;
 }
 
 /** Result of POST /crm/follow-ups/remind-due. */

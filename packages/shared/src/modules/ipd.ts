@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { patchSchema } from '../patch';
+import type { ImportColumn } from '../imports';
 
 /**
  * IPD & Nursing: permissions and API contracts (Zod schemas + types).
@@ -105,7 +107,7 @@ export const wardInputSchema = z.object({
   isActive: z.boolean().default(true),
 });
 export type WardInput = z.input<typeof wardInputSchema>;
-export const updateWardSchema = wardInputSchema.omit({ code: true, facilityId: true }).partial();
+export const updateWardSchema = patchSchema(wardInputSchema.omit({ code: true, facilityId: true }));
 export type UpdateWard = z.input<typeof updateWardSchema>;
 
 export interface Ward {
@@ -131,6 +133,17 @@ export const bedInputSchema = z.object({
   chargeServiceCode: z.string().trim().toUpperCase().max(40).optional(),
 });
 export type BedInput = z.input<typeof bedInputSchema>;
+
+/** Columns of the bed import sheet. `Ward` is the ward code (or name) in the current facility. */
+export const BED_IMPORT_COLUMNS: readonly ImportColumn[] = [
+  { key: 'ward', header: 'Ward', type: 'text', required: true, example: 'GW', help: 'Ward code or name' },
+  { key: 'code', header: 'Bed', type: 'text', required: true, example: 'GW-1' },
+  { key: 'roomNo', header: 'Room no', type: 'text', example: '101' },
+  { key: 'dailyRate', header: 'Daily rate', type: 'number', example: 1500, help: "Defaults to the ward's rate" },
+  { key: 'chargeServiceCode', header: 'Charge service code', type: 'text', example: '' },
+];
+export const bedImportRowSchema = bedInputSchema.omit({ wardId: true }).extend({ ward: z.string().trim().min(1).max(100) });
+export type BedImportRow = z.output<typeof bedImportRowSchema>;
 
 /** Add several beds at once: prefix + numbers, e.g. "GW-" 1..10 → GW-1 … GW-10. */
 export const bulkBedsSchema = z
@@ -222,19 +235,24 @@ export const admitSchema = z.object({
 });
 export type AdmitInput = z.input<typeof admitSchema>;
 
-export const updateAdmissionSchema = admitSchema
-  .pick({
-    doctorId: true,
-    reason: true,
-    provisionalDiagnosis: true,
-    isMlc: true,
-    mlcNo: true,
-    attendantName: true,
-    attendantRelation: true,
-    attendantMobile: true,
-    expectedDischargeDate: true,
-  })
-  .partial();
+/** Blank ('' or null) clears an optional field on update. */
+const clearable = <T extends z.ZodType>(s: T) => z.union([s, z.literal('')]).nullable().optional();
+
+/**
+ * Edit an admission while the patient is still admitted. Same rules as admit; optional
+ * fields can be cleared with '' or null. Turning MLC off clears the MLC number.
+ */
+export const updateAdmissionSchema = z.object({
+  doctorId: z.uuid().optional(),
+  reason: z.string().trim().min(2).max(1000).optional(),
+  provisionalDiagnosis: clearable(z.string().trim().max(1000)),
+  isMlc: z.boolean().optional(),
+  mlcNo: clearable(z.string().trim().max(50)),
+  attendantName: clearable(z.string().trim().max(100)),
+  attendantRelation: clearable(z.string().trim().max(50)),
+  attendantMobile: clearable(mobile),
+  expectedDischargeDate: clearable(z.iso.date()),
+});
 export type UpdateAdmission = z.input<typeof updateAdmissionSchema>;
 
 export const transferSchema = z.object({

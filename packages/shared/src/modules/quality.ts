@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { patchSchema } from '../patch';
 
 /**
  * Quality & NABH: permissions and API contracts (Zod schemas + types).
@@ -243,6 +244,9 @@ export const updateComplaintSchema = z.object({
   status: z.enum(COMPLAINT_STATUSES).optional(),
   assignedTo: z.uuid().nullable().optional(),
   priority: z.enum(COMPLAINT_PRIORITIES).optional(),
+  /** Correct a mis-filed complaint. */
+  category: z.enum(COMPLAINT_CATEGORIES).optional(),
+  department: optionalText(120),
   /** Required when resolving. */
   resolution: optionalText(5000),
   note: optionalText(2000),
@@ -317,7 +321,13 @@ export const createHaiSchema = z.object({
   notes: optionalText(2000),
 });
 export type CreateHai = z.input<typeof createHaiSchema>;
-export const updateHaiSchema = createHaiSchema.omit({ patientId: true }).partial();
+// patchSchema, not .partial(): Zod 4 keeps defaults inside .partial(), so editing a field reset status to 'suspected'.
+export const updateHaiSchema = patchSchema(
+  createHaiSchema
+    .omit({ patientId: true })
+    // '' or null clears the device/surgery date.
+    .extend({ deviceInsertedOn: z.union([isoDate, z.literal('')]).nullish() }),
+);
 export type UpdateHai = z.input<typeof updateHaiSchema>;
 
 export const haiQuerySchema = z.object({
@@ -561,7 +571,7 @@ export const createDocumentSchema = z.object({
   reviewDue: isoDate.optional(),
 });
 export type CreateDocument = z.input<typeof createDocumentSchema>;
-export const updateDocumentSchema = createDocumentSchema.omit({ code: true }).partial();
+export const updateDocumentSchema = patchSchema(createDocumentSchema.omit({ code: true }));
 export type UpdateDocument = z.input<typeof updateDocumentSchema>;
 
 export const documentQuerySchema = z.object({

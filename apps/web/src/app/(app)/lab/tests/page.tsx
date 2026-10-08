@@ -6,6 +6,7 @@ import { Loader2, Plus, Search, Sparkles, Trash2 } from 'lucide-react';
 import { lab as L } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { Can, usePermission } from '@/lib/auth';
+import { BulkImportButton } from '@/components/bulk-import';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
 import { Badge } from '@/components/ui/badge';
@@ -75,6 +76,14 @@ const blankTest: TestForm = {
 const blankPanel: PanelForm = { code: '', name: '', price: '', serviceCode: '', isActive: true, testIds: [] };
 
 const optNum = (v: string) => (v.trim() === '' ? undefined : Number(v));
+
+/** Check a body against the shared schema before sending; throws a readable "field: problem" error. */
+function validate(result: { success: boolean; error?: { issues: readonly { path: readonly PropertyKey[]; message: string }[] } }) {
+  const issue = result.success ? undefined : result.error?.issues[0];
+  if (!issue) return;
+  const field = issue.path.map((p) => (typeof p === 'number' ? `#${p + 1}` : String(p))).join(' ');
+  throw new Error(field ? `${field}: ${issue.message}` : issue.message);
+}
 const str = (v: number | null) => (v === null ? '' : String(v));
 
 export default function LabCataloguePage() {
@@ -95,7 +104,7 @@ export default function LabCataloguePage() {
   const starter = useMutation({ mutationFn: () => api.lab.loadStarterCatalogue(), onSuccess: refresh });
 
   const saveTest = useMutation({
-    mutationFn: (f: TestForm) => {
+    mutationFn: async (f: TestForm) => {
       const body = {
         name: f.name,
         section: f.section,
@@ -121,7 +130,12 @@ export default function LabCataloguePage() {
           text: r.text || undefined,
         })),
       };
-      return f.id ? api.lab.tests.update(f.id, body) : api.lab.tests.create({ ...body, code: f.code });
+      if (f.id) {
+        validate(L.updateTestSchema.safeParse(body));
+        return api.lab.tests.update(f.id, body);
+      }
+      validate(L.testInputSchema.safeParse({ ...body, code: f.code }));
+      return api.lab.tests.create({ ...body, code: f.code });
     },
     onSuccess: () => {
       setTestForm(null);
@@ -130,9 +144,14 @@ export default function LabCataloguePage() {
   });
 
   const savePanel = useMutation({
-    mutationFn: (f: PanelForm) => {
+    mutationFn: async (f: PanelForm) => {
       const body = { name: f.name, price: Number(f.price || 0), serviceCode: f.serviceCode, isActive: f.isActive, testIds: f.testIds };
-      return f.id ? api.lab.panels.update(f.id, body) : api.lab.panels.create({ ...body, code: f.code });
+      if (f.id) {
+        validate(L.updatePanelSchema.safeParse(body));
+        return api.lab.panels.update(f.id, body);
+      }
+      validate(L.panelInputSchema.safeParse({ ...body, code: f.code }));
+      return api.lab.panels.create({ ...body, code: f.code });
     },
     onSuccess: () => {
       setPanelForm(null);
@@ -179,6 +198,7 @@ export default function LabCataloguePage() {
         description="The lab catalogue: tests with units, reference and critical ranges, and panels (CBC, LFT…) that group them. Prices here are used when a test has no billing service code."
         actions={
           <Can permission="lab.test.manage">
+            <BulkImportButton noun="lab tests" columns={L.TEST_IMPORT_COLUMNS} run={(req) => api.lab.tests.import(req)} invalidate={[['lab']]} />
             <Button variant="outline" disabled={starter.isPending} onClick={() => starter.mutate()}>
               {starter.isPending ? <Loader2 className="animate-spin" /> : <Sparkles />} Add common tests
             </Button>

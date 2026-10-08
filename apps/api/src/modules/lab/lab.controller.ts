@@ -1,5 +1,5 @@
 import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Put, Query } from '@nestjs/common';
-import { lab, type Paginated } from '@hms/shared';
+import { importRequestSchema, lab, type ImportResult, type Paginated } from '@hms/shared';
 import { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
@@ -32,6 +32,14 @@ export class LabController {
   @RequirePermissions('lab.test.manage')
   createTest(@Body(new ZodPipe(lab.testInputSchema)) body: lab.TestInput): Promise<lab.LabTest> {
     return this.lab.createTest(body);
+  }
+
+  /** Bulk import from Excel / CSV. `dryRun` validates only (the preview). */
+  @Post('tests/import')
+  @HttpCode(200)
+  @RequirePermissions('lab.test.manage')
+  importTests(@Body(new ZodPipe(importRequestSchema)) body: z.output<typeof importRequestSchema>): Promise<ImportResult> {
+    return this.lab.importTests(body);
   }
 
   @Patch('tests/:id')
@@ -95,6 +103,12 @@ export class LabController {
   @RequirePermissions('lab.order.read')
   getOrder(@Param('id', ParseUUIDPipe) id: string): Promise<Order> {
     return this.lab.getOrder(id);
+  }
+
+  @Patch('orders/:id')
+  @RequirePermissions('lab.order.create')
+  updateOrder(@Param('id', ParseUUIDPipe) id: string, @Body(new ZodPipe(lab.updateOrderSchema)) body: lab.UpdateOrder): Promise<Order> {
+    return this.lab.update(id, body);
   }
 
   @Get('orders/:id/report')

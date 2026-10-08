@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Put, Query } from '@nestjs/common';
-import { hr as contracts, type Paginated } from '@hms/shared';
+import { hr as contracts, importRequestSchema, type ImportResult, type Paginated } from '@hms/shared';
 import { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { RequireEntitlement } from '../platform/entitlement.guard';
@@ -44,6 +44,14 @@ export class EmployeesController {
   @RequirePermissions('hr.employee.manage')
   create(@Body(new ZodPipe(contracts.createEmployeeSchema)) body: contracts.CreateEmployee): Promise<contracts.Employee> {
     return this.employees.create(body);
+  }
+
+  /** Bulk import from Excel / CSV. `dryRun` validates only (the preview). */
+  @Post('employees/import')
+  @HttpCode(200)
+  @RequirePermissions('hr.employee.manage')
+  importEmployees(@Body(new ZodPipe(importRequestSchema)) body: z.output<typeof importRequestSchema>): Promise<ImportResult> {
+    return this.employees.import(body);
   }
 
   @Get('employees/:id')

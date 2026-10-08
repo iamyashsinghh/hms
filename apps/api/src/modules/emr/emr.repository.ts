@@ -175,6 +175,15 @@ export class EmrRepository {
     return row!;
   }
 
+  async updateFavourite(tx: Tx, id: string, doctorId: string, values: Partial<Insert<typeof emrFavourites>>): Promise<FavouriteRow | undefined> {
+    const [row] = await tx
+      .update(emrFavourites)
+      .set({ ...values, updatedAt: new Date().toISOString() })
+      .where(and(eq(emrFavourites.id, id), eq(emrFavourites.doctorId, doctorId)))
+      .returning();
+    return row;
+  }
+
   async deleteFavourite(tx: Tx, id: string, doctorId: string): Promise<boolean> {
     const rows = await tx.delete(emrFavourites).where(and(eq(emrFavourites.id, id), eq(emrFavourites.doctorId, doctorId))).returning({ id: emrFavourites.id });
     return rows.length > 0;

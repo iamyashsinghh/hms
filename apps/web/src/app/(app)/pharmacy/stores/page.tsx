@@ -21,15 +21,31 @@ export default function StoresPage() {
   const queryClient = useQueryClient();
   const { data: stores, isPending, error } = useQuery({ queryKey: ['pharmacy', 'stores'], queryFn: () => api.pharmacy.stores.list(), enabled: canManage });
   const [form, setForm] = React.useState({ facilityId: '', code: '', name: '', type: 'pharmacy' as (typeof pharmacy.STORE_TYPES)[number] });
+  /** Store being edited: name and type can change; code and facility are fixed (stock and documents refer to them). */
+  const [editing, setEditing] = React.useState<pharmacy.Store | null>(null);
+  const [formError, setFormError] = React.useState<string | null>(null);
   const facilityId = form.facilityId || facility?.id || user?.facilities[0]?.id || '';
 
   const create = useMutation({
-    mutationFn: () => api.pharmacy.stores.create({ ...form, facilityId }),
+    mutationFn: () => (editing ? api.pharmacy.stores.update(editing.id, { name: form.name.trim(), type: form.type }) : api.pharmacy.stores.create({ ...form, facilityId })),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pharmacy', 'stores'] });
-      setForm((f) => ({ ...f, code: '', name: '' }));
+      setEditing(null);
+      setForm((f) => ({ ...f, code: '', name: '', type: 'pharmacy' }));
     },
   });
+  const startEdit = (s: pharmacy.Store) => {
+    create.reset();
+    setFormError(null);
+    setEditing(s);
+    setForm({ facilityId: s.facilityId, code: s.code, name: s.name, type: s.type });
+  };
+  const cancelEdit = () => {
+    create.reset();
+    setFormError(null);
+    setEditing(null);
+    setForm({ facilityId: '', code: '', name: '', type: 'pharmacy' });
+  };
   const toggle = useMutation({
     mutationFn: (s: pharmacy.Store) => api.pharmacy.stores.update(s.id, { isActive: !s.isActive }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pharmacy', 'stores'] }),
@@ -79,6 +95,9 @@ export default function StoresPage() {
                       <TableCell>{facilityName(s.facilityId)}</TableCell>
                       <TableCell className="capitalize">{s.type}</TableCell>
                       <TableCell className="text-right">
+                        <Button variant="ghost" size="sm" onClick={() => startEdit(s)}>
+                          Edit
+                        </Button>
                         <Button variant="ghost" size="sm" onClick={() => toggle.mutate(s)}>
                           {s.isActive ? 'Deactivate' : 'Activate'}
                         </Button>
@@ -92,19 +111,27 @@ export default function StoresPage() {
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>New store</CardTitle>
+            <CardTitle>{editing ? `Edit store ${editing.code}` : 'New store'}</CardTitle>
           </CardHeader>
           <CardContent>
             <form
               className="space-y-4"
               onSubmit={(e) => {
                 e.preventDefault();
+                setFormError(null);
+                const parsed = editing
+                  ? pharmacy.updateStoreSchema.safeParse({ name: form.name, type: form.type })
+                  : pharmacy.createStoreSchema.safeParse({ ...form, facilityId });
+                if (!parsed.success) {
+                  const issue = parsed.error.issues[0];
+                  return setFormError(issue ? `${issue.path.join('.') || 'Store'}: ${issue.path[0] === 'code' ? 'Letters, digits, - and _ only (max 20)' : issue.message}` : 'Check the store');
+                }
                 create.mutate();
               }}
             >
               <div>
                 <Label htmlFor="facility">Facility</Label>
-                <Select id="facility" className="mt-2" value={facilityId} onChange={(e) => setForm({ ...form, facilityId: e.target.value })}>
+                <Select id="facility" className="mt-2" disabled={!!editing} value={facilityId} onChange={(e) => setForm({ ...form, facilityId: e.target.value })}>
                   {user?.facilities.map((f) => (
                     <option key={f.id} value={f.id}>
                       {f.name}
@@ -114,7 +141,7 @@ export default function StoresPage() {
               </div>
               <div>
                 <Label htmlFor="code">Code</Label>
-                <Input id="code" className="mt-2" placeholder="MAINPH" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} required />
+                <Input id="code" className="mt-2" disabled={!!editing} placeholder="MAINPH" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} required />
               </div>
               <div>
                 <Label htmlFor="name">Name</Label>
@@ -130,10 +157,15 @@ export default function StoresPage() {
                   ))}
                 </Select>
               </div>
-              {create.error && <p className="text-sm text-destructive">{errorMessage(create.error)}</p>}
-              <Button type="submit" className="w-full" disabled={create.isPending || !form.code || !form.name || !facilityId}>
-                {create.isPending ? <Loader2 className="animate-spin" /> : <Plus />} Create store
+              {(formError || create.error) && <p className="text-sm text-destructive">{formError ?? errorMessage(create.error)}</p>}
+              <Button type="submit" className="w-full" disabled={create.isPending || !form.code || !form.name.trim() || !facilityId}>
+                {create.isPending ? <Loader2 className="animate-spin" /> : !editing && <Plus />} {editing ? 'Save changes' : 'Create store'}
               </Button>
+              {editing && (
+                <Button type="button" variant="outline" className="w-full" onClick={cancelEdit}>
+                  Cancel
+                </Button>
+              )}
             </form>
           </CardContent>
         </Card>

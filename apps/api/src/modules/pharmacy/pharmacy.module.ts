@@ -5,6 +5,7 @@ import { BillingModule } from '../billing/billing.module';
 import { PharmacyBillingGateway } from './billing.gateway';
 import { PharmacyCatalogController } from './catalog.controller';
 import { PharmacyCatalogService } from './catalog.service';
+import { PharmacyImportService } from './import.service';
 import { PharmacyPrescriptionsService } from './prescriptions.service';
 import { PharmacySalesController } from './sales.controller';
 import { PharmacySalesService } from './sales.service';
@@ -21,6 +22,7 @@ import { PharmacyStockService } from './stock.service';
   controllers: [PharmacyCatalogController, PharmacyStockController, PharmacySalesController],
   providers: [
     PharmacyCatalogService,
+    PharmacyImportService,
     PharmacyStockService,
     PharmacySalesService,
     PharmacyPrescriptionsService,

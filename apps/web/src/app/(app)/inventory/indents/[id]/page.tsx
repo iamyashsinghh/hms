@@ -4,13 +4,13 @@ import * as React from 'react';
 import { use } from 'react';
 import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Loader2, Printer } from 'lucide-react';
+import { ArrowLeft, Loader2, Pencil, Printer } from 'lucide-react';
 import { api, errorMessage } from '@/lib/api';
 import { usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
 import { NoAccess } from '@/components/no-access';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -78,6 +78,11 @@ export default function IndentPage({ params }: { params: Promise<{ id: string }>
           <ArrowLeft className="size-4" /> Indents
         </Link>
         <div className="flex gap-2">
+          {canCreate && data.status === 'submitted' && (
+            <Link href={`/inventory/indents/${id}/edit`} className={buttonVariants({ variant: 'outline' })}>
+              <Pencil /> Edit
+            </Link>
+          )}
           {canCreate && data.status === 'submitted' && (
             <Button variant="outline" disabled={other.isPending} onClick={() => other.mutate('cancel')}>
               Cancel indent

@@ -186,7 +186,13 @@ export class EmrService {
     return this.mutate(id, { doctorOnly: true }, async (tx, enc) => {
       const values: Partial<EncounterRow> = { ...startIfWaiting(enc), updatedBy: currentContext()!.userId };
       if (input.notes !== undefined) values.notes = clean({ ...(enc.notes as EncounterNotes), ...input.notes });
-      if (input.followUpDate !== undefined) values.followUpDate = input.followUpDate;
+      if (input.followUpDate !== undefined) {
+        // A follow-up is after the visit, never before the day of the consultation (IST).
+        if (input.followUpDate && input.followUpDate < istDay(enc.createdAt)) {
+          throw badRequest('invalid_follow_up', 'Follow-up date cannot be before the consultation date');
+        }
+        values.followUpDate = input.followUpDate;
+      }
       if (input.followUpNotes !== undefined) values.followUpNotes = input.followUpNotes || null;
       return this.repo.updateEncounter(tx, id, values);
     });
@@ -554,6 +560,19 @@ export class EmrService {
     );
   }
 
+  /** Doctors can only change their own favourites. */
+  updateFavourite(id: string, input: emr.UpdateFavourite): Promise<Favourite> {
+    const d = emr.updateFavouriteSchema.parse(input);
+    return this.tx(async (tx) => {
+      const row = await this.repo.updateFavourite(tx, id, currentContext()!.userId!, {
+        ...(d.name !== undefined && { name: d.name }),
+        ...(d.lines !== undefined && { lines: d.lines }),
+      });
+      if (!row) throw notFound('Favourite');
+      return toFavourite(row);
+    });
+  }
+
   deleteFavourite(id: string): Promise<void> {
     return this.tx(async (tx) => {
       if (!(await this.repo.deleteFavourite(tx, id, currentContext()!.userId!))) throw notFound('Favourite');
@@ -833,4 +852,9 @@ function toCertificate(c: CertificateRow, names: Map<string, string>): Certifica
     remarks: c.remarks,
     issuedAt: iso(c.issuedAt),
   };
+}
+
+/** Calendar date (YYYY-MM-DD) in India time. */
+function istDay(at: string | Date): string {
+  return new Date(new Date(at).getTime() + 330 * 60_000).toISOString().slice(0, 10);
 }

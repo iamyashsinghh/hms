@@ -456,3 +456,32 @@ describe('quality: hospital isolation', () => {
     expect(still.status).toBe('reported');
   });
 });
+
+describe('quality: editing records', () => {
+  it('edits an infection case: fields, clearing the device date, date rules and permissions', async () => {
+    const h = await ok(nurse, 'POST', '/quality/hai', { patientId, infectionType: 'clabsi', ward: 'ICU', onsetDate: today(), deviceInsertedOn: today() });
+    const edited = await ok(nurse, 'PATCH', `/quality/hai/${h.id}`, { infectionType: 'vap', ward: `MICU ${tag}`, organism: 'Klebsiella', cultureRef: 'CX-1', notes: 'Updated after culture' });
+    expect(edited).toMatchObject({ infectionType: 'vap', ward: `MICU ${tag}`, organism: 'Klebsiella', cultureRef: 'CX-1', notes: 'Updated after culture', deviceInsertedOn: today() });
+    const cleared = await ok(nurse, 'PATCH', `/quality/hai/${h.id}`, { deviceInsertedOn: null, ward: '' });
+    expect(cleared).toMatchObject({ deviceInsertedOn: null, ward: null });
+
+    expect((await call(nurse, 'PATCH', `/quality/hai/${h.id}`, { onsetDate: '2099-01-01' })).json().error.code).toBe('future_date');
+    expect((await call(nurse, 'PATCH', `/quality/hai/${h.id}`, { deviceInsertedOn: '2099-01-01' })).json().error.code).toBe('invalid_dates');
+    expect((await call(nurse, 'PATCH', `/quality/hai/${h.id}`, { onsetDate: 'yesterday' })).statusCode).toBe(400);
+    expect((await call(nurse, 'PATCH', `/quality/hai/${h.id}`, { infectionType: 'flu' })).statusCode).toBe(400);
+    expect((await call(doctor, 'PATCH', `/quality/hai/${h.id}`, { organism: 'x' })).statusCode).toBe(403);
+  });
+
+  it('re-files a complaint under another category and department', async () => {
+    const c = await ok(reception, 'POST', '/quality/complaints', {
+      source: 'phone',
+      category: 'waiting_time',
+      complainantName: `Edit ${tag}`,
+      description: 'Filed under the wrong category',
+    });
+    const res = await ok(admin, 'PATCH', `/quality/complaints/${c.id}`, { category: 'billing', department: 'Accounts' });
+    expect(res).toMatchObject({ category: 'billing', department: 'Accounts', status: c.status });
+    expect((await call(admin, 'PATCH', `/quality/complaints/${c.id}`, { category: 'nonsense' })).statusCode).toBe(400);
+    expect((await call(reception, 'PATCH', `/quality/complaints/${c.id}`, { category: 'billing' })).statusCode).toBe(403);
+  });
+});

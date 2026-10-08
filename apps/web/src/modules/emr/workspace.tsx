@@ -187,7 +187,14 @@ export function NotesCard({ enc, editable }: { enc: Enc; editable: boolean }) {
       <div className="grid gap-3 sm:grid-cols-3">
         <div>
           <Label htmlFor="fu-date">Follow-up date</Label>
-          <Input id="fu-date" type="date" className="mt-1.5" value={followUpDate} onChange={(e) => setFollowUpDate(e.target.value)} />
+          <Input
+            id="fu-date"
+            type="date"
+            className="mt-1.5"
+            min={new Date(Date.parse(enc.createdAt) + 330 * 60_000).toISOString().slice(0, 10)}
+            value={followUpDate}
+            onChange={(e) => setFollowUpDate(e.target.value)}
+          />
         </div>
         <div className="sm:col-span-2">
           <Label htmlFor="fu-notes">Follow-up instructions</Label>

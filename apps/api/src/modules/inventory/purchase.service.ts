@@ -38,6 +38,11 @@ type GrnRow = typeof inventoryGrns.$inferSelect;
 type GrnLineRow = typeof inventoryGrnLines.$inferSelect;
 
 const RECEIVABLE: inventory.PoStatus[] = ['approved', 'partially_received'];
+const todayIST = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+/** A delivery date for a new or changed order cannot already be past. */
+const assertExpectedDate = (d: string | null | undefined) => {
+  if (d && d < todayIST()) throw badRequest('invalid_expected_date', 'Expected delivery date cannot be in the past');
+};
 
 /** Purchase requisitions → purchase orders → goods receipts → purchase returns. */
 @Injectable()
@@ -119,6 +124,29 @@ export class InventoryPurchaseService {
     });
   }
 
+  async updateRequisition(id: string, input: z.output<typeof inventory.updateRequisitionSchema>): Promise<inventory.Requisition> {
+    const ctx = currentContext()!;
+    const items = input.lines ? await this.stock.items(input.lines.map((l) => l.itemId)) : null;
+    return this.db.tx(async (tx) => {
+      const req = await this.reqRow(tx, id, true);
+      if (req.status !== 'submitted') throw conflict('invalid_status', `Requisition ${req.number} is ${req.status}; only undecided requisitions can be edited`);
+      const patch: Partial<typeof inventoryRequisitions.$inferInsert> = { updatedBy: ctx.userId };
+      if (input.neededBy !== undefined) patch.neededBy = input.neededBy;
+      if (input.notes !== undefined) patch.notes = input.notes || null;
+      const [row] = await tx.update(inventoryRequisitions).set(patch).where(eq(inventoryRequisitions.id, id)).returning();
+      if (input.lines && items) {
+        await tx.delete(inventoryRequisitionLines).where(eq(inventoryRequisitionLines.requisitionId, id));
+        await tx.insert(inventoryRequisitionLines).values(
+          input.lines.map((l, i) => {
+            const item = items.get(l.itemId)!;
+            return { tenantId: ctx.tenantId!, requisitionId: id, lineNo: i + 1, itemId: item.id, itemCode: item.code, itemName: item.name, unit: item.unit, qty: l.qty, note: l.note ?? null };
+          }),
+        );
+      }
+      return reqDto(row!, await tx.select().from(inventoryRequisitionLines).where(eq(inventoryRequisitionLines.requisitionId, id)).orderBy(asc(inventoryRequisitionLines.lineNo)));
+    });
+  }
+
   cancelRequisition(id: string): Promise<inventory.Requisition> {
     const ctx = currentContext()!;
     return this.db.tx(async (tx) => {
@@ -163,6 +191,7 @@ export class InventoryPurchaseService {
 
   async createPurchaseOrder(input: z.output<typeof inventory.createPurchaseOrderSchema>): Promise<inventory.PurchaseOrder> {
     const ctx = currentContext()!;
+    assertExpectedDate(input.expectedDate);
     const items = await this.stock.items(input.lines.map((l) => l.itemId));
     return this.db.tx(async (tx) => {
       const store = await this.stock.storeForUse(tx, input.storeId);
@@ -208,7 +237,10 @@ export class InventoryPurchaseService {
         patch.vendorId = vendor.id;
         patch.vendorName = vendor.name;
       }
-      if (input.expectedDate !== undefined) patch.expectedDate = input.expectedDate || null;
+      if (input.expectedDate !== undefined) {
+        if (input.expectedDate !== po.expectedDate) assertExpectedDate(input.expectedDate);
+        patch.expectedDate = input.expectedDate || null;
+      }
       if (input.terms !== undefined) patch.terms = input.terms || null;
       if (input.notes !== undefined) patch.notes = input.notes || null;
       await tx.update(inventoryPurchaseOrders).set(patch).where(eq(inventoryPurchaseOrders.id, id));

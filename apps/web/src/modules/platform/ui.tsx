@@ -139,3 +139,13 @@ export const MODULE_LABELS: Record<string, string> = {
   ops: 'Facility services',
   integrations: 'ABDM & integrations',
 };
+
+/** First validation problem from a shared Zod schema, as one readable line (null when valid). */
+export function firstIssue(schema: { safeParse: (v: unknown) => { success: boolean; error?: { issues: { path: PropertyKey[]; message: string }[] } } }, body: unknown, labels: Record<string, string> = {}): string | null {
+  const r = schema.safeParse(body);
+  if (r.success || !r.error) return null;
+  const issue = r.error.issues[0]!;
+  const key = issue.path.map(String).join('.');
+  const label = labels[key] ?? labels[String(issue.path[0] ?? '')] ?? key;
+  return label ? `${label}: ${issue.message}` : issue.message;
+}

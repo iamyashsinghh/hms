@@ -56,14 +56,14 @@ export class CssdService {
     });
   }
 
-  updateSet(id: string, input: Partial<SetIn>): Promise<O.CssdSet> {
+  updateSet(id: string, input: z.output<typeof O.updateCssdSetSchema>): Promise<O.CssdSet> {
     return this.db.tx(async (tx) => {
       const [row] = await tx
         .update(opsCssdSets)
         .set({
           ...defined({
             name: input.name,
-            department: input.department,
+            department: input.department === undefined ? undefined : input.department || null,
             contents: input.contents,
             shelfLifeDays: input.shelfLifeDays,
             isActive: input.isActive,

@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { patchSchema } from '../patch';
+import type { ImportColumn } from '../imports';
 
 /**
  * Inventory & Procurement: permissions and API contracts (Zod schemas + types).
@@ -73,7 +75,28 @@ export const createVendorSchema = z.object({
 });
 export type CreateVendor = z.input<typeof createVendorSchema>;
 
-export const updateVendorSchema = createVendorSchema.omit({ code: true }).partial().extend({ isActive: z.boolean().optional() });
+/** Columns of the vendor import sheet. */
+export const VENDOR_IMPORT_COLUMNS: readonly ImportColumn[] = [
+  { key: 'code', header: 'Code', type: 'text', required: true, example: 'V-SURGI' },
+  { key: 'name', header: 'Name', type: 'text', required: true, example: 'Surgi Supplies Pvt Ltd' },
+  { key: 'contactPerson', header: 'Contact person', type: 'text', example: 'Ravi Kumar' },
+  { key: 'phone', header: 'Phone', type: 'text', example: '9876543210' },
+  { key: 'email', header: 'Email', type: 'text', example: 'orders@surgi.example' },
+  { key: 'gstin', header: 'GSTIN', type: 'text', example: '07AABCS1429B1ZB' },
+  { key: 'pan', header: 'PAN', type: 'text', example: 'AABCS1429B' },
+  { key: 'address', header: 'Address', type: 'text', example: 'Okhla Phase 2, New Delhi' },
+  { key: 'paymentTermsDays', header: 'Payment terms (days)', type: 'integer', example: 30 },
+  { key: 'notes', header: 'Notes', type: 'text', example: '' },
+];
+
+/** Empty string clears an optional contact field on edit. */
+export const updateVendorSchema = patchSchema(createVendorSchema.omit({ code: true })).extend({
+  phone: createVendorSchema.shape.phone.or(z.literal('')),
+  email: createVendorSchema.shape.email.or(z.literal('')),
+  gstin: createVendorSchema.shape.gstin.or(z.literal('')),
+  pan: createVendorSchema.shape.pan.or(z.literal('')),
+  isActive: z.boolean().optional(),
+});
 export type UpdateVendor = z.input<typeof updateVendorSchema>;
 
 export const vendorQuerySchema = z.object({
@@ -114,6 +137,10 @@ export const createRequisitionSchema = z.object({
     .max(200),
 });
 export type CreateRequisition = z.input<typeof createRequisitionSchema>;
+
+/** Only submitted (undecided) requisitions can be edited; the lines replace the old ones. */
+export const updateRequisitionSchema = patchSchema(createRequisitionSchema.omit({ storeId: true }).extend({ neededBy: z.iso.date().nullable() }));
+export type UpdateRequisition = z.input<typeof updateRequisitionSchema>;
 
 export const decisionSchema = z.object({
   approve: z.boolean(),
@@ -181,7 +208,7 @@ export const createPurchaseOrderSchema = z.object({
 export type CreatePurchaseOrder = z.input<typeof createPurchaseOrderSchema>;
 
 /** Only drafts can be edited; the lines replace the old ones. */
-export const updatePurchaseOrderSchema = createPurchaseOrderSchema.omit({ storeId: true, requisitionId: true }).partial();
+export const updatePurchaseOrderSchema = patchSchema(createPurchaseOrderSchema.omit({ storeId: true, requisitionId: true }).extend({ expectedDate: z.iso.date().nullable() }));
 export type UpdatePurchaseOrder = z.input<typeof updatePurchaseOrderSchema>;
 
 export const closePurchaseOrderSchema = z.object({ reason: text(300) });
@@ -338,6 +365,10 @@ export const createIndentSchema = z.object({
     .max(200),
 });
 export type CreateIndent = z.input<typeof createIndentSchema>;
+
+/** Only submitted (undecided) indents can be edited; the stores stay, the lines replace the old ones. */
+export const updateIndentSchema = patchSchema(createIndentSchema.omit({ toStoreId: true, fromStoreId: true }));
+export type UpdateIndent = z.input<typeof updateIndentSchema>;
 
 export const decideIndentSchema = z.object({
   approve: z.boolean(),

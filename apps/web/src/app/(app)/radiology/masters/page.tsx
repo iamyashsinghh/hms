@@ -7,6 +7,7 @@ import { radiology } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { usePermission } from '@/lib/auth';
 import { NoAccess } from '@/components/no-access';
+import { BulkImportButton } from '@/components/bulk-import';
 import { PageHeader } from '@/components/page-header';
 import { Badge } from '@/components/ui/badge';
 import { Button, buttonVariants } from '@/components/ui/button';
@@ -18,6 +19,14 @@ import { Textarea, rupees } from '@/modules/radiology/ui';
 import { cn } from '@/lib/utils';
 
 type Tab = 'tests' | 'modalities' | 'templates';
+
+/** Check a body against the shared schema before sending; throws a readable "field: problem" error. */
+function validate(result: { success: boolean; error?: { issues: readonly { path: readonly PropertyKey[]; message: string }[] } }) {
+  const issue = result.success ? undefined : result.error?.issues[0];
+  if (!issue) return;
+  const field = issue.path.map(String).join(' ');
+  throw new Error(field ? `${field}: ${issue.message}` : issue.message);
+}
 
 function useSaver<T>(fn: (v: T) => Promise<unknown>, onDone: () => void) {
   const qc = useQueryClient();
@@ -50,7 +59,10 @@ function ModalityForm({ initial, onDone }: { initial?: radiology.Modality; onDon
     aeTitle: initial?.aeTitle ?? '',
     isActive: initial?.isActive ?? true,
   });
-  const save = useSaver(() => (initial ? api.radiology.updateModality(initial.id, f) : api.radiology.createModality(f)), onDone);
+  const save = useSaver(async () => {
+    validate((initial ? radiology.updateModalitySchema : radiology.modalityInputSchema).safeParse(f));
+    return initial ? api.radiology.updateModality(initial.id, f) : api.radiology.createModality(f);
+  }, onDone);
   return (
     <form
       className="grid gap-3 border-b bg-muted/30 p-4 sm:grid-cols-6"
@@ -148,7 +160,10 @@ function TestForm({ initial, onDone }: { initial?: radiology.RadiologyTest; onDo
     durationMinutes: Number(f.durationMinutes),
     defaultTemplateId: f.defaultTemplateId || null,
   });
-  const save = useSaver(() => (initial ? api.radiology.updateTest(initial.id, body()) : api.radiology.createTest(body())), onDone);
+  const save = useSaver(async () => {
+    validate((initial ? radiology.updateTestSchema : radiology.testInputSchema).safeParse(body()));
+    return initial ? api.radiology.updateTest(initial.id, body()) : api.radiology.createTest(body());
+  }, onDone);
   return (
     <form
       className="grid gap-3 border-b bg-muted/30 p-4 sm:grid-cols-6"
@@ -248,7 +263,10 @@ function TemplateForm({ initial, onDone }: { initial?: radiology.ReportTemplate;
     isActive: initial?.isActive ?? true,
   });
   const body = (): radiology.TemplateInput => ({ ...f, modalityId: f.modalityId || null });
-  const save = useSaver(() => (initial ? api.radiology.updateTemplate(initial.id, body()) : api.radiology.createTemplate(body())), onDone);
+  const save = useSaver(async () => {
+    validate((initial ? radiology.updateTemplateSchema : radiology.templateInputSchema).safeParse(body()));
+    return initial ? api.radiology.updateTemplate(initial.id, body()) : api.radiology.createTemplate(body());
+  }, onDone);
   return (
     <form
       className="grid gap-3 border-b bg-muted/30 p-4 sm:grid-cols-2"
@@ -338,9 +356,18 @@ export default function RadiologyMastersPage() {
         description="Machines, the tests you offer with prices and slot length, and report templates."
         actions={
           canManage && (
-            <Button variant="outline" disabled={starter.isPending} onClick={() => starter.mutate()}>
-              {starter.isPending ? <Loader2 className="animate-spin" /> : <Sparkles />} Load common tests
-            </Button>
+            <>
+              <BulkImportButton
+                buttonLabel="Import tests from Excel"
+                noun="radiology tests"
+                columns={radiology.TEST_IMPORT_COLUMNS}
+                run={(req) => api.radiology.importTests(req)}
+                invalidate={[['radiology']]}
+              />
+              <Button variant="outline" disabled={starter.isPending} onClick={() => starter.mutate()}>
+                {starter.isPending ? <Loader2 className="animate-spin" /> : <Sparkles />} Load common tests
+              </Button>
+            </>
           )
         }
       />

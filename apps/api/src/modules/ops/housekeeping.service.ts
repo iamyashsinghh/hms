@@ -84,6 +84,10 @@ export class HousekeepingService {
       }
       if (!s && (t.status === 'verified' || t.status === 'cancelled')) throw conflict('task_closed', `Task ${t.number} is closed`);
       const changed = s && s !== t.status;
+      const details = [input.location, input.kind, input.priority, input.description, input.dueAt].some((v) => v !== undefined);
+      if (details && t.status !== 'pending' && t.status !== 'in_progress') {
+        throw conflict('task_closed', `Task ${t.number} is ${t.status.replace('_', ' ')}; its details can no longer change`);
+      }
       const [row] = await tx
         .update(opsHkTasks)
         .set(
@@ -91,6 +95,11 @@ export class HousekeepingService {
             status: changed ? s : undefined,
             assignedTo: input.assignedTo,
             remarks: input.remarks,
+            location: input.location,
+            kind: input.kind,
+            priority: input.priority,
+            description: input.description === undefined ? undefined : input.description || null,
+            dueAt: input.dueAt,
             startedAt: changed && s === 'in_progress' && !t.startedAt ? sql`now()` : undefined,
             doneAt: changed && s === 'done' ? sql`now()` : changed && s === 'in_progress' ? null : undefined,
             verifiedAt: changed && s === 'verified' ? sql`now()` : undefined,

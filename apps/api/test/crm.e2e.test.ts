@@ -423,3 +423,77 @@ describe('hospital isolation', () => {
     expect((await call(reception, 'GET', `/crm/leads/${lead.id}`)).json().name).toBe(`Private ${tag}`);
   });
 });
+
+describe('editing CRM records', () => {
+  let staffId: string;
+  let cityUserId: string;
+
+  beforeAll(async () => {
+    const staff = await call(reception, 'GET', '/crm/staff');
+    expect(staff.statusCode, staff.body).toBe(200);
+    staffId = staff.json().find((u: { name: string }) => u.name)!.id;
+    cityUserId = (await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: bearer(cityAdmin) })).json().id;
+  });
+
+  it('lists staff only for users who can assign work', async () => {
+    expect((await call(doctor, 'GET', '/crm/staff')).statusCode).toBe(403);
+    expect((await call(owner, 'GET', '/crm/staff')).statusCode).toBe(403);
+  });
+
+  it('edits an enquiry and assigns it to a staff member', async () => {
+    const lead = (await call(reception, 'POST', '/crm/leads', { name: `Edit ${tag}`, mobile: uniqueMobile(40) })).json();
+    const res = await call(reception, 'PATCH', `/crm/leads/${lead.id}`, { name: `Edited ${tag}`, interest: 'Cardiology', ageYears: 44, assignedTo: staffId });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ name: `Edited ${tag}`, interest: 'Cardiology', ageYears: 44, assignedTo: staffId });
+    expect(res.json().assignedToName).toBeTruthy();
+
+    // validation: bad mobile, negative age, removing every contact, an assignee from another hospital
+    expect((await call(reception, 'PATCH', `/crm/leads/${lead.id}`, { mobile: '12345' })).statusCode).toBe(400);
+    expect((await call(reception, 'PATCH', `/crm/leads/${lead.id}`, { ageYears: -1 })).statusCode).toBe(400);
+    expect((await call(reception, 'PATCH', `/crm/leads/${lead.id}`, { email: 'not-an-email' })).statusCode).toBe(400);
+    expect((await call(reception, 'PATCH', `/crm/leads/${lead.id}`, { mobile: null })).statusCode).toBe(409);
+    const foreign = await call(reception, 'PATCH', `/crm/leads/${lead.id}`, { assignedTo: cityUserId });
+    expect(foreign.statusCode).toBe(400);
+    expect(foreign.json().error.code).toBe('invalid_assignee');
+
+    // permission: the owner can read but not edit
+    const denied = await call(owner, 'PATCH', `/crm/leads/${lead.id}`, { name: 'Nope' });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json().error.details.missing).toEqual(['crm.lead.manage']);
+  });
+
+  it('edits and reschedules a pending follow-up, not a closed one', async () => {
+    const lead = (await call(reception, 'POST', '/crm/leads', { name: `FU edit ${tag}`, mobile: uniqueMobile(41) })).json();
+    const fu = (await call(reception, 'POST', '/crm/follow-ups', { leadId: lead.id, dueDate: today() })).json();
+    const res = await call(reception, 'PATCH', `/crm/follow-ups/${fu.id}`, { dueDate: '2031-02-03', type: 'call', reason: 'Call back', assignedTo: staffId });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ dueDate: '2031-02-03', type: 'call', reason: 'Call back', assignedTo: staffId });
+    expect(res.json().assignedToName).toBeTruthy();
+
+    expect((await call(reception, 'PATCH', `/crm/follow-ups/${fu.id}`, { dueDate: '2020-01-01' })).statusCode).toBe(400);
+    expect((await call(reception, 'PATCH', `/crm/follow-ups/${fu.id}`, { dueDate: '31-12-2031' })).statusCode).toBe(400);
+    expect((await call(reception, 'PATCH', `/crm/follow-ups/${fu.id}`, { assignedTo: cityUserId })).statusCode).toBe(400);
+    expect((await call(reception, 'POST', '/crm/follow-ups', { leadId: lead.id, dueDate: '2020-01-01' })).statusCode).toBe(400);
+    expect((await call(doctor, 'PATCH', `/crm/follow-ups/${fu.id}`, { reason: 'x' })).statusCode).toBe(403);
+
+    await call(reception, 'POST', `/crm/follow-ups/${fu.id}/close`, { status: 'done' });
+    expect((await call(reception, 'PATCH', `/crm/follow-ups/${fu.id}`, { reason: 'late' })).statusCode).toBe(409);
+  });
+
+  it('edits a commission rule with the same validation as create', async () => {
+    const ref = (await call(admin, 'POST', '/crm/referrers', { name: `Rule edit ${tag}` })).json();
+    const rule = (await call(admin, 'POST', '/crm/commission-rules', { referrerId: ref.id, rateType: 'percent', rate: 10, effectiveFrom: '2026-01-01' })).json();
+    const body = { referrerId: ref.id, appliesTo: 'lab', rateType: 'flat', rate: 250, effectiveFrom: '2026-01-01', effectiveTo: '2026-12-31', isActive: false };
+    const res = await call(admin, 'PUT', `/crm/commission-rules/${rule.id}`, body);
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ appliesTo: 'lab', rateType: 'flat', rate: 250, effectiveTo: '2026-12-31', isActive: false });
+
+    expect((await call(admin, 'PUT', `/crm/commission-rules/${rule.id}`, { ...body, rateType: 'percent', rate: 150 })).statusCode).toBe(400);
+    expect((await call(admin, 'PUT', `/crm/commission-rules/${rule.id}`, { ...body, rate: -5 })).statusCode).toBe(400);
+    expect((await call(admin, 'PUT', `/crm/commission-rules/${rule.id}`, { ...body, effectiveTo: '2025-01-01' })).statusCode).toBe(400);
+    // end date before the stored start date when the start date is not sent
+    const { effectiveFrom: _skip, ...noFrom } = body;
+    expect((await call(admin, 'PUT', `/crm/commission-rules/${rule.id}`, { ...noFrom, effectiveTo: '2025-06-01' })).statusCode).toBe(400);
+    expect((await call(reception, 'PUT', `/crm/commission-rules/${rule.id}`, body)).statusCode).toBe(403);
+  });
+});

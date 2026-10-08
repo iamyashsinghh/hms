@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { and, asc, count, eq, formatSeries, hrEmployees, hrLeaveRequests, hrLicences, iso, nextCounter, sql, type Tx } from '@hms/db';
-import { hr as contracts, type Paginated } from '@hms/shared';
+import { hr as contracts, type ImportRequest, type ImportResult, type Paginated } from '@hms/shared';
+import { runImport } from '../../common/imports/bulk-import';
 import { DbService } from '../../common/db/db.service';
 import { AuditService } from '../../common/db/audit.service';
 import { OutboxService } from '../../common/events/outbox.service';
@@ -92,6 +93,29 @@ export class EmployeesService {
       await this.outbox.publish(tx, 'hr.employee.created', { employeeId: row!.id, userId: row!.userId, status: row!.status as contracts.EmployeeStatus } satisfies contracts.EmployeeChangedEvent);
       return toEmployee(row!, null);
     });
+  }
+
+  /** Bulk import of staff from Excel / CSV; rows without a code get the next EMP number. */
+  import(input: ImportRequest & { dryRun: boolean; updateExisting: boolean }): Promise<ImportResult> {
+    return runImport<contracts.EmployeeImportRow>(
+      {
+        columns: contracts.EMPLOYEE_IMPORT_COLUMNS,
+        schema: contracts.employeeImportRowSchema,
+        key: (r) => r.employeeCode ?? null,
+        label: (r) => r.fullName,
+        existing: (codes) =>
+          this.db.tx(async (tx) => {
+            const rows = await tx
+              .select({ id: hrEmployees.id, code: hrEmployees.employeeCode })
+              .from(hrEmployees)
+              .where(sql`upper(${hrEmployees.employeeCode}) in (${sql.join(codes.map((c) => sql`${c.toUpperCase()}`), sql`, `)})`);
+            return new Map(rows.map((r) => [r.code.toUpperCase(), r.id]));
+          }),
+        create: (r) => this.create(r),
+        update: (id, { employeeCode: _code, ...given }) => this.update(id, given),
+      },
+      input,
+    );
   }
 
   update(id: string, input: contracts.UpdateEmployee): Promise<contracts.Employee> {

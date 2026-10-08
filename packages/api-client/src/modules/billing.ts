@@ -1,4 +1,4 @@
-import type { Paginated, billing as B } from '@hms/shared';
+import type { ImportRequest, ImportResult, Paginated, billing as B } from '@hms/shared';
 import type { Http } from '../http';
 
 /** Billing endpoints. Owned by the "billing" workstream. Types come from @hms/shared (billing.*). */
@@ -12,6 +12,7 @@ export const billingApi = (http: Http) => ({
     get: (id: string) => http.get<B.Service>(`/billing/services/${id}`),
     price: (code: string, payerId?: string) => http.get<B.ServicePrice>('/billing/services/price', { code, payerId }),
     create: (body: B.CreateService) => http.post<B.Service>('/billing/services', body),
+    import: (body: ImportRequest) => http.post<ImportResult>('/billing/services/import', body),
     update: (id: string, body: B.UpdateService) => http.patch<B.Service>(`/billing/services/${id}`, body),
   },
   priceLists: {

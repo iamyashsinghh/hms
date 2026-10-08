@@ -45,14 +45,15 @@ async function ensureRoles() {
 async function syncRoles(migratorUrl) {
   await withClient(migratorUrl, async (c) => {
     await c.query('BEGIN');
-    const n = await syncPermissionCatalog(c);
+    const catalog = await syncPermissionCatalog(c);
     const tenants = await c.query('SELECT id FROM platform.tenants');
     for (const t of tenants.rows) {
       await c.query(`SELECT set_config('app.tenant_id', $1, true)`, [t.id]);
-      await syncSystemRoles(c, t.id);
+      // Existing system roles get only newly added permissions, so a hospital's edits stay.
+      await syncSystemRoles(c, t.id, catalog.added);
     }
     await c.query('COMMIT');
-    console.log(`permissions: ${n}, hospitals synced: ${tenants.rowCount}`);
+    console.log(`permissions: ${catalog.count} (${catalog.added.length} new), hospitals synced: ${tenants.rowCount}`);
   });
 }
 

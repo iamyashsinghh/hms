@@ -4,8 +4,21 @@ import * as React from 'react';
 import { use } from 'react';
 import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, ArrowLeft, CalendarClock, CheckCircle2, ExternalLink, FileSignature, Loader2, Play, Printer, ReceiptIndianRupee, X } from 'lucide-react';
-import type { radiology } from '@hms/shared';
+import {
+  AlertTriangle,
+  ArrowLeft,
+  CalendarClock,
+  CheckCircle2,
+  ExternalLink,
+  FileSignature,
+  Loader2,
+  Pencil,
+  Play,
+  Printer,
+  ReceiptIndianRupee,
+  X,
+} from 'lucide-react';
+import { radiology as R, type radiology } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { Can, usePermission } from '@/lib/auth';
 import { NoAccess } from '@/components/no-access';
@@ -68,9 +81,122 @@ function TestPicker({ order }: { order: Order }) {
   );
 }
 
+const PRIORITY_LABEL: Record<radiology.OrderPriority, string> = { routine: 'Routine', urgent: 'Urgent', stat: 'STAT' };
+
+/** Fix priority, referrer, notes or the test while the study is still waiting (ordered / scheduled). */
+function EditOrderCard({ order, onClose }: { order: Order; onClose: () => void }) {
+  const tests = useQuery({ queryKey: ['radiology', 'tests'], queryFn: () => api.radiology.tests() });
+  const [f, setF] = React.useState({
+    testId: order.testId ?? '',
+    priority: order.priority,
+    referringDoctorName: order.referringDoctorName ?? '',
+    clinicalNotes: order.clinicalNotes ?? '',
+  });
+  const [formError, setFormError] = React.useState<string | null>(null);
+  const body = (): radiology.UpdateOrder => ({
+    priority: f.priority,
+    clinicalNotes: f.clinicalNotes,
+    // A staff referrer comes from the consultation and is not edited here.
+    ...(order.referringDoctorId ? {} : { referringDoctorName: f.referringDoctorName }),
+    ...(f.testId && f.testId !== order.testId ? { testId: f.testId } : {}),
+  });
+  const save = useOrderMutation(order.id, () => api.radiology.updateOrder(order.id, body()), onClose);
+  const testLocked = !!order.invoiceId;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Edit order</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <form
+          className="space-y-3"
+          noValidate
+          onSubmit={(e) => {
+            e.preventDefault();
+            const parsed = R.updateOrderSchema.safeParse(body());
+            setFormError(parsed.success ? null : (parsed.error.issues[0]?.message ?? 'Check the form'));
+            if (parsed.success) save.mutate(undefined);
+          }}
+        >
+          <div>
+            <Label htmlFor="eo-test">Test</Label>
+            <Select id="eo-test" className="mt-1.5" value={f.testId} disabled={testLocked} onChange={(e) => setF({ ...f, testId: e.target.value })}>
+              {!order.testId && <option value="">Pick a test</option>}
+              {order.testId && !tests.data?.some((t) => t.id === order.testId) && <option value={order.testId}>{order.studyName}</option>}
+              {tests.data?.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.modalityName}: {t.name}
+                </option>
+              ))}
+            </Select>
+            {testLocked ? (
+              <p className="mt-1 text-xs text-muted-foreground">Already billed: cancel and re-order to change the test.</p>
+            ) : (
+              order.status === 'scheduled' &&
+              f.testId !== order.testId && <p className="mt-1 text-xs text-amber-700">Changing the test frees the booked slot; book it again.</p>
+            )}
+          </div>
+          <div>
+            <Label htmlFor="eo-priority">Priority</Label>
+            <Select
+              id="eo-priority"
+              className="mt-1.5"
+              value={f.priority}
+              onChange={(e) => setF({ ...f, priority: e.target.value as radiology.OrderPriority })}
+            >
+              {R.ORDER_PRIORITIES.map((p) => (
+                <option key={p} value={p}>
+                  {PRIORITY_LABEL[p]}
+                </option>
+              ))}
+            </Select>
+          </div>
+          {!order.referringDoctorId && (
+            <div>
+              <Label htmlFor="eo-ref">Referred by</Label>
+              <Input
+                id="eo-ref"
+                className="mt-1.5"
+                maxLength={120}
+                value={f.referringDoctorName}
+                onChange={(e) => setF({ ...f, referringDoctorName: e.target.value })}
+              />
+            </div>
+          )}
+          <div>
+            <Label htmlFor="eo-notes">Clinical notes</Label>
+            <Textarea
+              id="eo-notes"
+              className="mt-1.5"
+              rows={3}
+              maxLength={1000}
+              value={f.clinicalNotes}
+              onChange={(e) => setF({ ...f, clinicalNotes: e.target.value })}
+            />
+          </div>
+          {(formError || save.error) && <p className="text-sm text-destructive">{formError ?? errorMessage(save.error)}</p>}
+          <div className="flex gap-2">
+            <Button type="submit" disabled={save.isPending}>
+              {save.isPending && <Loader2 className="animate-spin" />} Save changes
+            </Button>
+            <Button type="button" variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+          </div>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
 function ScanActions({ order }: { order: Order }) {
   const modalities = useQuery({ queryKey: ['radiology', 'modalities'], queryFn: () => api.radiology.modalities() });
   const [when, setWhen] = React.useState('');
+  // Earliest bookable slot, as a datetime-local value (local time).
+  const [minWhen] = React.useState(() => {
+    const now = new Date();
+    return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  });
   const [modalityId, setModalityId] = React.useState(order.modalityId ?? '');
   const [studyUid, setStudyUid] = React.useState('');
   const [imagesUrl, setImagesUrl] = React.useState('');
@@ -94,20 +220,20 @@ function ScanActions({ order }: { order: Order }) {
           <Can permission="radiology.order.schedule">
             <div className="space-y-2">
               <div className="grid gap-2 sm:grid-cols-2">
-              <div>
-                <Label htmlFor="when">{order.status === 'scheduled' ? 'Move slot to' : 'Book slot'}</Label>
-                <Input id="when" type="datetime-local" className="mt-1.5" value={when} onChange={(e) => setWhen(e.target.value)} />
-              </div>
-              <div>
-                <Label htmlFor="machine">Machine</Label>
-                <Select id="machine" className="mt-1.5" value={modalityId} onChange={(e) => setModalityId(e.target.value)}>
-                  {modalities.data?.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}
-                    </option>
-                  ))}
-                </Select>
-              </div>
+                <div>
+                  <Label htmlFor="when">{order.status === 'scheduled' ? 'Move slot to' : 'Book slot'}</Label>
+                  <Input id="when" type="datetime-local" className="mt-1.5" min={minWhen} value={when} onChange={(e) => setWhen(e.target.value)} />
+                </div>
+                <div>
+                  <Label htmlFor="machine">Machine</Label>
+                  <Select id="machine" className="mt-1.5" value={modalityId} onChange={(e) => setModalityId(e.target.value)}>
+                    {modalities.data?.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
               </div>
               <Button variant="outline" disabled={!when || schedule.isPending} onClick={() => schedule.mutate(undefined)}>
                 <CalendarClock /> {order.status === 'scheduled' ? 'Move slot' : 'Book slot'}
@@ -164,9 +290,7 @@ function BillCard({ order }: { order: Order }) {
   const test = useQuery({ queryKey: ['radiology', 'test', order.testId], queryFn: () => api.radiology.test(order.testId!), enabled: !!order.testId });
   const [mode, setMode] = React.useState<'none' | 'cash' | 'upi' | 'card'>('cash');
   const amount = test.data?.price ?? null;
-  const bill = useOrderMutation(order.id, () =>
-    api.radiology.bill(order.id, mode !== 'none' && amount ? { payNow: { mode, amount } } : {}),
-  );
+  const bill = useOrderMutation(order.id, () => api.radiology.bill(order.id, mode !== 'none' && amount ? { payNow: { mode, amount } } : {}));
   if (order.invoiceId) {
     return (
       <Row label="Bill">
@@ -180,9 +304,7 @@ function BillCard({ order }: { order: Order }) {
   return (
     <Can permission="radiology.order.bill">
       <div className="mt-3 space-y-2 border-t pt-3">
-        <p className="text-sm">
-          Not billed yet{test.data?.serviceCode ? ' (price from billing services)' : amount != null ? `: ${rupees(amount)}` : ''}.
-        </p>
+        <p className="text-sm">Not billed yet{test.data?.serviceCode ? ' (price from billing services)' : amount != null ? `: ${rupees(amount)}` : ''}.</p>
         <div className="flex gap-2">
           {canCollect && !test.data?.serviceCode && (
             <Select className="w-36" value={mode} onChange={(e) => setMode(e.target.value as typeof mode)} aria-label="Payment">
@@ -213,13 +335,24 @@ function ReportEditor({ data }: { data: OrderWithReports }) {
     queryFn: () => api.radiology.templates({ modalityId: order.modalityId ?? undefined }),
     enabled: canWrite,
   });
-  const test = useQuery({ queryKey: ['radiology', 'test', order.testId], queryFn: () => api.radiology.test(order.testId!), enabled: canWrite && !!order.testId });
+  const test = useQuery({
+    queryKey: ['radiology', 'test', order.testId],
+    queryFn: () => api.radiology.test(order.testId!),
+    enabled: canWrite && !!order.testId,
+  });
   const [form, setForm] = React.useState<radiology.SaveReport | null>(null);
   const [amendReason, setAmendReason] = React.useState<string | null>(null);
 
   // Until the radiologist types, show the draft, or the test's default template for a first report.
   const initial = ((): radiology.SaveReport => {
-    if (draft) return { templateId: draft.templateId ?? undefined, technique: draft.technique ?? '', findings: draft.findings, impression: draft.impression, isCritical: draft.isCritical };
+    if (draft)
+      return {
+        templateId: draft.templateId ?? undefined,
+        technique: draft.technique ?? '',
+        findings: draft.findings,
+        impression: draft.impression,
+        isCritical: draft.isCritical,
+      };
     const t = !final && test.data?.defaultTemplateId ? templates.data?.find((x) => x.id === test.data!.defaultTemplateId) : undefined;
     if (t) return { templateId: t.id, technique: t.technique ?? '', findings: t.findings ?? '', impression: t.impression ?? '', isCritical: false };
     return { technique: '', findings: '', impression: '', isCritical: false };
@@ -298,7 +431,11 @@ function ReportEditor({ data }: { data: OrderWithReports }) {
 
         {editable && (draft || !final) && (
           <div className="space-y-3">
-            {draft?.amendmentReason && <p className="text-sm text-amber-700">Amendment (version {draft.version}): {draft.amendmentReason}</p>}
+            {draft?.amendmentReason && (
+              <p className="text-sm text-amber-700">
+                Amendment (version {draft.version}): {draft.amendmentReason}
+              </p>
+            )}
             <div>
               <Label htmlFor="tpl">Template</Label>
               <Select
@@ -324,7 +461,13 @@ function ReportEditor({ data }: { data: OrderWithReports }) {
             </div>
             <div>
               <Label htmlFor="findings">Findings</Label>
-              <Textarea id="findings" className="mt-1.5 font-mono text-[13px]" rows={12} value={f.findings} onChange={(e) => set({ findings: e.target.value })} />
+              <Textarea
+                id="findings"
+                className="mt-1.5 font-mono text-[13px]"
+                rows={12}
+                value={f.findings}
+                onChange={(e) => set({ findings: e.target.value })}
+              />
             </div>
             <div>
               <Label htmlFor="impression">Impression</Label>
@@ -385,11 +528,14 @@ export default function RadiologyOrderPage({ params }: { params: Promise<{ id: s
   const canReadReports = usePermission('radiology.report.read');
   const canWriteReports = usePermission('radiology.report.write');
   const { data, isPending, error } = useQuery({ queryKey: ['radiology', 'order', id], queryFn: () => api.radiology.order(id), enabled: canRead });
+  const canEdit = usePermission('radiology.order.create');
+  const [editing, setEditing] = React.useState(false);
 
   if (!canRead) return <NoAccess />;
   if (isPending) return <p className="text-sm text-muted-foreground">Loading…</p>;
   if (error) return <p className="text-sm text-destructive">{errorMessage(error)}</p>;
   const o = data.order;
+  const editable = canEdit && (o.status === 'ordered' || o.status === 'scheduled');
 
   return (
     <div className="space-y-4">
@@ -402,6 +548,13 @@ export default function RadiologyOrderPage({ params }: { params: Promise<{ id: s
           <span className="flex flex-wrap items-center gap-2">
             {o.orderNo} <OrderStatusBadge status={o.status} /> <PriorityBadge priority={o.priority} />
           </span>
+        }
+        actions={
+          editable && !editing ? (
+            <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+              <Pencil /> Edit order
+            </Button>
+          ) : undefined
         }
       />
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
@@ -429,7 +582,8 @@ export default function RadiologyOrderPage({ params }: { params: Promise<{ id: s
               <BillCard order={o} />
             </CardContent>
           </Card>
-          {!o.testId && o.status !== 'cancelled' && (
+          {editable && editing && <EditOrderCard order={o} onClose={() => setEditing(false)} />}
+          {!o.testId && o.status !== 'cancelled' && !editing && (
             <Can permission="radiology.order.create">
               <TestPicker order={o} />
             </Can>
@@ -441,4 +595,3 @@ export default function RadiologyOrderPage({ params }: { params: Promise<{ id: s
     </div>
   );
 }
-
