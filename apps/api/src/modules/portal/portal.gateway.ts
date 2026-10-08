@@ -1,11 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import type { portal } from '@hms/shared';
+import { ChargesService } from '../billing/charges.service';
 import { FrontofficeService } from '../frontoffice/frontoffice.service';
 import { SetupService } from '../setup/setup.service';
 
 /**
  * The portal's calls into other modules (contracts in PARALLEL_PLAN.md section 4):
- * doctors and timetables from setup, bookings and the doctor's diary from front office.
+ * doctors and timetables from setup, bookings and the doctor's diary from front office, and the
+ * charges on a patient's account not billed yet from billing.
  * Kept in one place so tests and later contract changes touch a single file.
  */
 @Injectable()
@@ -13,7 +15,23 @@ export class PortalGateway {
   constructor(
     private readonly setup: SetupService,
     private readonly frontoffice: FrontofficeService,
+    private readonly charges: ChargesService,
   ) {}
+
+  /** Pending (not yet billed) charges per patient: count, total in paise and the oldest charge date. */
+  async pendingCharges(patientIds: string[]): Promise<Map<string, { count: number; paise: number; oldestDate: string }>> {
+    const out = new Map<string, { count: number; paise: number; oldestDate: string }>();
+    for (const patientId of patientIds) {
+      const { items } = await this.charges.list({ patientId, status: 'pending', pageSize: 500 });
+      if (!items.length) continue;
+      out.set(patientId, {
+        count: items.length,
+        paise: items.reduce((s, c) => s + Math.round(c.amount * 100), 0),
+        oldestDate: items.reduce((d, c) => (c.chargeDate < d ? c.chargeDate : d), items[0]!.chargeDate),
+      });
+    }
+    return out;
+  }
 
   async listDoctors(q: portal.DoctorQuery): Promise<portal.PortalDoctor[]> {
     const doctors = await this.setup.listDoctors(q);

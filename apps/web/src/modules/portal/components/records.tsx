@@ -9,6 +9,9 @@ import { Card, CardContent } from '@/components/ui/card';
 import { patientApi } from '../patient-session';
 import { Empty, formatDateTime, rupees, StatusBadge } from './shared';
 
+const formatDate = (iso: string) =>
+  new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', timeZone: 'UTC' });
+
 export function PrescriptionsTab({ patientId }: { patientId: string }) {
   const { data, isPending, error } = useQuery({
     queryKey: ['portal', 'prescriptions', patientId],
@@ -63,6 +66,10 @@ export function BillsTab({ patientId }: { patientId: string }) {
     queryKey: ['portal', 'bills', patientId],
     queryFn: () => patientApi.portal.bills({ patientId: patientId || undefined }),
   });
+  const pending = useQuery({
+    queryKey: ['portal', 'bills', 'pending', patientId],
+    queryFn: () => patientApi.portal.pendingCharges({ patientId: patientId || undefined }),
+  });
   // Razorpay stub: create the order, then "complete checkout" with the stub signature.
   const pay = useMutation({
     mutationFn: async (invoiceId: string) => {
@@ -77,9 +84,26 @@ export function BillsTab({ patientId }: { patientId: string }) {
 
   if (isPending) return <p className="text-sm text-muted-foreground">Loading…</p>;
   if (error) return <p className="text-sm text-destructive">{errorMessage(error)}</p>;
-  if (!data.length) return <Empty>Your hospital bills will appear here.</Empty>;
+  const notBilled = (pending.data ?? []).map((c) => (
+    <Card key={c.patientId} className="border-dashed">
+      <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
+        <div>
+          <p className="font-medium">Charges not billed yet</p>
+          <p className="text-sm text-muted-foreground">
+            {c.count} {c.count === 1 ? 'item' : 'items'} since {formatDate(c.oldestDate)} · {c.patientName}
+          </p>
+        </div>
+        <div className="text-right">
+          <p className="font-semibold">{rupees(c.total)}</p>
+          <p className="text-xs text-muted-foreground">Payable at the billing counter once billed</p>
+        </div>
+      </CardContent>
+    </Card>
+  ));
+  if (!data.length && !notBilled.length) return <Empty>Your hospital bills will appear here.</Empty>;
   return (
     <div className="space-y-3">
+      {notBilled}
       {pay.error && <p className="text-sm text-destructive">{errorMessage(pay.error)}</p>}
       {data.map((b) => (
         <Card key={b.id}>

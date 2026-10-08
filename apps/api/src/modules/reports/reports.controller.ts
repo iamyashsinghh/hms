@@ -32,6 +32,13 @@ export class ReportsController {
     return this.reports.dailyCollection(q.date, q.facilityId);
   }
 
+  /** Day-end check of charges still unbilled on patients' accounts (billing desk). */
+  @Get('unbilled')
+  @RequirePermissions('reports.collection.read')
+  unbilled(@Query(new ZodPipe(reports.unbilledQuerySchema)) q: { date?: string; facilityId?: string }): Promise<reports.UnbilledChargesReport> {
+    return this.reports.unbilled(q.date, q.facilityId);
+  }
+
   @Get('opd')
   @RequirePermissions('reports.opd.read')
   opd(@Query(new ZodPipe(reports.reportRangeQuerySchema)) q: reports.ReportRangeParams): Promise<reports.OpdReport> {

@@ -4,7 +4,9 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { config } from 'dotenv';
 import { Client } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { DEMO_PASSWORD, provisionTenant } from '@hms/db';
+import { DEMO_PASSWORD, provisionTenant, sql } from '@hms/db';
+import { DbService } from '../src/common/db/db.service';
+import { EventBus } from '../src/common/events/event-bus';
 import { bearer, bootApp, login } from './helpers';
 
 config({ path: resolve(__dirname, '../../../.env'), quiet: true });
@@ -42,6 +44,22 @@ const call = (token: string, method: string, url: string, payload?: unknown, fac
 /** A second hospital on the Growth plan (city is on Starter, which has no Facility Services). */
 const otherCall = (method: string, url: string, payload?: unknown) => call(other, method, url, payload, otherFacilityId);
 const OTHER = `ops-${tag.toLowerCase().slice(-6)}`;
+
+/** Runs the worker side of `billing.charges.billed` for one invoice (twice is fine: handlers are idempotent). */
+async function dispatchCharges(invoiceId: string) {
+  const db = app.get(DbService);
+  const tenantId = (await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: bearer(admin) })).json().tenantId;
+  const rows = await db.asTenant({ tenantId }, async (tx) => {
+    const r = await tx.execute<{ id: string; payload: Record<string, unknown>; created_at: string }>(
+      sql`select id, payload, created_at from audit.outbox where topic = 'billing.charges.billed' and payload->>'invoiceId' = ${invoiceId}`,
+    );
+    return r.rows;
+  });
+  expect(rows.length).toBeGreaterThan(0);
+  for (const r of rows) {
+    await app.get(EventBus).dispatch({ id: r.id, tenantId, topic: 'billing.charges.billed', payload: r.payload, createdAt: new Date(r.created_at).toISOString() });
+  }
+}
 
 async function provisionOtherHospital() {
   const client = new Client({ connectionString: process.env.DATABASE_MIGRATOR_URL });
@@ -274,6 +292,13 @@ describe('ambulance', () => {
 
     const inv = (await call(admin, 'GET', `/billing/invoices/${invoiceId}`)).json();
     expect(inv).toMatchObject({ status: 'final', total: 800, patientId });
+    expect(inv.lines[0].description).toContain(`${reg} (12 km)`);
+    // Billed through the patient account: the charge is billed on that invoice, and the trip shows it unpaid.
+    const charges = (await call(admin, 'GET', `/billing/charges?patientId=${patientId}&pageSize=100`)).json().items;
+    expect(charges.filter((c: { sourceRef: string }) => c.sourceRef === tripId)).toEqual([
+      expect.objectContaining({ sourceModule: 'ops', status: 'billed', invoiceId, amount: 800 }),
+    ]);
+    expect((await call(reception, 'GET', `/ops/ambulance/trips/${tripId}`)).json().paymentState).toBe('unpaid');
 
     const vehicles = (await call(reception, 'GET', '/ops/ambulance/vehicles')).json();
     expect(vehicles.find((x: { id: string }) => x.id === vehicleId).status).toBe('available');
@@ -284,6 +309,43 @@ describe('ambulance', () => {
     expect(unbilled.statusCode).toBe(400);
     const cancelled = await call(reception, 'POST', `/ops/ambulance/trips/${other.id}/actions`, { action: 'cancel', reason: 'Caller went by own vehicle' });
     expect(cancelled.json().status).toBe('cancelled');
+  });
+
+  it("puts a completed trip on the patient's account; the desk bills it later and the trip keeps the bill", async () => {
+    const t = (
+      await call(reception, 'POST', '/ops/ambulance/trips', { patientId, contactName: 'Daughter', contactMobile: '9876543211', pickupAddress: 'Ward 4', vehicleId, kind: 'drop_home' })
+    ).json();
+    const done = await call(reception, 'POST', `/ops/ambulance/trips/${t.id}/actions`, { action: 'complete', distanceKm: 4 });
+    expect(done.statusCode, done.body).toBe(200);
+    expect(done.json()).toMatchObject({ status: 'completed', charge: 600, invoiceId: null, paymentState: 'pending' });
+
+    const account = (await call(clerk, 'GET', `/billing/patients/${patientId}/charges`)).json();
+    const charge = account.groups.flatMap((g: { charges: unknown[] }) => g.charges).find((c: { sourceRef: string }) => c.sourceRef === t.id);
+    expect(charge).toMatchObject({ sourceModule: 'ops', status: 'pending', amount: 600, unitPrice: 600, taxRate: 0 });
+    expect(charge.description).toMatch(/^Ambulance drop home .* \(4 km\)$/);
+    // Completing again is refused; the charge is posted once.
+    expect((await call(reception, 'POST', `/ops/ambulance/trips/${t.id}/actions`, { action: 'complete', distanceKm: 4 })).statusCode).toBe(409);
+
+    const bill = await call(clerk, 'POST', '/billing/charges/bill', { patientId, chargeIds: [charge.id], payNow: { mode: 'cash', amount: 600 } });
+    expect(bill.statusCode, bill.body).toBe(201);
+    await dispatchCharges(bill.json().id);
+    await dispatchCharges(bill.json().id);
+    const after = (await call(reception, 'GET', `/ops/ambulance/trips/${t.id}`)).json();
+    expect(after).toMatchObject({ invoiceId: bill.json().id, paymentState: 'paid' });
+  });
+
+  it('bills and collects at once when completing with pay now', async () => {
+    const t = (await call(reception, 'POST', '/ops/ambulance/trips', { patientId, contactName: 'Self', contactMobile: '9876543212', pickupAddress: 'Home', vehicleId })).json();
+    const done = await call(reception, 'POST', `/ops/ambulance/trips/${t.id}/actions`, {
+      action: 'complete',
+      charge: 1500,
+      bill: true,
+      payNow: { mode: 'upi', amount: 1500, ref: 'UPI123' },
+    });
+    expect(done.statusCode, done.body).toBe(200);
+    expect(done.json()).toMatchObject({ charge: 1500, paymentState: 'paid' });
+    const inv = (await call(admin, 'GET', `/billing/invoices/${done.json().invoiceId}`)).json();
+    expect(inv).toMatchObject({ total: 1500, balance: 0, sourceModule: 'ops', sourceRef: t.id });
   });
 
   it('lets billing see trips but not dispatch them', async () => {

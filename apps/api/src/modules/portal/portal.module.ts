@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { BillingModule } from '../billing/billing.module';
 import { FrontofficeModule } from '../frontoffice/frontoffice.module';
 import { PatientsModule } from '../patients/patients.module';
 import { SetupModule } from '../setup/setup.module';
@@ -21,7 +22,7 @@ import { PortalStaffController } from './portal-staff.controller';
  * models fed by other modules' events (PortalEventsService). Doctors/timetables (setup) and bookings (front office) go through PortalGateway.
  */
 @Module({
-  imports: [PatientsModule, SetupModule, FrontofficeModule],
+  imports: [PatientsModule, SetupModule, FrontofficeModule, BillingModule],
   controllers: [PortalAuthController, PortalStaffController, PortalController],
   providers: [
     PortalRepository,

@@ -3,6 +3,7 @@ import { sql } from '@hms/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DbService } from '../src/common/db/db.service';
 import { EventBus } from '../src/common/events/event-bus';
+import { ChargesService } from '../src/modules/billing/charges.service';
 import { pickRule } from '../src/modules/crm/referrals.service';
 import { bearer, bootApp, login } from './helpers';
 
@@ -256,6 +257,39 @@ describe('referrals and commission', () => {
     const st = await call(admin, 'POST', '/crm/statements', { referrerId, periodFrom: today(), periodTo: today() });
     expect(st.statusCode).toBe(409);
     expect(st.json().error.code).toBe('nothing_to_pay');
+  });
+
+  it('accrues on a bill made from patient-account charges, with each line keeping its department', async () => {
+    const lab = await call(admin, 'POST', '/crm/commission-rules', { referrerId, appliesTo: 'lab', rateType: 'percent', rate: 20, effectiveFrom: today() });
+    expect(lab.statusCode, lab.body).toBe(201);
+    try {
+      const facility = facilityId;
+      const ref = crypto.randomUUID();
+      const charge = await app.get(DbService).asTenant({ tenantId }, (tx) =>
+        app.get(ChargesService).postCharge(tx, { patientId, facilityId: facility, source: { module: 'lab', refId: ref }, description: `Lipid profile ${tag}`, unitPrice: 1000, taxRate: 0 }),
+      );
+      const bill = await call(clerk, 'POST', '/billing/charges/bill', {
+        patientId,
+        chargeIds: [charge.id],
+        extraLines: [{ description: 'Report courier', unitPrice: 500, taxRate: 0 }],
+      });
+      expect(bill.statusCode, bill.body).toBe(201);
+      const id = bill.json().id;
+      expect(bill.json().sourceModule).toBe('billing');
+      await dispatch('billing.invoice.finalized', 'invoiceId', id);
+      await dispatch('billing.invoice.finalized', 'invoiceId', id);
+      const rows = (await call(admin, 'GET', `/crm/commissions?referrerId=${referrerId}&pageSize=50`)).json().items.filter(
+        (c: { invoiceId: string }) => c.invoiceId === id,
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ kind: 'accrual', baseAmount: 1500, amount: 250 });
+      expect(rows[0].breakdown.map((l: { description: string; commission: number }) => [l.description, l.commission])).toEqual([
+        [`Lipid profile ${tag}`, 200],
+        ['Report courier', 50],
+      ]);
+    } finally {
+      await call(admin, 'PUT', `/crm/commission-rules/${lab.json().id}`, { referrerId, appliesTo: 'lab', rateType: 'percent', rate: 20, effectiveFrom: today(), isActive: false });
+    }
   });
 
   it('ignores a partial billing.invoice.finalized payload', async () => {

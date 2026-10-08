@@ -50,6 +50,10 @@ export type OwnerSummaryQuery = z.input<typeof ownerSummaryQuerySchema>;
 export const dailyCollectionQuerySchema = ownerSummaryQuerySchema;
 export type DailyCollectionQuery = OwnerSummaryQuery;
 
+/** GET /reports/unbilled: charges still unbilled at the end of `date` (default today). */
+export const unbilledQuerySchema = ownerSummaryQuerySchema;
+export type UnbilledQuery = OwnerSummaryQuery;
+
 export const reportRangeQuerySchema = z
   .object({
     from: isoDate,
@@ -65,7 +69,16 @@ export const reportRangeQuerySchema = z
 export type ReportRangeQuery = z.input<typeof reportRangeQuerySchema>;
 export type ReportRangeParams = z.output<typeof reportRangeQuerySchema>;
 
-export const EXPORT_REPORTS = ['collections', 'opd-visits', 'revenue-by-doctor', 'revenue-by-service', 'new-patients', 'daily-summary'] as const;
+export const EXPORT_REPORTS = [
+  'collections',
+  'opd-visits',
+  'revenue-by-doctor',
+  'revenue-by-service',
+  'new-patients',
+  'daily-summary',
+  /** One row per charge still unbilled at the end of `to` (`from` is ignored). */
+  'unbilled-charges',
+] as const;
 export type ExportReport = (typeof EXPORT_REPORTS)[number];
 
 export const exportQuerySchema = z
@@ -126,6 +139,8 @@ export interface OwnerSummary {
   pendingBills: { count: number; amount: number };
   topDoctors: DoctorStat[];
   topServices: ServiceStat[];
+  /** Charges on patients' accounts not yet billed at the end of that day ("billed vs unbilled"). */
+  unbilledCharges: { count: number; patients: number; amount: number };
   /** Same figures for the day before, for "vs yesterday". */
   previous: { date: string; opdVisits: number; newPatients: number; billed: number; collections: number };
 }
@@ -206,6 +221,55 @@ export interface PatientsReport {
   byDay: { date: string; count: number }[];
   byGender: { gender: string; count: number }[];
   byAgeBand: { band: string; count: number }[];
+}
+
+/** Department that posted a charge (its source module), as shown on the unbilled report. */
+export const CHARGE_SOURCE_LABELS: Record<string, string> = {
+  frontoffice: 'OPD / front office',
+  emr: "Doctor's orders",
+  lab: 'Laboratory',
+  radiology: 'Radiology',
+  pharmacy: 'Pharmacy',
+  ipd: 'IPD',
+  inventory: 'Consumables',
+  ops: 'Ambulance',
+  billing: 'Billing desk',
+};
+export const chargeSourceLabel = (module: string) => CHARGE_SOURCE_LABELS[module] ?? module.charAt(0).toUpperCase() + module.slice(1);
+
+/** Age of an unbilled charge, by its charge date. */
+export const UNBILLED_AGE_BUCKETS = [
+  { key: 'today', label: 'Today', min: 0, max: 0 },
+  { key: '1-2', label: '1–2 days', min: 1, max: 2 },
+  { key: '3-7', label: '3–7 days', min: 3, max: 7 },
+  { key: '8+', label: 'Over a week', min: 8, max: Infinity },
+] as const;
+
+export interface UnbilledGroup {
+  count: number;
+  amount: number;
+}
+
+/** GET /reports/unbilled: day-end list of charges still on patients' accounts. */
+export interface UnbilledChargesReport {
+  date: string;
+  timezone: string;
+  total: UnbilledGroup & { patients: number };
+  /** By department (charge source module), largest amount first. */
+  byModule: (UnbilledGroup & { module: string; label: string; patients: number; oldestDate: string })[];
+  byAge: (UnbilledGroup & { key: string; label: string })[];
+  /** By patient, oldest charge first. */
+  byPatient: (UnbilledGroup & {
+    patientId: string;
+    uhid: string | null;
+    patientName: string | null;
+    mobile: string | null;
+    oldestDate: string;
+    /** Days since the oldest charge, as of `date`. */
+    ageDays: number;
+    modules: string[];
+    accounts: string[];
+  })[];
 }
 
 // ---------- Events reports consumes ----------

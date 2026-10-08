@@ -15,7 +15,8 @@ import { OpsService } from './ops.service';
  * maintenance, CSSD, linen & laundry, ambulance, diet kitchen and housekeeping.
  * Permissions and Zod contracts live in packages/shared/src/modules/ops.ts.
  * Events: ops.asset.breakdown_reported, ops.cssd.cycle_failed, ops.trip.completed (payload types in the shared file).
- * Ambulance trips are billed through BillingService.createInvoice (source module 'ops').
+ * Ambulance trips post a charge to the patient's account (ChargesService, source module 'ops'); the trip
+ * keeps the bill number once billed (billing.charges.billed).
  */
 @Module({
   imports: [BillingModule, PatientsModule],

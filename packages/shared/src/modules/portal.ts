@@ -239,6 +239,18 @@ export interface PortalInvoice {
   issuedAt: string;
 }
 
+/**
+ * GET /portal/bills/pending: charges on a patient's account that the hospital has not billed yet
+ * (read-only; they are paid once the billing desk makes the bill). Only patients with something pending.
+ */
+export interface PortalPendingCharges {
+  patientId: string;
+  patientName: string;
+  count: number;
+  total: string;
+  oldestDate: string;
+}
+
 export interface PortalReport {
   id: string;
   reportId: string;

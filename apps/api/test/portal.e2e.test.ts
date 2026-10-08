@@ -3,9 +3,11 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { config } from 'dotenv';
 import { Client } from 'pg';
-import { DEMO_PASSWORD, provisionTenant, upsertUser } from '@hms/db';
+import { DEMO_PASSWORD, provisionTenant, sql, upsertUser } from '@hms/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { DbService } from '../src/common/db/db.service';
 import { EventBus } from '../src/common/events/event-bus';
+import { ChargesService } from '../src/modules/billing/charges.service';
 import { bearer, bootApp, login } from './helpers';
 
 let app: NestFastifyApplication;
@@ -67,7 +69,7 @@ async function registerPatient(mobile: string, firstName = 'Portal') {
   return res.json() as { id: string; uhid: string };
 }
 
-function emit(topic: string, payload: Record<string, unknown>, id = randomUUID(), tenantId = demoTenantId) {
+function emit(topic: string, payload: Record<string, unknown>, id: string = randomUUID(), tenantId = demoTenantId) {
   return app.get(EventBus).dispatch({ id, tenantId, topic, payload, createdAt: new Date().toISOString() });
 }
 
@@ -322,6 +324,40 @@ describe('portal: records from other modules and online payment', () => {
     await emit('billing.payment.received', { invoiceId, patientId: patient.id, amount: 300, mode: 'online', ref: intent2.id });
     bills = (await app.inject({ method: 'GET', url: '/api/v1/portal/bills', headers: bearer(s.accessToken) })).json();
     expect(bills[0]).toMatchObject({ paid: '500.00', due: '0.00', status: 'paid' });
+  });
+
+  it('shows charges not billed yet, then the bill the desk made from them', async () => {
+    const mobile = randomMobile();
+    const patient = await registerPatient(mobile, 'Charges');
+    const s = await patientLogin(mobile);
+    const me = (await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: bearer(reception) })).json();
+    const facilityId = me.facilities[0].id as string;
+    const db = app.get(DbService);
+    const charges = app.get(ChargesService);
+    const inTenant = <T>(fn: (tx: Parameters<Parameters<DbService['asTenant']>[1]>[0]) => Promise<T>) => db.asTenant({ tenantId: demoTenantId }, fn);
+    const ref = randomUUID();
+    const lab = await inTenant((tx) => charges.postCharge(tx, { patientId: patient.id, facilityId, source: { module: 'lab', refId: ref }, description: 'CBC', unitPrice: 350, taxRate: 0 }));
+    await inTenant((tx) => charges.postCharge(tx, { patientId: patient.id, facilityId, source: { module: 'ops', refId: ref }, description: 'Ambulance', unitPrice: 800, taxRate: 0 }));
+
+    const pending = await app.inject({ method: 'GET', url: '/api/v1/portal/bills/pending', headers: bearer(s.accessToken) });
+    expect(pending.statusCode, pending.body).toBe(200);
+    expect(pending.json()).toEqual([expect.objectContaining({ patientId: patient.id, count: 2, total: '1150.00' })]);
+
+    // The desk bills the lab charge (sourceModule 'billing' on the invoice) and takes part of it.
+    const inv = await inTenant((tx) => charges.billCharges(tx, { patientId: patient.id, chargeIds: [lab.id], payNow: { mode: 'cash', amount: 100 } }));
+    const events = await inTenant(async (tx) => {
+      const r = await tx.execute<{ id: string; topic: string; payload: Record<string, unknown>; created_at: string }>(
+        sql`select id, topic, payload, created_at from audit.outbox where payload->>'invoiceId' = ${inv.id} order by created_at, id`,
+      );
+      return r.rows;
+    });
+    expect(events.map((e) => e.topic)).toEqual(expect.arrayContaining(['billing.invoice.finalized', 'billing.payment.received']));
+    for (const e of events) await emit(e.topic, e.payload, e.id);
+
+    const bills = (await app.inject({ method: 'GET', url: '/api/v1/portal/bills', headers: bearer(s.accessToken) })).json();
+    expect(bills).toEqual([expect.objectContaining({ invoiceId: inv.id, number: inv.number, total: '350.00', paid: '100.00', due: '250.00', status: 'partially_paid' })]);
+    const after = (await app.inject({ method: 'GET', url: '/api/v1/portal/bills/pending', headers: bearer(s.accessToken) })).json();
+    expect(after).toEqual([expect.objectContaining({ count: 1, total: '800.00' })]);
   });
 
   it("never shows one family's or one hospital's records to another", async () => {
