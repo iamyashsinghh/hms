@@ -55,6 +55,8 @@ git pull origin staging && ./deploy.sh
   `sudo ./infra/setup-domain.sh hms.example.com you@example.com`. It writes the nginx site from
   [infra/nginx/hms.conf.example](infra/nginx/hms.conf.example), gets the certificate with certbot, sets
   `PUBLIC_URL=https://<domain>` and `HMS_BIND=127.0.0.1` in `.env.prod` and redeploys. Safe to re-run.
+- Firewall: `sudo ./infra/firewall.sh` turns on ufw (SSH, 80, 443 allowed) and blocks port 4001 from outside
+  with a Docker-aware rule (plain `ufw deny` does not cover Docker-published ports).
 - Logs: `docker compose -f docker-compose.prod.yml logs -f api worker`. Backup:
   `docker compose -f docker-compose.prod.yml exec postgres pg_dump -U postgres hms > backup.sql`.
 
