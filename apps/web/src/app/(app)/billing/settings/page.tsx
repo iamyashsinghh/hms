@@ -3,8 +3,9 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
-import type { billing as B } from '@hms/shared';
+import { billing as B } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -47,8 +48,9 @@ function SettingsForm({ initial, onSaved }: { initial: B.BillingSettings; onSave
     ...(Object.fromEntries(FIELDS.map((f) => [f.key, initial[f.key] ?? ''])) as unknown as Form),
     roundOff: initial.roundOff,
   }));
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const save = useMutation({
-    mutationFn: (f: Form) => api.billing.settings.update({ ...f, gstin: f.gstin.toUpperCase() }),
+    mutationFn: (body: B.BillingSettingsInput) => api.billing.settings.update(body),
     onSuccess: onSaved,
   });
 
@@ -61,7 +63,9 @@ function SettingsForm({ initial, onSaved }: { initial: B.BillingSettings; onSave
               className="grid gap-4 sm:grid-cols-2"
               onSubmit={(e) => {
                 e.preventDefault();
-                save.mutate(form);
+                const r = validate(B.billingSettingsInputSchema, { ...form, gstin: form.gstin.trim().toUpperCase() });
+                setErrors(r.errors ?? {});
+                if (r.data) save.mutate(r.data);
               }}
             >
               <div className="sm:col-span-2">
@@ -69,7 +73,7 @@ function SettingsForm({ initial, onSaved }: { initial: B.BillingSettings; onSave
                 {save.isSuccess && <p className="text-sm text-primary">Saved.</p>}
               </div>
               {FIELDS.map((f) => (
-                <Field key={f.key} id={f.key} label={f.label} className={f.wide ? 'sm:col-span-2' : undefined}>
+                <Field key={f.key} id={f.key} label={f.label} className={f.wide ? 'sm:col-span-2' : undefined} error={errors[f.key]}>
                   <Input id={f.key} placeholder={f.placeholder} value={form[f.key]} onChange={(e) => setForm({ ...form, [f.key]: e.target.value })} />
                 </Field>
               ))}

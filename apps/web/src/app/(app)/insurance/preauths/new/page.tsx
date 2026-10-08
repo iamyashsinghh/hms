@@ -5,8 +5,9 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Loader2 } from 'lucide-react';
-import type { insurance as I } from '@hms/shared';
+import { insurance as I, todayIso } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -37,25 +38,36 @@ function NewPreauthPage() {
     queryFn: () => api.insurance.payers.packages(policy!.payerId),
     enabled: !!policy,
   });
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const create = useMutation({
-    mutationFn: () =>
-      api.insurance.preauths.create({
-        policyId: policy!.id,
-        packageId: v.packageId || null,
-        admissionRef: opt(v.admissionRef) ?? null,
-        diagnosis: v.diagnosis,
-        icdCodes: v.icdCodes.split(/[,\s]+/).filter(Boolean),
-        procedure: opt(v.procedure) ?? null,
-        expectedAdmission: v.expectedAdmission || null,
-        expectedLosDays: optNum(v.expectedLosDays) ?? null,
-        estimatedAmount: Number(v.estimatedAmount),
-        notes: opt(v.notes) ?? null,
-      }),
+    mutationFn: (body: I.PreauthInput) => api.insurance.preauths.create(body),
     onSuccess: (p) => {
       queryClient.invalidateQueries({ queryKey: ['insurance', 'preauths'] });
       router.push(`/insurance/preauths/${p.id}`);
     },
   });
+
+  const submit = () => {
+    if (!policy) return;
+    const body: I.PreauthInput = {
+      policyId: policy.id,
+      packageId: v.packageId || null,
+      admissionRef: opt(v.admissionRef) ?? null,
+      diagnosis: v.diagnosis,
+      icdCodes: v.icdCodes.split(/[,\s]+/).filter(Boolean),
+      procedure: opt(v.procedure) ?? null,
+      expectedAdmission: v.expectedAdmission || null,
+      expectedLosDays: optNum(v.expectedLosDays) ?? null,
+      estimatedAmount: v.estimatedAmount.trim() === '' ? undefined : Number(v.estimatedAmount),
+      notes: opt(v.notes) ?? null,
+    };
+    const r = validate(I.preauthInputSchema, body);
+    const errs = { ...(r.errors ?? {}) };
+    const icd = Object.entries(errs).find(([k]) => k.startsWith('icdCodes'));
+    if (icd) errs.icdCodes = icd[1];
+    setErrors(errs);
+    if (r.data) create.mutate(body);
+  };
 
   if (!canManage) return <NoAccess />;
 
@@ -71,16 +83,16 @@ function NewPreauthPage() {
             className="space-y-4"
             onSubmit={(e) => {
               e.preventDefault();
-              if (policy) create.mutate();
+              submit();
             }}
           >
             <PatientPolicyPicker presetPolicyId={params.get('policyId')} value={policy} onChange={setPolicy} />
             {policy && (
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                <Field id="diagnosis" label="Provisional diagnosis" className="sm:col-span-2">
-                  <Input id="diagnosis" required value={v.diagnosis} onChange={set('diagnosis')} />
+                <Field id="diagnosis" error={errors.diagnosis} label="Provisional diagnosis" className="sm:col-span-2">
+                  <Input id="diagnosis" required maxLength={1000} value={v.diagnosis} onChange={set('diagnosis')} />
                 </Field>
-                <Field id="icd" label="ICD-10 codes (comma separated)">
+                <Field id="icd" error={errors.icdCodes} label="ICD-10 codes (comma separated)">
                   <Input id="icd" value={v.icdCodes} onChange={set('icdCodes')} placeholder="K35.8" />
                 </Field>
                 <Field id="package" label="Package">
@@ -104,22 +116,22 @@ function NewPreauthPage() {
                     ))}
                   </Select>
                 </Field>
-                <Field id="procedure" label="Planned treatment / procedure" className="sm:col-span-2">
+                <Field id="procedure" error={errors.procedure} label="Planned treatment / procedure" className="sm:col-span-2">
                   <Input id="procedure" value={v.procedure} onChange={set('procedure')} />
                 </Field>
-                <Field id="adm" label="Expected admission">
-                  <Input id="adm" type="date" value={v.expectedAdmission} onChange={set('expectedAdmission')} />
+                <Field id="adm" error={errors.expectedAdmission} label="Expected admission">
+                  <Input id="adm" type="date" min={todayIso(-30)} max={todayIso(366)} value={v.expectedAdmission} onChange={set('expectedAdmission')} />
                 </Field>
-                <Field id="los" label="Expected stay (days)">
-                  <Input id="los" type="number" min={0} value={v.expectedLosDays} onChange={set('expectedLosDays')} />
+                <Field id="los" error={errors.expectedLosDays} label="Expected stay (days)">
+                  <Input id="los" type="number" min={0} max={365} step={1} value={v.expectedLosDays} onChange={set('expectedLosDays')} />
                 </Field>
-                <Field id="est" label="Estimated cost (₹)">
+                <Field id="est" error={errors.estimatedAmount} label="Estimated cost (₹)">
                   <Input id="est" type="number" step="0.01" min={0} required value={v.estimatedAmount} onChange={set('estimatedAmount')} />
                 </Field>
-                <Field id="ref" label="Admission / IP number">
+                <Field id="ref" error={errors.admissionRef} label="Admission / IP number">
                   <Input id="ref" value={v.admissionRef} onChange={set('admissionRef')} />
                 </Field>
-                <Field id="notes" label="Notes" className="sm:col-span-2">
+                <Field id="notes" error={errors.notes} label="Notes" className="sm:col-span-2">
                   <Input id="notes" value={v.notes} onChange={set('notes')} />
                 </Field>
               </div>

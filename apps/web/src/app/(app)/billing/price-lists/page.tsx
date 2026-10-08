@@ -3,8 +3,9 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Plus } from 'lucide-react';
-import type { billing as B } from '@hms/shared';
+import { billing as B } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
 import { PageHeader } from '@/components/page-header';
@@ -18,6 +19,8 @@ import { ErrorBox, Field, formatINR, todayIST } from '@/modules/billing/ui';
 
 interface Form {
   id?: string;
+  /** Kept as-is on edit: a payer's (insurance) list must stay that payer's list (BIL-46). */
+  payerId?: string | null;
   name: string;
   effectiveFrom: string;
   effectiveTo: string;
@@ -30,6 +33,7 @@ export default function PriceListsPage() {
   const canManage = usePermission('billing.service.manage');
   const queryClient = useQueryClient();
   const [form, setForm] = React.useState<Form | null>(null);
+  const [errors, setErrors] = React.useState<FieldErrors>({});
 
   const { data: lists, isPending, error } = useQuery({ queryKey: ['billing', 'price-lists'], queryFn: () => api.billing.priceLists.list(), enabled: canRead });
   const { data: services } = useQuery({
@@ -39,23 +43,36 @@ export default function PriceListsPage() {
   });
 
   const save = useMutation({
-    mutationFn: (f: Form) => {
-      const body: B.PriceListInput = {
-        name: f.name,
-        effectiveFrom: f.effectiveFrom,
-        effectiveTo: f.effectiveTo || null,
-        isActive: f.isActive,
-        items: Object.entries(f.prices)
-          .filter(([, v]) => v !== '')
-          .map(([serviceId, price]) => ({ serviceId, price: Number(price) })),
-      };
-      return f.id ? api.billing.priceLists.update(f.id, body) : api.billing.priceLists.create(body);
-    },
+    mutationFn: ({ id, body }: { id?: string; body: B.PriceListInput }) => (id ? api.billing.priceLists.update(id, body) : api.billing.priceLists.create(body)),
     onSuccess: () => {
       setForm(null);
       queryClient.invalidateQueries({ queryKey: ['billing', 'price-lists'] });
     },
   });
+
+  const submit = (f: Form) => {
+    const r = validate(B.priceListInputSchema, {
+      name: f.name,
+      payerId: f.payerId ?? null,
+      effectiveFrom: f.effectiveFrom,
+      effectiveTo: f.effectiveTo || null,
+      isActive: f.isActive,
+      items: Object.entries(f.prices)
+        .filter(([, v]) => v.trim() !== '')
+        .map(([serviceId, price]) => ({ serviceId, price })),
+    });
+    // Price errors come back as items.<n>.price; show them on the service row.
+    const shown: FieldErrors = { ...(r.errors ?? {}) };
+    if (r.errors) {
+      const filled = Object.entries(f.prices).filter(([, v]) => v.trim() !== '');
+      for (const [k, m] of Object.entries(r.errors)) {
+        const n = /^items\.(\d+)\./.exec(k)?.[1];
+        if (n !== undefined && filled[Number(n)]) shown[`price.${filled[Number(n)]![0]}`] = m;
+      }
+    }
+    setErrors(shown);
+    if (r.data) save.mutate({ id: f.id, body: r.data });
+  };
 
   if (!canRead) return <NoAccess />;
 
@@ -66,7 +83,7 @@ export default function PriceListsPage() {
         description="Dated price lists override base prices. The newest active list covering the bill date wins; payer-specific lists (insurance, corporate) come with the insurance module."
         actions={
           <Can permission="billing.service.manage">
-            <Button onClick={() => setForm({ name: '', effectiveFrom: todayIST(), effectiveTo: '', isActive: true, prices: {} })}>
+            <Button onClick={() => { setErrors({}); setForm({ name: '', effectiveFrom: todayIST(), effectiveTo: '', isActive: true, prices: {} }); }}>
               <Plus /> New price list
             </Button>
           </Can>
@@ -82,13 +99,16 @@ export default function PriceListsPage() {
             <ErrorBox error={save.error ? errorMessage(save.error) : null} />
             <div className="grid gap-4 sm:grid-cols-4">
               <Field id="pl-name" label="Name *" className="sm:col-span-2">
-                <Input id="pl-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Cash rates 2026-27" />
+                <Input id="pl-name" maxLength={200} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Cash rates 2026-27" />
+                {errors.name && <p className="mt-1 text-xs text-destructive">{errors.name}</p>}
               </Field>
               <Field id="pl-from" label="Effective from *">
                 <Input id="pl-from" type="date" value={form.effectiveFrom} onChange={(e) => setForm({ ...form, effectiveFrom: e.target.value })} />
+                {errors.effectiveFrom && <p className="mt-1 text-xs text-destructive">{errors.effectiveFrom}</p>}
               </Field>
               <Field id="pl-to" label="Effective to">
-                <Input id="pl-to" type="date" value={form.effectiveTo} onChange={(e) => setForm({ ...form, effectiveTo: e.target.value })} />
+                <Input id="pl-to" type="date" min={form.effectiveFrom || undefined} value={form.effectiveTo} onChange={(e) => setForm({ ...form, effectiveTo: e.target.value })} />
+                {errors.effectiveTo && <p className="mt-1 text-xs text-destructive">{errors.effectiveTo}</p>}
               </Field>
             </div>
             <label className="flex items-center gap-2 text-sm">
@@ -120,6 +140,7 @@ export default function PriceListsPage() {
                           value={form.prices[s.id] ?? ''}
                           onChange={(e) => setForm({ ...form, prices: { ...form.prices, [s.id]: e.target.value } })}
                         />
+                        {errors[`price.${s.id}`] && <p className="mt-1 text-xs text-destructive">{errors[`price.${s.id}`]}</p>}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -130,7 +151,7 @@ export default function PriceListsPage() {
               <Button variant="outline" onClick={() => setForm(null)}>
                 Cancel
               </Button>
-              <Button disabled={save.isPending || !form.name.trim()} onClick={() => save.mutate(form)}>
+              <Button disabled={save.isPending || !form.name.trim()} onClick={() => submit(form)}>
                 {save.isPending && <Loader2 className="animate-spin" />}
                 Save
               </Button>
@@ -180,16 +201,18 @@ export default function PriceListsPage() {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() =>
+                          onClick={() => {
+                            setErrors({});
                             setForm({
                               id: l.id,
+                              payerId: l.payerId,
                               name: l.name,
                               effectiveFrom: l.effectiveFrom,
                               effectiveTo: l.effectiveTo ?? '',
                               isActive: l.isActive,
                               prices: Object.fromEntries(l.items.map((i) => [i.serviceId, String(i.price)])),
-                            })
-                          }
+                            });
+                          }}
                         >
                           Edit
                         </Button>

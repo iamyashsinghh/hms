@@ -7,6 +7,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Loader2, Plus, Trash2 } from 'lucide-react';
 import { billing as B, type Patient } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { firstError, validate } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -60,23 +61,23 @@ function NewBillPage() {
   });
   const byCode = React.useMemo(() => new Map((services?.items ?? []).map((s) => [s.code, s])), [services]);
 
+  const toLines = (): B.InvoiceLineInput[] =>
+    rows
+      .filter((r) => r.code || r.description)
+      .map((r) => {
+        const svc = byCode.get(r.code.trim().toUpperCase());
+        return {
+          serviceCode: svc?.code,
+          description: r.description.trim() || undefined,
+          qty: r.qty.trim() === '' ? 1 : Number(r.qty),
+          unitPrice: r.price === '' ? undefined : Number(r.price),
+          discount: r.discount === '' ? undefined : Number(r.discount),
+          taxRate: r.taxRate === '' ? undefined : Number(r.taxRate),
+        };
+      });
   const create = useMutation({
-    mutationFn: (finalize: boolean) => {
-      const lines: B.InvoiceLineInput[] = rows
-        .filter((r) => r.code || r.description)
-        .map((r) => {
-          const svc = byCode.get(r.code.trim().toUpperCase());
-          return {
-            serviceCode: svc?.code,
-            description: r.description.trim() || undefined,
-            qty: Number(r.qty) || 1,
-            unitPrice: r.price === '' ? undefined : Number(r.price),
-            discount: r.discount === '' ? undefined : Number(r.discount),
-            taxRate: r.taxRate === '' ? undefined : Number(r.taxRate),
-          };
-        });
-      return api.billing.invoices.create({ patientId: patient!.id, lines, notes: notes.trim() || undefined, supplyType, finalize });
-    },
+    mutationFn: (finalize: boolean) =>
+      api.billing.invoices.create({ patientId: patient!.id, lines: toLines(), notes: notes.trim() || undefined, supplyType, finalize }),
     onSuccess: (inv) => {
       queryClient.invalidateQueries({ queryKey: ['billing'] });
       router.push(`/billing/invoices/${inv.id}`);
@@ -101,6 +102,15 @@ function NewBillPage() {
     const bad = rows.find((r) => (r.code || r.description) && !byCode.get(r.code.trim().toUpperCase()) && (!r.description || r.price === ''));
     if (bad) return setFormError('Each line needs a service from the list, or a description and a price.');
     if (!rows.some((r) => r.code || r.description)) return setFormError('Add at least one line.');
+    const lines = toLines();
+    for (const [i, line] of lines.entries()) {
+      const r = validate(B.invoiceLineInputSchema, line);
+      if (r.errors) return setFormError(`Line ${i + 1}: ${firstError(r.errors)}`);
+      // Price from the master when left blank: the discount still cannot be more than the line.
+      const svc = line.serviceCode ? byCode.get(line.serviceCode) : undefined;
+      const price = line.unitPrice ?? svc?.basePrice;
+      if (price !== undefined && Number(line.discount ?? 0) > Number(line.qty) * Number(price)) return setFormError(`Line ${i + 1}: Discount is more than the line amount`);
+    }
     create.mutate(finalize);
   };
 
@@ -163,7 +173,7 @@ function NewBillPage() {
                     value={r.description}
                     onChange={(e) => update(r.key, { description: e.target.value })}
                   />
-                  <Input className="sm:col-span-1" type="number" min={0} step="any" aria-label="Quantity" value={r.qty} onChange={(e) => update(r.key, { qty: e.target.value })} />
+                  <Input className="sm:col-span-1" type="number" min={0.01} max={100000} step="any" aria-label="Quantity" value={r.qty} onChange={(e) => update(r.key, { qty: e.target.value })} />
                   <Input
                     className="sm:col-span-2"
                     type="number"

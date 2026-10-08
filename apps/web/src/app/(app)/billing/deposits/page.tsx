@@ -128,6 +128,8 @@ export default function DepositsPage() {
                   title={`Refund advance (up to ${formatINR(acct.depositBalance)})`}
                   action="Refund"
                   needsReason
+                  max={acct.depositBalance}
+                  maxMessage={`Advance balance is only ${formatINR(acct.depositBalance)}`}
                   onSubmit={(v) => api.billing.payments.refund({ patientId: patient.id, ...v, notes: v.notes ?? '' })}
                   onDone={refresh}
                 />
@@ -144,12 +146,17 @@ function MoneyForm({
   title,
   action,
   needsReason,
+  max,
+  maxMessage,
   onSubmit,
   onDone,
 }: {
   title: string;
   action: string;
   needsReason?: boolean;
+  /** Most that can be entered (e.g. the advance balance for a refund). */
+  max?: number;
+  maxMessage?: string;
   onSubmit: (v: { mode: B.PaymentMode; amount: number; reference?: string; notes?: string }) => Promise<unknown>;
   onDone: () => void;
 }) {
@@ -157,6 +164,17 @@ function MoneyForm({
   const [amount, setAmount] = React.useState('');
   const [reference, setReference] = React.useState('');
   const [notes, setNotes] = React.useState('');
+  const v = Number(amount);
+  const amountErr =
+    amount.trim() === ''
+      ? undefined
+      : !Number.isFinite(v) || v <= 0
+        ? 'Must be more than 0'
+        : Math.abs(Math.round(v * 100) - v * 100) > 1e-6
+          ? 'At most 2 decimal places'
+          : max !== undefined && Math.round(v * 100) > Math.round(max * 100)
+            ? maxMessage
+            : undefined;
   const m = useMutation({
     mutationFn: () => onSubmit({ mode, amount: Number(amount), reference: reference.trim() || undefined, notes: notes.trim() || undefined }),
     onSuccess: () => {
@@ -182,18 +200,18 @@ function MoneyForm({
             ))}
           </Select>
         </Field>
-        <Field label="Amount (₹)">
-          <Input type="number" min={0} step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} aria-label="Amount" />
+        <Field label="Amount (₹)" error={amountErr}>
+          <Input type="number" min={0} max={max} step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} aria-label="Amount" />
         </Field>
         {mode !== 'cash' && (
           <Field label="Reference">
-            <Input value={reference} onChange={(e) => setReference(e.target.value)} aria-label="Reference" />
+            <Input maxLength={100} value={reference} onChange={(e) => setReference(e.target.value)} aria-label="Reference" />
           </Field>
         )}
         <Field label={needsReason ? 'Reason *' : 'Notes'}>
-          <Input value={notes} onChange={(e) => setNotes(e.target.value)} aria-label="Notes" />
+          <Input maxLength={500} value={notes} onChange={(e) => setNotes(e.target.value)} aria-label="Notes" />
         </Field>
-        <Button className="w-full" disabled={m.isPending || !(Number(amount) > 0) || (needsReason && notes.trim().length < 3)} onClick={() => m.mutate()}>
+        <Button className="w-full" disabled={m.isPending || !(Number(amount) > 0) || !!amountErr || (needsReason && notes.trim().length < 3)} onClick={() => m.mutate()}>
           {m.isPending && <Loader2 className="animate-spin" />}
           {action}
         </Button>

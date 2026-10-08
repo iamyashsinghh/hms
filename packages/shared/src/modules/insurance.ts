@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { datesInOrder as inOrder, emailAddress, END_BEFORE_START, gstin as strictGstin, isoDate, pastOrTodayDate, phoneNumber, todayIso } from '../validation';
 
 /**
  * Insurance & Schemes: payers (insurers, TPAs, corporates, PM-JAY/CGHS-style schemes), scheme packages,
@@ -45,15 +46,16 @@ export const insuranceModule = defineModule({
 // ---------- shared bits ----------
 
 const money = z.coerce
-  .number()
-  .min(0)
+  .number({ error: 'Enter an amount' })
+  .refine(Number.isFinite, 'Enter an amount')
+  .min(0, 'Amount cannot be negative')
   .max(99_999_999_999.99)
   .refine((v) => Math.abs(Math.round(v * 100) - v * 100) < 1e-6, 'At most 2 decimal places');
 const positiveMoney = money.refine((v) => v > 0, 'Must be more than 0');
-const percent = z.coerce.number().min(0).max(100);
-const optionalText = (max: number) => z.string().trim().max(max).optional();
-const nullableText = (max: number) => z.string().trim().max(max).nullable().optional();
-const gstin = z.string().trim().toUpperCase().regex(/^[0-9]{2}[A-Z0-9]{10}[0-9A-Z]{3}$/, 'Enter a valid 15-character GSTIN');
+const percent = z.coerce.number({ error: 'Enter a percentage' }).min(0, 'Cannot be less than 0%').max(100, 'Cannot be more than 100%');
+const optionalText = (max: number) => z.string().trim().max(max, `Can be at most ${max} characters`).optional();
+const nullableText = (max: number) => z.string().trim().max(max, `Can be at most ${max} characters`).nullable().optional();
+const gstin = strictGstin;
 const page = z.coerce.number().int().min(1).default(1);
 const pageSize = (max = 200, def = 25) => z.coerce.number().int().min(1).max(max).default(def);
 const note = z.object({ note: optionalText(1000) });
@@ -86,17 +88,17 @@ export type DeductionCategory = (typeof DEDUCTION_CATEGORIES)[number];
 
 const payerBase = z.object({
     code: z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9_.-]{0,29}$/, 'Letters, digits, - _ . (max 30)'),
-    name: z.string().trim().min(2).max(200),
+    name: z.string({ error: 'Enter the payer name' }).trim().min(2, 'Payer name needs at least 2 characters').max(200),
     type: z.enum(PAYER_TYPES),
     scheme: z.enum(SCHEMES).nullable().optional(),
     contactName: nullableText(120),
-    phone: nullableText(30),
-    email: z.union([z.email(), z.literal('')]).nullable().optional(),
+    phone: z.union([phoneNumber, z.literal('')]).nullable().optional(),
+    email: z.union([emailAddress, z.literal('')]).nullable().optional(),
     address: nullableText(500),
     gstin: z.union([gstin, z.literal('')]).nullable().optional(),
     portalUrl: z.union([z.url(), z.literal('')]).nullable().optional(),
     /** Days the payer has to settle after a claim is submitted (used for ageing and due dates). */
-    creditDays: z.coerce.number().int().min(0).max(365).default(30),
+    creditDays: z.coerce.number().int('Credit days must be a whole number').min(0, 'Credit days cannot be negative').max(365, 'Credit days cannot be more than 365').default(30),
     /** TDS the payer usually deducts (194J is 10%); a hint for the settlement form. */
     tdsPercent: percent.default(0),
     /** Default co-pay the patient bears, applied when a policy has none. */
@@ -109,7 +111,17 @@ const payerBase = z.object({
   });
 export const payerInputSchema = payerBase.refine((p) => p.type !== 'government' || !!p.scheme, { message: 'Pick the scheme', path: ['scheme'] });
 export type PayerInput = z.input<typeof payerInputSchema>;
-export const updatePayerSchema = payerBase.omit({ code: true }).partial();
+/** No defaults on updates: a partial update must not reset credit days, TDS, co-pay or flags it did not send. */
+export const updatePayerSchema = payerBase
+  .omit({ code: true })
+  .extend({
+    creditDays: payerBase.shape.creditDays.unwrap(),
+    tdsPercent: percent,
+    copayPercent: percent,
+    preauthRequired: z.boolean(),
+    isActive: z.boolean(),
+  })
+  .partial();
 export type UpdatePayer = z.input<typeof updatePayerSchema>;
 
 export interface Payer {
@@ -158,7 +170,10 @@ export const packageInputSchema = z.object({
   isActive: z.boolean().default(true),
 });
 export type PackageInput = z.input<typeof packageInputSchema>;
-export const updatePackageSchema = packageInputSchema.omit({ code: true }).partial();
+export const updatePackageSchema = packageInputSchema
+  .omit({ code: true })
+  .extend({ preauthRequired: z.boolean(), isActive: z.boolean() })
+  .partial();
 export type UpdatePackage = z.input<typeof updatePackageSchema>;
 
 export interface SchemePackage {
@@ -182,14 +197,14 @@ const policyBase = z.object({
     payerId: z.uuid(),
     /** TPA that processes claims for the insurer (claims then go to the TPA). */
     tpaId: z.uuid().nullable().optional(),
-    policyNumber: z.string().trim().min(1).max(60),
+    policyNumber: z.string({ error: 'Enter the policy number' }).trim().min(1, 'Enter the policy number').max(60, 'Policy number can be at most 60 characters'),
     /** Card / member / beneficiary id (PM-JAY ID, CGHS card, employee code…). */
     memberId: nullableText(60),
     holderName: nullableText(120),
     relation: z.enum(RELATIONS).default('self'),
     employeeId: nullableText(60),
-    validFrom: z.iso.date().nullable().optional(),
-    validTo: z.iso.date().nullable().optional(),
+    validFrom: isoDate.nullable().optional(),
+    validTo: isoDate.nullable().optional(),
     sumInsured: money.nullable().optional(),
     /** Overrides the payer's default co-pay. */
     copayPercent: percent.nullable().optional(),
@@ -197,10 +212,19 @@ const policyBase = z.object({
     notes: nullableText(1000),
     isActive: z.boolean().default(true),
   });
-const datesInOrder = (v: { validFrom?: string | null; validTo?: string | null }) => !v.validFrom || !v.validTo || v.validTo >= v.validFrom;
-export const policyInputSchema = policyBase.refine(datesInOrder, { message: 'End date is before start date', path: ['validTo'] });
+const datesInOrder = (v: { validFrom?: string | null; validTo?: string | null }) => inOrder(v.validFrom, v.validTo);
+const roomRentWithinCover = (v: { sumInsured?: number | null; roomRentLimit?: number | null }) => v.sumInsured == null || v.roomRentLimit == null || v.roomRentLimit <= v.sumInsured;
+const ROOM_RENT_OVER_COVER = { message: 'Room rent limit cannot be more than the sum insured', path: ['roomRentLimit'] };
+export const policyInputSchema = policyBase
+  .refine(datesInOrder, { message: END_BEFORE_START, path: ['validTo'] })
+  .refine(roomRentWithinCover, ROOM_RENT_OVER_COVER);
 export type PolicyInput = z.input<typeof policyInputSchema>;
-export const updatePolicySchema = policyBase.omit({ patientId: true }).partial().refine(datesInOrder, { message: 'End date is before start date', path: ['validTo'] });
+export const updatePolicySchema = policyBase
+  .omit({ patientId: true })
+  .extend({ relation: z.enum(RELATIONS), isActive: z.boolean() })
+  .partial()
+  .refine(datesInOrder, { message: END_BEFORE_START, path: ['validTo'] })
+  .refine(roomRentWithinCover, ROOM_RENT_OVER_COVER);
 export type UpdatePolicy = z.input<typeof updatePolicySchema>;
 
 export interface Policy {
@@ -267,31 +291,40 @@ export interface CaseEvent {
 
 // ---------- pre-authorisation ----------
 
-export const preauthInputSchema = z.object({
+const preauthBase = z.object({
   policyId: z.uuid(),
   facilityId: z.uuid().optional(),
   doctorId: z.uuid().nullable().optional(),
   packageId: z.uuid().nullable().optional(),
   /** Admission / encounter this is for (IPD admission id or number), free text until IPD lands. */
   admissionRef: nullableText(100),
-  diagnosis: z.string().trim().min(2).max(1000),
+  diagnosis: z.string({ error: 'Enter the diagnosis' }).trim().min(2, 'Diagnosis needs at least 2 characters').max(1000, 'Diagnosis can be at most 1000 characters'),
   icdCodes: z.array(z.string().trim().toUpperCase().regex(/^[A-Z][0-9][0-9A-Z](\.[0-9A-Z]{1,4})?$/, 'ICD-10 code like K35.8')).max(20).default([]),
   procedure: nullableText(1000),
-  expectedAdmission: z.iso.date().nullable().optional(),
-  expectedLosDays: z.coerce.number().int().min(0).max(365).nullable().optional(),
+  /** May be a little in the past (pre-auth raised after an emergency admission), not years off. */
+  expectedAdmission: isoDate
+    .refine((d) => d >= todayIso(-30), 'Expected admission is more than 30 days ago')
+    .refine((d) => d <= todayIso(366), 'Expected admission is too far in the future')
+    .nullable()
+    .optional(),
+  expectedLosDays: z.coerce.number().int('Length of stay must be whole days').min(0, 'Length of stay cannot be negative').max(365, 'Length of stay cannot be more than 365 days').nullable().optional(),
   estimatedAmount: money,
   /** Defaults to the estimate. */
   requestedAmount: money.optional(),
   notes: nullableText(1000),
 });
+export const preauthInputSchema = preauthBase.refine((v) => v.estimatedAmount > 0 || (v.requestedAmount ?? 0) > 0, {
+  message: 'Enter the estimated cost',
+  path: ['estimatedAmount'],
+});
 export type PreauthInput = z.input<typeof preauthInputSchema>;
-export const updatePreauthSchema = preauthInputSchema.omit({ policyId: true, facilityId: true }).partial();
+export const updatePreauthSchema = preauthBase.omit({ policyId: true, facilityId: true }).extend({ icdCodes: preauthBase.shape.icdCodes.unwrap() }).partial();
 export type UpdatePreauth = z.input<typeof updatePreauthSchema>;
 
 export const preauthApproveSchema = z.object({
   approvedAmount: positiveMoney,
   payerRef: optionalText(60),
-  validUntil: z.iso.date().optional(),
+  validUntil: isoDate.refine((d) => d >= todayIso(), 'Approval valid until cannot be in the past').optional(),
   note: optionalText(1000),
 });
 export type PreauthApprove = z.input<typeof preauthApproveSchema>;
@@ -352,6 +385,9 @@ export type PreauthQuery = { q?: string; status?: PreauthStatus; payerId?: strin
 
 // ---------- claims ----------
 
+const admitDischarge = (v: { admissionDate?: string | null; dischargeDate?: string | null }) => inOrder(v.admissionDate, v.dischargeDate);
+const DISCHARGE_BEFORE_ADMISSION = { message: 'Discharge date is before admission date', path: ['dischargeDate'] };
+
 export const claimInputSchema = z.object({
   policyId: z.uuid(),
   preauthId: z.uuid().nullable().optional(),
@@ -366,21 +402,21 @@ export const claimInputSchema = z.object({
     .min(1)
     .max(50)
     .refine((l) => new Set(l.map((i) => i.invoiceId)).size === l.length, 'A bill is listed twice'),
-  admissionDate: z.iso.date().nullable().optional(),
-  dischargeDate: z.iso.date().nullable().optional(),
+  admissionDate: pastOrTodayDate('Admission date').nullable().optional(),
+  dischargeDate: pastOrTodayDate('Discharge date').nullable().optional(),
   diagnosis: nullableText(1000),
   notes: nullableText(1000),
-});
+}).refine(admitDischarge, DISCHARGE_BEFORE_ADMISSION);
 export type ClaimInput = z.input<typeof claimInputSchema>;
 
 export const updateClaimSchema = z.object({
-  admissionDate: z.iso.date().nullable().optional(),
-  dischargeDate: z.iso.date().nullable().optional(),
+  admissionDate: pastOrTodayDate('Admission date').nullable().optional(),
+  dischargeDate: pastOrTodayDate('Discharge date').nullable().optional(),
   diagnosis: nullableText(1000),
   notes: nullableText(1000),
   /** Draft only: change the payer's share on a bill. */
   invoices: z.array(z.object({ invoiceId: z.uuid(), payerAmount: money })).max(50).optional(),
-});
+}).refine(admitDischarge, DISCHARGE_BEFORE_ADMISSION);
 export type UpdateClaim = z.input<typeof updateClaimSchema>;
 
 export const claimApproveSchema = z.object({ approvedAmount: money, payerClaimNo: optionalText(60), note: optionalText(1000) });
@@ -397,9 +433,9 @@ export type Deduction = z.output<typeof deductionSchema>;
 
 export const settlementInputSchema = z
   .object({
-    settledOn: z.iso.date(),
+    settledOn: pastOrTodayDate('Settlement date'),
     /** UTR / NEFT / cheque reference. */
-    reference: z.string().trim().min(2).max(100),
+    reference: z.string({ error: 'Enter the UTR / cheque reference' }).trim().min(2, 'Enter the UTR / cheque reference').max(100),
     amountPaid: money,
     tdsAmount: money.default(0),
     deductions: z.array(deductionSchema).max(50).default([]),

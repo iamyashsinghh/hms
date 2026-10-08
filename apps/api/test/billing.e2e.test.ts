@@ -336,3 +336,60 @@ describe('permissions and isolation', () => {
     expect((await other(`/billing/patients/${patientId}/account`)).json()).toMatchObject({ depositBalance: 0, outstanding: 0, invoices: [] });
   });
 });
+
+describe('billing validation', () => {
+  const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
+  it('keeps the payer when a payer price list is edited without one (BIL-46)', async () => {
+    const payer = await call(admin, 'POST', '/insurance/payers', { code: `BPL-${tag}`, name: `Price list payer ${tag}`, type: 'corporate' });
+    expect(payer.statusCode, payer.body).toBe(201);
+    const svc = (await call(admin, 'GET', `/billing/services?q=${XRAY}`)).json().items[0];
+    const list = await call(admin, 'POST', '/billing/price-lists', {
+      name: `Payer ${tag}`,
+      payerId: payer.json().id,
+      effectiveFrom: today(),
+      items: [{ serviceId: svc.id, price: 700 }],
+    });
+    expect(list.statusCode, list.body).toBe(201);
+    const edit = await call(admin, 'PUT', `/billing/price-lists/${list.json().id}`, { name: `Payer ${tag} v2`, effectiveFrom: today(), items: [{ serviceId: svc.id, price: 650 }] });
+    expect(edit.statusCode, edit.body).toBe(200);
+    expect(edit.json()).toMatchObject({ name: `Payer ${tag} v2`, payerId: payer.json().id });
+    const clear = await call(admin, 'PUT', `/billing/price-lists/${list.json().id}`, { name: `Payer ${tag} v3`, payerId: null, effectiveFrom: today(), isActive: false, items: [] });
+    expect(clear.json().payerId).toBeNull();
+  });
+
+  it('a partial service update does not reset category, GST or active flag', async () => {
+    const svc = (await call(admin, 'GET', `/billing/services?q=${XRAY}`)).json().items[0];
+    const res = await call(admin, 'PATCH', `/billing/services/${svc.id}`, { basePrice: 800 });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ category: 'radiology', taxRate: 18, isActive: true, basePrice: 800 });
+  });
+
+  it('gives clear messages for bad bills, settings, refunds and date ranges', async () => {
+    const msg = (r: { json: () => { error: { message: string } } }) => r.json().error.message;
+    const disc = await call(clerk, 'POST', '/billing/invoices', { patientId, lines: [{ description: 'Dressing', unitPrice: 100, discount: 150 }] });
+    expect(disc.statusCode).toBe(400);
+    expect(msg(disc)).toContain('Discount is more than the line amount');
+    const qty = await call(clerk, 'POST', '/billing/invoices', { patientId, lines: [{ description: 'Dressing', unitPrice: 100, qty: 0 }] });
+    expect(qty.statusCode).toBe(400);
+    expect(msg(qty)).toContain('Quantity must be more than 0');
+    const gst = await call(clerk, 'POST', '/billing/invoices', { patientId, lines: [{ description: 'Kit', unitPrice: 100, taxRate: 7 }] });
+    expect(msg(gst)).toContain('Use a GST slab');
+
+    const settings = await call(admin, 'PUT', '/billing/settings', { gstin: '27AAAAA0000A1Z5', stateCode: '29' });
+    expect(settings.statusCode).toBe(400);
+    expect(msg(settings)).toContain('State code must match');
+    const phone = await call(admin, 'PUT', '/billing/settings', { phone: 'call me' });
+    expect(msg(phone)).toContain('Enter a valid phone number');
+
+    const refund = await call(admin, 'POST', '/billing/refunds', { patientId, mode: 'cash', amount: 10, notes: 'ok' });
+    expect(refund.statusCode).toBe(400);
+    expect(msg(refund)).toContain('at least 3 characters');
+
+    const range = await call(admin, 'GET', `/billing/invoices?from=${today()}&to=2000-01-01`);
+    expect(range.statusCode).toBe(400);
+    expect(msg(range)).toContain('End date is before start date');
+    const list = await call(admin, 'POST', '/billing/price-lists', { name: `Bad ${tag}`, effectiveFrom: '2026-12-01', effectiveTo: '2026-01-01' });
+    expect(msg(list)).toContain('End date is before start date');
+  });
+});

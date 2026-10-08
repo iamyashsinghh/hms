@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { insurance as I, type Patient } from '@hms/shared';
 import { api } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { Button } from '@/components/ui/button';
 import { Input, Select } from '@/components/ui/input';
 import { ErrorBox, Field, PatientPicker, PAYER_TYPE_LABELS, RELATION_LABELS, opt, optNum } from './ui';
@@ -39,6 +40,7 @@ export function PolicyForm({
     roomRentLimit: policy?.roomRentLimit != null ? String(policy.roomRentLimit) : '',
     notes: policy?.notes ?? '',
   });
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const set = (k: keyof typeof v) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setV((s) => ({ ...s, [k]: e.target.value }));
   const payers = useQuery({ queryKey: ['insurance', 'payers', { active: 'true', all: true }], queryFn: () => api.insurance.payers.list({ active: 'true', pageSize: 200 }) });
   const list = payers.data?.items ?? [];
@@ -52,7 +54,7 @@ export function PolicyForm({
       onSubmit={(e) => {
         e.preventDefault();
         if (!policy && !patient) return;
-        onSubmit({
+        const body = {
           patientId: policy?.patientId ?? patient!.id,
           payerId: v.payerId,
           tpaId: v.tpaId || null,
@@ -67,7 +69,11 @@ export function PolicyForm({
           copayPercent: optNum(v.copayPercent) ?? null,
           roomRentLimit: optNum(v.roomRentLimit) ?? null,
           notes: opt(v.notes) ?? null,
-        });
+        };
+        // Same rules as the server, shown on the fields.
+        const r = validate(I.policyInputSchema, body);
+        setErrors(r.errors ?? {});
+        if (r.data) onSubmit(body);
       }}
     >
       {!policy && (
@@ -75,7 +81,7 @@ export function PolicyForm({
           <PatientPicker value={patient} onChange={setPatient} />
         </div>
       )}
-      <Field id="payer" label="Insurer / corporate / scheme" className="sm:col-span-2">
+      <Field id="payer" error={errors.payerId} label="Insurer / corporate / scheme" className="sm:col-span-2">
         <Select id="payer" required value={v.payerId} onChange={set('payerId')}>
           <option value="">Choose…</option>
           {carriers.map((p) => (
@@ -97,14 +103,14 @@ export function PolicyForm({
           </Select>
         </Field>
       )}
-      <Field id="policyNumber" label={carrier?.type === 'government' ? 'Scheme / card number' : 'Policy number'}>
-        <Input id="policyNumber" required value={v.policyNumber} onChange={set('policyNumber')} />
+      <Field id="policyNumber" error={errors.policyNumber} label={carrier?.type === 'government' ? 'Scheme / card number' : 'Policy number'}>
+        <Input id="policyNumber" required maxLength={60} value={v.policyNumber} onChange={set('policyNumber')} />
       </Field>
-      <Field id="memberId" label="Member / e-card / beneficiary ID">
-        <Input id="memberId" value={v.memberId} onChange={set('memberId')} />
+      <Field id="memberId" error={errors.memberId} label="Member / e-card / beneficiary ID">
+        <Input id="memberId" maxLength={60} value={v.memberId} onChange={set('memberId')} />
       </Field>
-      <Field id="holder" label="Policy holder">
-        <Input id="holder" value={v.holderName} onChange={set('holderName')} />
+      <Field id="holder" error={errors.holderName} label="Policy holder">
+        <Input id="holder" maxLength={120} value={v.holderName} onChange={set('holderName')} />
       </Field>
       <Field id="relation" label="Patient is holder's">
         <Select id="relation" value={v.relation} onChange={set('relation')}>
@@ -116,27 +122,27 @@ export function PolicyForm({
         </Select>
       </Field>
       {carrier?.type === 'corporate' && (
-        <Field id="emp" label="Employee code">
+        <Field id="emp" error={errors.employeeId} label="Employee code">
           <Input id="emp" value={v.employeeId} onChange={set('employeeId')} />
         </Field>
       )}
-      <Field id="from" label="Valid from">
+      <Field id="from" error={errors.validFrom} label="Valid from">
         <Input id="from" type="date" value={v.validFrom} onChange={set('validFrom')} />
       </Field>
-      <Field id="to" label="Valid to">
-        <Input id="to" type="date" value={v.validTo} onChange={set('validTo')} />
+      <Field id="to" error={errors.validTo} label="Valid to">
+        <Input id="to" type="date" min={v.validFrom || undefined} value={v.validTo} onChange={set('validTo')} />
       </Field>
-      <Field id="si" label="Sum insured (₹)">
+      <Field id="si" error={errors.sumInsured} label="Sum insured (₹)">
         <Input id="si" type="number" step="0.01" min={0} value={v.sumInsured} onChange={set('sumInsured')} />
       </Field>
-      <Field id="copay" label={`Co-pay % ${carrier ? `(payer default ${carrier.copayPercent}%)` : ''}`}>
+      <Field id="copay" error={errors.copayPercent} label={`Co-pay % ${carrier ? `(payer default ${carrier.copayPercent}%)` : ''}`}>
         <Input id="copay" type="number" step="0.01" min={0} max={100} value={v.copayPercent} onChange={set('copayPercent')} />
       </Field>
-      <Field id="room" label="Room rent limit / day (₹)">
+      <Field id="room" error={errors.roomRentLimit} label="Room rent limit / day (₹)">
         <Input id="room" type="number" step="0.01" min={0} value={v.roomRentLimit} onChange={set('roomRentLimit')} />
       </Field>
-      <Field id="notes" label="Notes" className="sm:col-span-2 lg:col-span-3">
-        <Input id="notes" value={v.notes} onChange={set('notes')} />
+      <Field id="notes" error={errors.notes} label="Notes" className="sm:col-span-2 lg:col-span-3">
+        <Input id="notes" maxLength={1000} value={v.notes} onChange={set('notes')} />
       </Field>
       <div className="flex items-end justify-end gap-2 sm:col-span-2 lg:col-span-4">
         <div className="flex-1">

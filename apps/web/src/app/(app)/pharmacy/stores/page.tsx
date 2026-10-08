@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Plus } from 'lucide-react';
 import { pharmacy } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { useAuth, usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -22,9 +23,10 @@ export default function StoresPage() {
   const { data: stores, isPending, error } = useQuery({ queryKey: ['pharmacy', 'stores'], queryFn: () => api.pharmacy.stores.list(), enabled: canManage });
   const [form, setForm] = React.useState({ facilityId: '', code: '', name: '', type: 'pharmacy' as (typeof pharmacy.STORE_TYPES)[number] });
   const facilityId = form.facilityId || facility?.id || user?.facilities[0]?.id || '';
+  const [errors, setErrors] = React.useState<FieldErrors>({});
 
   const create = useMutation({
-    mutationFn: () => api.pharmacy.stores.create({ ...form, facilityId }),
+    mutationFn: (body: pharmacy.CreateStore) => api.pharmacy.stores.create(body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pharmacy', 'stores'] });
       setForm((f) => ({ ...f, code: '', name: '' }));
@@ -99,7 +101,9 @@ export default function StoresPage() {
               className="space-y-4"
               onSubmit={(e) => {
                 e.preventDefault();
-                create.mutate();
+                const r = validate(pharmacy.createStoreSchema, { ...form, facilityId });
+                setErrors(r.errors ?? {});
+                if (r.data) create.mutate(r.data);
               }}
             >
               <div>
@@ -114,11 +118,13 @@ export default function StoresPage() {
               </div>
               <div>
                 <Label htmlFor="code">Code</Label>
-                <Input id="code" className="mt-2" placeholder="MAINPH" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} required />
+                <Input id="code" className="mt-2" placeholder="MAINPH" maxLength={20} value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} required />
+                {errors.code && <p className="mt-1 text-xs text-destructive">{errors.code}</p>}
               </div>
               <div>
                 <Label htmlFor="name">Name</Label>
-                <Input id="name" className="mt-2" placeholder="Main Pharmacy" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+                <Input id="name" className="mt-2" placeholder="Main Pharmacy" maxLength={100} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+                {errors.name && <p className="mt-1 text-xs text-destructive">{errors.name}</p>}
               </div>
               <div>
                 <Label htmlFor="type">Type</Label>

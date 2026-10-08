@@ -243,10 +243,22 @@ function Row({ label, value }: { label: string; value: number }) {
   );
 }
 
+/** Client-side check of an amount field before it is sent (the server checks the same). */
+function amountError(raw: string, max: number, overMessage: string): string | undefined {
+  if (raw.trim() === '') return undefined;
+  const v = Number(raw);
+  if (!Number.isFinite(v)) return 'Enter an amount';
+  if (v <= 0) return 'Must be more than 0';
+  if (Math.abs(Math.round(v * 100) - v * 100) > 1e-6) return 'At most 2 decimal places';
+  if (Math.round(v * 100) > Math.round(max * 100)) return overMessage;
+  return undefined;
+}
+
 function CollectForm({ inv, onDone }: { inv: B.Invoice; onDone: (i: B.Invoice) => void }) {
   const [mode, setMode] = React.useState<B.SettlementMode>('cash');
   const [amount, setAmount] = React.useState(String(inv.balance));
   const [reference, setReference] = React.useState('');
+  const payErr = amountError(amount, inv.balance, `Only ${formatINR(inv.balance)} is due on this bill`);
   const pay = useMutation({
     mutationFn: () => api.billing.invoices.pay(inv.id, { mode, amount: Number(amount), reference: reference.trim() || undefined }),
     onSuccess: (next) => {
@@ -270,15 +282,15 @@ function CollectForm({ inv, onDone }: { inv: B.Invoice; onDone: (i: B.Invoice) =
             ))}
           </Select>
         </Field>
-        <Field id="pay-amount" label="Amount (₹)">
-          <Input id="pay-amount" type="number" min={0} step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
+        <Field id="pay-amount" label="Amount (₹)" error={payErr}>
+          <Input id="pay-amount" type="number" min={0} max={inv.balance} step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
         </Field>
         {mode !== 'cash' && mode !== 'deposit' && (
           <Field id="pay-ref" label="Reference (UTR / card last 4 / cheque no.)">
-            <Input id="pay-ref" value={reference} onChange={(e) => setReference(e.target.value)} />
+            <Input id="pay-ref" maxLength={100} value={reference} onChange={(e) => setReference(e.target.value)} />
           </Field>
         )}
-        <Button className="w-full" disabled={pay.isPending || !(Number(amount) > 0)} onClick={() => pay.mutate()}>
+        <Button className="w-full" disabled={pay.isPending || !(Number(amount) > 0) || !!payErr} onClick={() => pay.mutate()}>
           {pay.isPending && <Loader2 className="animate-spin" />}
           Record {formatINR(Number(amount) || 0)}
         </Button>
@@ -292,6 +304,7 @@ function RefundForm({ inv, onDone }: { inv: B.Invoice; onDone: () => void }) {
   const [mode, setMode] = React.useState<B.PaymentMode>('cash');
   const [amount, setAmount] = React.useState('');
   const [notes, setNotes] = React.useState('');
+  const refundErr = amountError(amount, inv.paidAmount, `Only ${formatINR(inv.paidAmount)} was paid on this bill`);
   const refund = useMutation({
     mutationFn: () => api.billing.payments.refund({ invoiceId: inv.id, mode, amount: Number(amount), notes }),
     onSuccess: () => {
@@ -323,17 +336,17 @@ function RefundForm({ inv, onDone }: { inv: B.Invoice; onDone: () => void }) {
             ))}
           </Select>
         </Field>
-        <Field id="rf-amount" label="Amount (₹)">
-          <Input id="rf-amount" type="number" min={0} step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
+        <Field id="rf-amount" label="Amount (₹)" error={refundErr}>
+          <Input id="rf-amount" type="number" min={0} max={inv.paidAmount} step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
         </Field>
-        <Field id="rf-notes" label="Reason">
-          <Input id="rf-notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
+        <Field id="rf-notes" label="Reason (at least 3 characters)">
+          <Input id="rf-notes" maxLength={500} value={notes} onChange={(e) => setNotes(e.target.value)} />
         </Field>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => setOpen(false)}>
             Close
           </Button>
-          <Button variant="destructive" disabled={refund.isPending || !(Number(amount) > 0) || notes.trim().length < 3} onClick={() => refund.mutate()}>
+          <Button variant="destructive" disabled={refund.isPending || !(Number(amount) > 0) || !!refundErr || notes.trim().length < 3} onClick={() => refund.mutate()}>
             Refund
           </Button>
         </div>
@@ -346,6 +359,7 @@ function CreditNoteForm({ inv, onDone }: { inv: B.Invoice; onDone: (i: B.Invoice
   const [open, setOpen] = React.useState(false);
   const [amount, setAmount] = React.useState('');
   const [reason, setReason] = React.useState('');
+  const cnErr = amountError(amount, inv.balance, `Only ${formatINR(inv.balance)} is unpaid on this bill`);
   const cn = useMutation({
     mutationFn: () => api.billing.invoices.creditNote(inv.id, { amount: Number(amount), reason }),
     onSuccess: (next) => {
@@ -366,17 +380,17 @@ function CreditNoteForm({ inv, onDone }: { inv: B.Invoice; onDone: (i: B.Invoice
       </CardHeader>
       <CardContent className="space-y-3">
         <ErrorBox error={cn.error ? errorMessage(cn.error) : null} />
-        <Field id="cn-amount" label="Amount (₹)">
-          <Input id="cn-amount" type="number" min={0} step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
+        <Field id="cn-amount" label="Amount (₹)" error={cnErr}>
+          <Input id="cn-amount" type="number" min={0} max={inv.balance} step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
         </Field>
-        <Field id="cn-reason" label="Reason">
-          <Input id="cn-reason" value={reason} onChange={(e) => setReason(e.target.value)} />
+        <Field id="cn-reason" label="Reason (at least 3 characters)">
+          <Input id="cn-reason" maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
         </Field>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => setOpen(false)}>
             Close
           </Button>
-          <Button disabled={cn.isPending || !(Number(amount) > 0) || reason.trim().length < 3} onClick={() => cn.mutate()}>
+          <Button disabled={cn.isPending || !(Number(amount) > 0) || !!cnErr || reason.trim().length < 3} onClick={() => cn.mutate()}>
             Issue
           </Button>
         </div>
@@ -403,7 +417,7 @@ function CancelForm({ inv, onDone }: { inv: B.Invoice; onDone: (i: B.Invoice) =>
       <CardContent className="space-y-3">
         <ErrorBox error={cancel.error ? errorMessage(cancel.error) : null} />
         <Field id="cancel-reason" label="Reason">
-          <Input id="cancel-reason" value={reason} onChange={(e) => setReason(e.target.value)} />
+          <Input id="cancel-reason" maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
         </Field>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => setOpen(false)}>

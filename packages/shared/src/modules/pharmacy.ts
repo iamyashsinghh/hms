@@ -1,5 +1,22 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { GST_RATES } from './billing';
+import {
+  blankToUndefined,
+  datesInOrder,
+  END_BEFORE_START,
+  expiryDate,
+  GSTIN_REGEX,
+  hsnCode,
+  indianMobile,
+  isoDate,
+  money as moneyField,
+  pastOrTodayDate,
+  percent,
+  quantity,
+  requiredText,
+  todayIso,
+} from '../validation';
 
 /**
  * Pharmacy: permissions and API contracts (Zod schemas + types).
@@ -45,10 +62,15 @@ export const pharmacyModule = defineModule({
 
 // ---------- helpers ----------
 
-const text = (max: number) => z.string().trim().min(1).max(max);
-const optText = (max: number) => z.string().trim().max(max).optional();
-const money = z.number().min(0).max(10_000_000);
-const qty = z.number().int().min(1).max(1_000_000);
+const text = (max: number, label = 'this field') => requiredText(label, max);
+const optText = (max: number) => z.string().trim().max(max, `Can be at most ${max} characters`).optional();
+const money = moneyField(10_000_000);
+const qty = quantity(1, 1_000_000);
+
+/** GST must be one of the slabs Billing accepts, or a patient sale of the item cannot be billed. */
+export const GST_SLAB_MESSAGE = `Use a GST slab: ${GST_RATES.slice(0, -1).join(', ')} or ${GST_RATES[GST_RATES.length - 1]}`;
+export const isGstSlab = (v: number) => (GST_RATES as readonly number[]).includes(v);
+const gstSlab = z.coerce.number({ error: 'Pick a GST rate' }).refine(isGstSlab, GST_SLAB_MESSAGE);
 const pageQuery = {
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(25),
@@ -66,24 +88,37 @@ export const DRUG_SCHEDULES = ['otc', 'G', 'H', 'H1', 'X', 'narcotic'] as const;
 /** Schedules that need a prescription before sale (Drugs and Cosmetics Rules). */
 export const RX_ONLY_SCHEDULES: readonly string[] = ['H', 'H1', 'X', 'narcotic'];
 
-export const createItemSchema = z.object({
-  code: z.string().trim().min(1).max(40).regex(/^[A-Za-z0-9._/-]+$/, 'Letters, digits and . _ / - only'),
-  name: text(200),
+const packSize = z.coerce.number().int('Units per pack must be a whole number').min(1, 'Units per pack must be at least 1').max(10_000, 'Units per pack cannot be more than 10,000');
+const reorderLevel = z.coerce.number().int('Reorder level must be a whole number').min(0, 'Reorder level cannot be negative').max(1_000_000, 'Reorder level is too large');
+/** Item fields without defaults, so a partial update never resets a field the caller did not send. */
+const itemFields = {
+  name: text(200, 'the drug name'),
   genericName: optText(200),
-  form: z.enum(ITEM_FORMS).default('tablet'),
+  form: z.enum(ITEM_FORMS),
   strength: optText(60),
   manufacturer: optText(120),
-  hsnCode: z.string().regex(/^\d{4,8}$/, 'HSN is 4 to 8 digits').optional(),
-  gstRate: z.number().min(0).max(40).default(5),
+  hsnCode: blankToUndefined(hsnCode.optional()),
+  gstRate: gstSlab,
   /** Sale unit, e.g. tablet, strip, bottle. Stock and prices are per this unit. */
-  unit: z.string().trim().min(1).max(20).default('unit'),
-  packSize: z.number().int().min(1).max(10_000).default(1),
-  schedule: z.enum(DRUG_SCHEDULES).default('otc'),
-  reorderLevel: z.number().int().min(0).max(1_000_000).default(0),
+  unit: requiredText('the sale unit', 20),
+  packSize,
+  schedule: z.enum(DRUG_SCHEDULES),
+  reorderLevel,
+};
+
+export const createItemSchema = z.object({
+  ...itemFields,
+  code: z.string().trim().min(1, 'Enter a code').max(40, 'Code can be at most 40 characters').regex(/^[A-Za-z0-9._/-]+$/, 'Letters, digits and . _ / - only'),
+  form: itemFields.form.default('tablet'),
+  gstRate: gstSlab.default(5),
+  unit: itemFields.unit.default('unit'),
+  packSize: packSize.default(1),
+  schedule: itemFields.schedule.default('otc'),
+  reorderLevel: reorderLevel.default(0),
 });
 export type CreateItem = z.input<typeof createItemSchema>;
 
-export const updateItemSchema = createItemSchema.omit({ code: true }).partial().extend({ isActive: z.boolean().optional() });
+export const updateItemSchema = z.object(itemFields).partial().extend({ isActive: z.boolean().optional() });
 export type UpdateItem = z.input<typeof updateItemSchema>;
 
 export interface Item {
@@ -118,12 +153,12 @@ export const STORE_TYPES = ['pharmacy', 'main', 'ward', 'ot', 'other'] as const;
 
 export const createStoreSchema = z.object({
   facilityId: z.uuid(),
-  code: z.string().trim().min(1).max(20).regex(/^[A-Za-z0-9_-]+$/),
-  name: text(100),
+  code: z.string().trim().min(1, 'Enter a code').max(20, 'Code can be at most 20 characters').regex(/^[A-Za-z0-9_-]+$/, 'Letters, digits, - and _ only'),
+  name: text(100, 'the store name'),
   type: z.enum(STORE_TYPES).default('pharmacy'),
 });
 export type CreateStore = z.input<typeof createStoreSchema>;
-export const updateStoreSchema = z.object({ name: text(100).optional(), type: z.enum(STORE_TYPES).optional(), isActive: z.boolean().optional() });
+export const updateStoreSchema = z.object({ name: text(100, 'the store name').optional(), type: z.enum(STORE_TYPES).optional(), isActive: z.boolean().optional() });
 export type UpdateStore = z.input<typeof updateStoreSchema>;
 
 export interface Store {
@@ -139,33 +174,43 @@ export interface Store {
 
 /** A batch arriving in stock (opening stock or GRN). An existing item + batch no + expiry is reused. */
 const incomingBatch = {
-  itemId: z.uuid(),
-  batchNo: z.string().trim().min(1).max(40),
-  expiryDate: z.iso.date(),
-  mrp: money,
+  itemId: z.uuid({ error: 'Pick a drug' }),
+  batchNo: requiredText('the batch number', 40),
+  /** Opening stock may record already-expired units (to write them off); a GRN may not. */
+  expiryDate,
+  mrp: money.refine((v) => v > 0, 'MRP must be more than 0'),
   purchaseRate: money.default(0),
   /** Defaults to MRP. */
   saleRate: money.optional(),
   qty,
 };
+const saleRateWithinMrp = (l: { mrp: number; saleRate?: number }) => l.saleRate === undefined || l.saleRate <= l.mrp;
+const SALE_RATE_ABOVE_MRP = { message: 'Sale rate cannot be more than MRP', path: ['saleRate'] };
+const incomingBatchLine = z.object(incomingBatch).refine(saleRateWithinMrp, SALE_RATE_ABOVE_MRP);
 
 export const openingStockSchema = z.object({
-  storeId: z.uuid(),
-  lines: z.array(z.object(incomingBatch)).min(1).max(500),
+  storeId: z.uuid({ error: 'Pick a store' }),
+  lines: z.array(incomingBatchLine).min(1, 'Add at least one line').max(500),
 });
 export type OpeningStock = z.input<typeof openingStockSchema>;
 
+export const grnLineSchema = z
+  .object({
+    ...incomingBatch,
+    freeQty: quantity(0, 1_000_000).default(0),
+    gstRate: gstSlab.optional(),
+  })
+  .refine(saleRateWithinMrp, SALE_RATE_ABOVE_MRP)
+  .refine((l) => l.expiryDate > todayIso(), { message: 'This batch has already expired (expiry must be after today)', path: ['expiryDate'] });
+
 export const createGrnSchema = z.object({
-  storeId: z.uuid(),
-  supplierName: text(200),
-  supplierGstin: z.string().trim().regex(/^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/, 'Invalid GSTIN').optional(),
-  invoiceNo: optText(60),
-  invoiceDate: z.iso.date().optional(),
+  storeId: z.uuid({ error: 'Pick a store' }),
+  supplierName: text(200, 'the supplier name'),
+  supplierGstin: blankToUndefined(z.string().trim().toUpperCase().regex(GSTIN_REGEX, 'Invalid GSTIN: enter the 15-character GSTIN').optional()),
+  invoiceNo: blankToUndefined(optText(60)),
+  invoiceDate: blankToUndefined(pastOrTodayDate('Invoice date').optional()),
   notes: optText(500),
-  lines: z
-    .array(z.object({ ...incomingBatch, freeQty: z.number().int().min(0).max(1_000_000).default(0), gstRate: z.number().min(0).max(40).optional() }))
-    .min(1)
-    .max(500),
+  lines: z.array(grnLineSchema).min(1, 'Add at least one line').max(500),
 });
 export type CreateGrn = z.input<typeof createGrnSchema>;
 
@@ -204,9 +249,17 @@ export const stockAdjustmentSchema = z.object({
   storeId: z.uuid(),
   batchId: z.uuid(),
   /** Positive adds stock, negative removes it. Expiry write-offs must be negative. */
-  qtyChange: z.number().int().min(-1_000_000).max(1_000_000).refine((v) => v !== 0, 'Quantity cannot be zero'),
+  qtyChange: z.coerce
+    .number({ error: 'Enter a quantity' })
+    .int('Quantity must be a whole number')
+    .min(-1_000_000, 'Quantity is too large')
+    .max(1_000_000, 'Quantity is too large')
+    .refine((v) => v !== 0, 'Quantity cannot be zero'),
   type: z.enum(ADJUSTMENT_TYPES).default('adjustment'),
-  reason: text(300),
+  reason: text(300, 'a reason'),
+}).refine((v) => v.type !== 'expiry_writeoff' || v.qtyChange < 0, {
+  message: 'An expiry write-off removes stock; use a negative quantity',
+  path: ['qtyChange'],
 });
 export type StockAdjustment = z.input<typeof stockAdjustmentSchema>;
 
@@ -297,18 +350,21 @@ export const saleLineInputSchema = z.object({
   itemId: z.uuid(),
   qty,
   batchId: z.uuid().optional(),
-  discountPct: z.number().min(0).max(100).default(0),
+  discountPct: percent.default(0),
 });
 
 export const createSaleSchema = z.object({
-  storeId: z.uuid(),
+  storeId: z.uuid({ error: 'Pick a store' }),
   patientId: z.uuid().optional(),
-  customerName: optText(120),
-  customerMobile: z.string().regex(/^[6-9]\d{9}$/, 'Enter a 10-digit Indian mobile number').optional(),
+  customerName: blankToUndefined(optText(120)),
+  customerMobile: blankToUndefined(indianMobile.optional()),
   paymentMode: z.enum(PAYMENT_MODES).default('cash'),
   /** Confirms a prescription was seen for Schedule H/H1/X items sold over the counter. */
   prescriptionSeen: z.boolean().default(false),
-  lines: z.array(saleLineInputSchema).min(1).max(100),
+  lines: z.array(saleLineInputSchema).min(1, 'Add at least one drug').max(100),
+}).refine((v) => v.paymentMode !== 'credit' || !!v.patientId, {
+  message: 'Credit sales need a registered patient (so the amount is billed to them)',
+  path: ['paymentMode'],
 });
 export type CreateSale = z.input<typeof createSaleSchema>;
 
@@ -353,13 +409,15 @@ export interface Sale {
   lines?: SaleLine[];
 }
 
-export const saleListQuerySchema = z.object({
-  q: z.string().trim().max(60).optional(),
-  type: z.enum(['otc', 'rx']).optional(),
-  from: z.iso.date().optional(),
-  to: z.iso.date().optional(),
-  ...pageQuery,
-});
+export const saleListQuerySchema = z
+  .object({
+    q: z.string().trim().max(60).optional(),
+    type: z.enum(['otc', 'rx']).optional(),
+    from: isoDate.optional(),
+    to: isoDate.optional(),
+    ...pageQuery,
+  })
+  .refine((v) => datesInOrder(v.from, v.to), { message: END_BEFORE_START, path: ['to'] });
 export type SaleListQuery = PageQuery & { q?: string; type?: 'otc' | 'rx'; from?: string; to?: string };
 
 export const createSaleReturnSchema = z.object({
@@ -392,8 +450,8 @@ export const rxLineSchema = z.object({
   itemId: z.uuid().optional(),
   dose: optText(60),
   frequency: optText(60),
-  days: z.number().int().min(0).max(365).optional(),
-  qty: z.number().int().min(0).max(100_000),
+  days: z.coerce.number().int('Days must be a whole number').min(0, 'Days cannot be negative').max(365, 'Days cannot be more than 365').optional(),
+  qty: quantity(0, 100_000),
 });
 
 /** A paper prescription typed in at the counter. EMR prescriptions arrive by event. */
@@ -453,7 +511,7 @@ export const dispenseSchema = z.object({
         itemId: z.uuid().optional(),
         qty,
         batchId: z.uuid().optional(),
-        discountPct: z.number().min(0).max(100).default(0),
+        discountPct: percent.default(0),
       }),
     )
     .min(1)
