@@ -807,8 +807,11 @@ export class IpdService {
     const stayById = new Map(stays.map((s) => [s.id, s]));
     const isBedCharge = (c: ChargeRow) => c.sourceModule === 'ipd' && stayById.has(c.sourceRef);
     const rule = { roomRentDay: rules.roomRentDay, checkoutTime: rules.checkoutTime };
-    const days = row.status === 'cancelled' || row.invoiceId ? [] : bedDays(stays.map(stayForBilling), row.admittedAt, until, rule);
-    const bedCharges: I.BedChargeLine[] = row.invoiceId
+    // Bills made before bed days became charges (data moved from inpatient.charges) billed them midnight to midnight.
+    const postedBeds = !!row.invoiceId && charges.some(isBedCharge);
+    const days =
+      row.status === 'cancelled' || postedBeds ? [] : bedDays(stays.map(stayForBilling), row.admittedAt, until, row.invoiceId ? { roomRentDay: 'midnight' } : rule);
+    const bedCharges: I.BedChargeLine[] = postedBeds
       ? charges
           .filter((c) => isBedCharge(c) && c.status !== 'cancelled')
           .map((c) => {
