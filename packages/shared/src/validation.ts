@@ -28,7 +28,7 @@ export const requiredText = (label: string, max = 200, min = 1) =>
   z
     .string({ error: `Enter ${label}` })
     .trim()
-    .min(min, min <= 1 ? `Enter ${label}` : `${capitalise(label)} needs at least ${min} characters`)
+    .min(min, { message: min <= 1 ? `Enter ${label}` : `${capitalise(label)} needs at least ${min} characters`, abort: true })
     .max(max, `${capitalise(label)} can be at most ${max} characters`);
 
 /** A person's name: letters (any script), spaces and . ' - only. */

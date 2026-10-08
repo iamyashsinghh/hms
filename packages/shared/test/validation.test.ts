@@ -53,6 +53,7 @@ describe('shared validators', () => {
     expect(ok(personName(), 'आरव')).toBe(true);
     expect(ok(personName(), '  ')).toBe(false);
     expect(ok(personName(), 'R2D2')).toBe(false);
+    expect(personName('first name').safeParse('').error!.issues).toHaveLength(1);
   });
 
   it('money and quantity', () => {
