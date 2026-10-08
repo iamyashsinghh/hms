@@ -608,8 +608,10 @@ export const postChargeSchema = z
     facilityId: z.uuid().optional(),
     /** OPD visit (clinical.opd_visits id) the charge belongs to. */
     visitId: z.uuid().optional(),
-    /** IPD admission the charge belongs to. */
+    /** IPD admission the charge belongs to. Defaults to the patient's current admission (unless visitId or standalone). */
     admissionId: z.uuid().optional(),
+    /** Don't attach to the patient's current admission (e.g. an OPD pharmacy counter sale). */
+    standalone: z.boolean().optional(),
     source: chargeSourceSchema,
     /** Priced from the service master / payer price list when unitPrice or taxRate is omitted. */
     serviceCode: z.string().trim().toUpperCase().max(40).optional(),
@@ -714,7 +716,8 @@ export const billChargesSchema = z.object({
   extraLines: z.array(invoiceLineInputSchema).max(100).default([]),
   /** Bill-level discount in rupees, spread over the lines largest first. */
   discount: money.optional(),
-  payerId: z.uuid().optional(),
+  /** Defaults to the payer of the patient's active policy; null bills as self-pay. */
+  payerId: z.uuid().nullable().optional(),
   doctorId: z.uuid().optional(),
   supplyType: z.enum(['intra', 'inter']).default('intra'),
   buyerGstin: gstin.optional(),
@@ -859,6 +862,8 @@ export const DEFAULT_BILLING_RULES: BillingRules = BILLING_RULE_PRESETS.hospital
 export const billingRulesInputSchema = z.object({
   facilityId: z.uuid().optional(),
   preset: z.enum(['hospital', 'clinic']).optional(),
+  /** Replace this level's rules with `rules` instead of merging (e.g. clear a branch override with {}). */
+  replace: z.boolean().default(false),
   rules: billingRulesSchema.partial().default({}),
 });
 export type BillingRulesInput = z.input<typeof billingRulesInputSchema>;

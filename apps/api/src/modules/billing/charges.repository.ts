@@ -174,6 +174,25 @@ export class ChargesRepository {
     return res.rows;
   }
 
+  /** The patient's current admission, so charges posted for an admitted patient land on the IPD bill. */
+  async activeAdmission(tx: Tx, patientId: string): Promise<string | null> {
+    const res = await tx.execute<{ id: string }>(sql`
+      select id from inpatient.admissions
+       where patient_id = ${patientId}::uuid and status = 'admitted' and invoice_id is null
+       order by admitted_at desc limit 1`);
+    return res.rows[0]?.id ?? null;
+  }
+
+  /** Payer (insurer / corporate) of the patient's active, in-date policy, for payer price lists. */
+  async activePayer(tx: Tx, patientId: string, date: string): Promise<string | null> {
+    const res = await tx.execute<{ payer_id: string }>(sql`
+      select payer_id from insurance.policies
+       where patient_id = ${patientId}::uuid and is_active
+         and (valid_from is null or valid_from <= ${date}::date) and (valid_to is null or valid_to >= ${date}::date)
+       order by updated_at desc limit 1`);
+    return res.rows[0]?.payer_id ?? null;
+  }
+
   // ---------- rules ----------
 
   async ruleSet(tx: Tx, facilityId: string | null): Promise<RuleSetRow | undefined> {

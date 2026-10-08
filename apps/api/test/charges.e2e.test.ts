@@ -42,6 +42,8 @@ afterAll(() => app.close());
 
 describe('billing rules', () => {
   it('starts from the hospital preset and lets a branch override a rule', async () => {
+    await call(admin, 'PUT', '/billing/rules', { replace: true, rules: {} });
+    await call(admin, 'PUT', '/billing/rules', { facilityId, replace: true, rules: {} });
     const base = (await call(clerk, 'GET', '/billing/rules')).json();
     expect(base.effective).toMatchObject({ opdPayment: 'before', ipdPharmacy: 'ipd_bill', labChargeAt: 'order' });
 
@@ -56,9 +58,9 @@ describe('billing rules', () => {
     expect((await call(admin, 'GET', '/billing/rules')).json().effective.opdPayment).toBe('before');
 
     expect((await call(admin, 'PUT', '/billing/rules', { rules: { checkoutTime: '25:00' } })).statusCode).toBe(400);
-    // Reset the branch so other tests see the hospital rules.
-    await call(admin, 'PUT', '/billing/rules', { facilityId, preset: 'hospital', rules: {} });
-    await call(admin, 'PUT', '/billing/rules', { facilityId: undefined, rules: { registrationFee: { enabled: false, amount: 0, validityMonths: 12 } } });
+    // Back to the defaults so other tests see the starting rules.
+    expect((await call(admin, 'PUT', '/billing/rules', { facilityId, replace: true, rules: {} })).json().branch).toEqual({});
+    await call(admin, 'PUT', '/billing/rules', { replace: true, rules: {} });
   });
 });
 

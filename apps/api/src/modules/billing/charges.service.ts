@@ -69,7 +69,7 @@ export class ChargesService {
       .tx(async (tx) => {
         const { userId } = await this.billingRepo.scope(tx);
         const current = await this.repo.ruleSet(tx, d.facilityId ?? null);
-        const base = d.preset ? { ...contracts.BILLING_RULE_PRESETS[d.preset] } : cleanRules(current?.rules);
+        const base = d.preset ? { ...contracts.BILLING_RULE_PRESETS[d.preset] } : d.replace ? {} : cleanRules(current?.rules);
         const next = { ...base, ...d.rules } as Record<string, unknown>;
         // The whole level must still be valid when merged over the defaults.
         const merged = contracts.billingRulesSchema.safeParse(mergeRules(contracts.DEFAULT_BILLING_RULES, next));
@@ -97,6 +97,9 @@ export class ChargesService {
 
     const facilityId = d.facilityId ?? this.billing.facilityFor(undefined);
     if (!(await this.billingRepo.patientSnapshot(tx, d.patientId))) throw notFound('Patient');
+    // An admitted patient's charges go on the IPD bill unless the caller says otherwise.
+    const admissionId = d.admissionId ?? (d.visitId || d.standalone ? null : await this.repo.activeAdmission(tx, d.patientId));
+    const payerId = await this.repo.activePayer(tx, d.patientId, d.chargeDate ?? today());
     let serviceId: string | null = null;
     let unitPrice = d.unitPrice;
     let taxRate = d.taxRate;
@@ -107,7 +110,7 @@ export class ChargesService {
       if (!svc || !svc.isActive) throw badRequest('unknown_service', `Unknown or inactive service: ${d.serviceCode}`, { missing: [d.serviceCode] });
       serviceId = svc.id;
       if (unitPrice === undefined) {
-        const listed = (await this.billingRepo.listPrices(tx, [svc.id], null, d.chargeDate ?? today())).get(svc.id);
+        const listed = (await this.billingRepo.listPrices(tx, [svc.id], payerId, d.chargeDate ?? today())).get(svc.id);
         unitPrice = toNumber(listed?.price ?? svc.basePrice);
       }
       taxRate ??= toNumber(svc.taxRate);
@@ -124,9 +127,9 @@ export class ChargesService {
     const values = {
       facilityId,
       patientId: d.patientId,
-      account: d.admissionId ? 'ipd' : d.visitId ? 'opd' : 'other',
+      account: admissionId ? 'ipd' : d.visitId ? 'opd' : 'other',
       visitId: d.visitId ?? null,
-      admissionId: d.admissionId ?? null,
+      admissionId,
       sourceModule: d.source.module,
       sourceRef: d.source.refId,
       sourceLine: line,
@@ -238,7 +241,8 @@ export class ChargesService {
           taxRate: l.taxRate,
           discount: l.discount,
           priceIncludesTax: l.priceIncludesTax,
-          doctorId: d.doctorId,
+          doctorId: d.doctorId ?? undefined,
+          standalone: true,
         });
         rows.push((await this.repo.byId(tx, c.id, true))!);
       }
@@ -274,11 +278,13 @@ export class ChargesService {
     }
 
     const doctors = [...new Set(rows.map((r) => r.doctorId).filter(Boolean))] as string[];
+    // The patient's insurer / corporate is the bill's payer unless the desk chose self-pay (null).
+    const payerId = d.payerId === undefined ? await this.repo.activePayer(tx, d.patientId, today()) : d.payerId;
     const created = await this.billing.createInvoice(tx, {
       patientId: d.patientId,
       facilityId,
       source: d.source ?? { module: 'billing' },
-      payerId: d.payerId,
+      payerId: payerId ?? undefined,
       doctorId: d.doctorId ?? (doctors.length === 1 ? doctors[0] : undefined),
       supplyType: d.supplyType,
       buyerGstin: d.buyerGstin,
@@ -381,7 +387,7 @@ export class ChargesService {
         pendingTotal: toNumber(rupees(charges.reduce((s, c) => s + paise(c.amount), 0))),
         depositBalance: toNumber(deposit),
         outstanding: toNumber(outstanding),
-        payerId: null,
+        payerId: await this.repo.activePayer(tx, patientId, today()),
         reversals: await this.dtos(tx, reversals),
       };
     });
