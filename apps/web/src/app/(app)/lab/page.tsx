@@ -16,6 +16,7 @@ import { Card } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useDebounced } from '@/modules/billing/ui';
+import { PaymentStateBadge } from '@/modules/billing/collect-now';
 import { OrderStatusBadge, PriorityBadge, SOURCE_LABELS, ageFromDob, genderShort } from '@/modules/lab/ui';
 
 const PAGE_SIZE = 25;
@@ -157,7 +158,10 @@ export default function LabOrdersPage() {
                         {o.hasCritical && <AlertTriangle className="size-4 text-destructive" aria-label="Critical value" />}
                       </div>
                     </TableCell>
-                    <TableCell className="font-mono text-xs">{o.invoiceNo ?? <span className="text-muted-foreground">Not billed</span>}</TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {o.invoiceNo ?? (o.paymentState === 'none' ? <span className="text-muted-foreground">Not billed</span> : null)}{' '}
+                      <PaymentStateBadge state={o.paymentState} />
+                    </TableCell>
                   </TableRow>
                 ))
               )}

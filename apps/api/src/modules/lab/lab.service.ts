@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { iso, type Tx } from '@hms/db';
-import { lab, type ImportRequest, type ImportResult, type Paginated, type Patient } from '@hms/shared';
+import { lab, type billing as B, type ImportRequest, type ImportResult, type Paginated, type Patient } from '@hms/shared';
 import { runImport } from '../../common/imports/bulk-import';
 import { DbService } from '../../common/db/db.service';
 import { AuditService } from '../../common/db/audit.service';
@@ -8,6 +8,7 @@ import { OutboxService } from '../../common/events/outbox.service';
 import { currentContext } from '../../common/context/request-context';
 import { AppError, badRequest, conflict, notFound } from '../../common/errors/errors';
 import { BillingService } from '../billing/billing.service';
+import { ChargesService } from '../billing/charges.service';
 import { EmrService } from '../emr/emr.service';
 import { PatientsService } from '../patients/patients.service';
 import { SetupService } from '../setup/setup.service';
@@ -67,6 +68,7 @@ export class LabService {
     private readonly billing: BillingService,
     private readonly setup: SetupService,
     private readonly emr: EmrService,
+    private readonly charges: ChargesService,
   ) {}
 
   /** Runs a transaction and turns the result lock into a clean 409. */
@@ -249,8 +251,8 @@ export class LabService {
     const q = lab.orderQuerySchema.parse(query);
     return this.tx(async (tx) => {
       const { items, total } = await this.repo.searchOrders(tx, q);
-      const lines = await this.repo.items(tx, items.map((o) => o.id));
-      return { items: items.map((o) => summaryDto(o, lines.filter((l) => l.orderId === o.id))), page: q.page, pageSize: q.pageSize, total };
+      const [lines, payment] = await Promise.all([this.repo.items(tx, items.map((o) => o.id)), this.payment(tx, items)]);
+      return { items: items.map((o) => summaryDto(o, lines.filter((l) => l.orderId === o.id), payment.get(o.id)!)), page: q.page, pageSize: q.pageSize, total };
     });
   }
 
@@ -263,7 +265,11 @@ export class LabService {
     });
   }
 
-  /** Walk-in / referral / B2B order booked at the lab counter. Bills straight away unless `bill: false`. */
+  /**
+   * Walk-in / referral / B2B order booked at the lab counter. Bills straight away (charges posted and
+   * billed, optionally paid) unless `bill: false`; then the charges are posted when the hospital's
+   * billing rules say (on order or at sample collection) and billed at the billing desk.
+   */
   async createOrder(input: lab.CreateOrder): Promise<Order> {
     const d = lab.createOrderSchema.parse(input);
     const ctx = currentContext()!;
@@ -302,7 +308,9 @@ export class LabService {
         encounterId: null,
         picked,
       });
-      const billed = d.bill ? await this.billTx(tx, order, d.payNow) : order;
+      let billed = order;
+      if (d.bill) billed = await this.billTx(tx, order, d.payNow);
+      else if ((await this.charges.rules(tx, order.facilityId)).labChargeAt === 'order') await this.postOrderCharges(tx, order);
       await this.publishCreated(tx, billed);
       return this.orderDto(tx, billed);
     });
@@ -359,6 +367,7 @@ export class LabService {
         encounterId,
         picked,
       });
+      if ((await this.charges.rules(tx, order.facilityId)).labChargeAt === 'order') await this.postOrderCharges(tx, order, enc.visitId);
       await this.publishCreated(tx, order);
       return this.orderDto(tx, order);
     });
@@ -386,7 +395,10 @@ export class LabService {
     });
   }
 
-  /** Raise the bill for an order booked without one (e.g. from a consultation). */
+  /**
+   * Bill the order now ("Collect now" at the lab counter): posts its charges if the rules have not yet,
+   * then bills every pending charge of the order on one bill, optionally paid.
+   */
   bill(id: string, payNow?: lab.CreateOrder['payNow']): Promise<Order> {
     return this.tx(async (tx) => {
       const order = await this.lockOrder(tx, id);
@@ -405,6 +417,8 @@ export class LabService {
       const results = await this.repo.results(tx, [id]);
       if (results.some((r) => r.status === 'verified')) throw conflict('order_reported', 'Results are already verified; this order cannot be cancelled');
       const row = await this.repo.updateOrder(tx, id, { status: 'cancelled', cancelledAt: new Date().toISOString(), cancelledReason: d.reason, updatedBy: ctx.userId });
+      // Pending charges go; billed ones are flagged for a credit note on the billing desk.
+      await this.charges.cancelBySource(tx, { module: 'lab', refId: id }, `Lab order ${order.orderNo} cancelled: ${d.reason}`);
       await this.outbox.publish(tx, 'lab.order.cancelled', { orderId: id, orderNo: order.orderNo, patientId: order.patientId, invoiceId: order.invoiceId, reason: d.reason });
       await this.publishStatus(tx, row);
       return this.orderDto(tx, row);
@@ -419,13 +433,15 @@ export class LabService {
     const q = lab.sampleWorklistQuerySchema.parse(query);
     return this.tx(async (tx) => {
       const rows = await this.repo.worklist(tx, q.status, currentContext()?.facilityId);
-      const results = await this.repo.results(tx, [...new Set(rows.map((r) => r.order.id))]);
+      const orders = [...new Map(rows.map((r) => [r.order.id, r.order])).values()];
+      const [results, payment] = await Promise.all([this.repo.results(tx, orders.map((o) => o.id)), this.payment(tx, orders)]);
       return rows.map(({ sample, order }) => ({
         ...sampleDto(sample, results),
         orderId: order.id,
         orderNo: order.orderNo,
         priority: order.priority as lab.OrderPriority,
         patient: patientDto(order),
+        ...payment.get(order.id)!,
       }));
     });
   }
@@ -435,9 +451,13 @@ export class LabService {
     return this.tx(async (tx) => {
       const order = await this.openOrder(tx, orderId);
       const now = new Date().toISOString();
+      let collected = false;
       for (const s of await this.repo.samples(tx, [orderId])) {
-        if (s.status === 'pending') await this.repo.updateSample(tx, s.id, { status: 'collected', collectedAt: now, collectedBy: currentContext()?.userId ?? null });
+        if (s.status !== 'pending') continue;
+        await this.repo.updateSample(tx, s.id, { status: 'collected', collectedAt: now, collectedBy: currentContext()?.userId ?? null });
+        collected = true;
       }
+      if (collected) await this.onCollected(tx, order);
       return this.orderDto(tx, await this.recompute(tx, order));
     });
   }
@@ -483,7 +503,8 @@ export class LabService {
       if (!sample) throw notFound('Sample');
       const order = await this.openOrder(tx, sample.orderId);
       if (!from.includes(sample.status as lab.SampleStatus)) throw conflict('sample_status', `Sample ${sample.barcode} is ${sample.status}`);
-      await this.repo.updateSample(tx, sampleId, values(sample));
+      const next = await this.repo.updateSample(tx, sampleId, values(sample));
+      if (sample.status === 'pending' && (next.status === 'collected' || next.status === 'received')) await this.onCollected(tx, order);
       return this.orderDto(tx, await this.recompute(tx, order));
     });
   }
@@ -516,6 +537,7 @@ export class LabService {
       if (sample.status !== 'received') {
         const now = new Date().toISOString();
         await this.repo.updateSample(tx, sample.id, { status: 'received', receivedAt: now, ...(sample.collectedAt ? {} : { collectedAt: now }) });
+        if (sample.status === 'pending') await this.onCollected(tx, order);
       }
       const rows = (await this.repo.results(tx, [order.id])).filter((r) => r.sampleId === sample.id && r.status !== 'verified');
       const entries = e.results.flatMap((x) => {
@@ -769,20 +791,82 @@ export class LabService {
     return order;
   }
 
+  /**
+   * Posts the order's charges (all of them, now) and bills every pending charge of the order on one
+   * bill, optionally paid. The bill number is stored on the order.
+   */
   private async billTx(tx: Tx, order: OrderRow, payNow?: lab.CreateOrder['payNow']): Promise<OrderRow> {
     const items = (await this.repo.items(tx, [order.id])).filter((i) => i.kind !== 'unmatched');
     if (!items.length) throw badRequest('nothing_to_bill', 'Match the tests on this order to the catalogue before billing');
-    const created = await this.billing.createInvoice(tx, {
-      patientId: order.patientId,
-      facilityId: order.facilityId,
+    await this.postOrderCharges(tx, order, undefined, { all: true });
+    const invoice = await this.charges.billSource(tx, { module: 'lab', refId: order.id }, {
       source: { module: 'lab', refId: order.id },
       ...(order.doctorId ? { doctorId: order.doctorId } : {}),
-      lines: items.map((i) =>
-        i.serviceCode ? { serviceCode: i.serviceCode, qty: 1 } : { description: `${i.name} (lab)`, qty: 1, unitPrice: num(i.price)!, taxRate: 0 },
-      ),
       ...(payNow ? { payNow: { mode: payNow.mode, amount: payNow.amount, ref: payNow.ref } } : {}),
     });
-    return this.repo.updateOrder(tx, order.id, { invoiceId: created.invoiceId, invoiceNo: created.number });
+    return this.repo.updateOrder(tx, order.id, { invoiceId: invoice.id, invoiceNo: invoice.number });
+  }
+
+  /**
+   * One charge per billable order line on the patient's account (source lab / order / item). Priced
+   * from the test or panel's billing service when it has one, else its own lab price (no GST).
+   * Lines already posted are skipped, so a charge the billing desk cancelled is not brought back by a
+   * later sample; `all` (bill now) posts every line again. Admitted patients' charges go on the IPD bill.
+   */
+  private async postOrderCharges(tx: Tx, order: OrderRow, visitId?: string | null, opts: { all?: boolean } = {}): Promise<void> {
+    const items = (await this.repo.items(tx, [order.id])).filter((i) => i.kind !== 'unmatched');
+    const posted = new Set(opts.all ? [] : (await this.repo.chargeLines(tx, [order.id])).map((c) => c.line));
+    const visit = visitId !== undefined ? visitId : order.encounterId ? await this.repo.encounterVisit(tx, order.encounterId) : null;
+    for (const i of items) {
+      if (posted.has(i.id)) continue;
+      const priced = i.serviceCode && (await this.serviceExists(tx, i.serviceCode));
+      await this.charges.postCharge(tx, {
+        patientId: order.patientId,
+        facilityId: order.facilityId,
+        ...(visit ? { visitId: visit } : {}),
+        source: { module: 'lab', refId: order.id, line: i.id },
+        ...(priced ? { serviceCode: i.serviceCode! } : { description: `${i.name} (lab)`, unitPrice: num(i.price)!, taxRate: 0 }),
+        ...(order.doctorId ? { doctorId: order.doctorId } : {}),
+        notes: `Lab order ${order.orderNo}`,
+      });
+    }
+  }
+
+  /** First sample of the order collected: hospitals that charge at collection post the charges now. */
+  private async onCollected(tx: Tx, order: OrderRow): Promise<void> {
+    if ((await this.charges.rules(tx, order.facilityId)).labChargeAt === 'collection') await this.postOrderCharges(tx, order);
+  }
+
+  private serviceExists(tx: Tx, code: string): Promise<boolean> {
+    return this.billing.getServicePrice(code, null, tx).then(
+      () => true,
+      (e: unknown) => {
+        if (e instanceof AppError && e.getStatus() === 404) return false;
+        throw e;
+      },
+    );
+  }
+
+  /**
+   * Handler for `billing.charges.billed`: the billing desk (or Collect now) billed charges posted by
+   * lab orders; keep the bill number on those orders. Idempotent.
+   */
+  recordBilled(e: B.ChargesBilledEvent): Promise<number> {
+    const ids = [...new Set(e.charges.filter((c) => c.module === 'lab').map((c) => c.refId))].filter(isUuid);
+    if (!ids.length) return Promise.resolve(0);
+    return this.tx((tx) => this.repo.setInvoice(tx, ids, e.invoiceId, e.number));
+  }
+
+  /** Payment state of each order's charges and whether the hospital wants it paid before the sample. */
+  private async payment(tx: Tx, orders: OrderRow[]): Promise<Map<string, { paymentState: B.SourcePaymentState; payFirst: boolean }>> {
+    const ids = orders.map((o) => o.id);
+    const [states, lines] = await Promise.all([this.charges.paymentStates(tx, { module: 'lab', refIds: ids }), this.repo.chargeLines(tx, ids)]);
+    const payFirst = new Map<string, boolean>();
+    for (const fid of new Set(orders.map((o) => o.facilityId))) payFirst.set(fid, (await this.charges.rules(tx, fid)).diagnosticsPayment === 'before');
+    const ipd = new Set(lines.filter((l) => l.admissionId && l.status !== 'cancelled').map((l) => l.orderId));
+    return new Map(
+      orders.map((o) => [o.id, { paymentState: states.get(o.id) ?? 'none', payFirst: !!payFirst.get(o.facilityId) && !ipd.has(o.id) }]),
+    );
   }
 
   private async publishCreated(tx: Tx, order: OrderRow) {
@@ -882,14 +966,15 @@ export class LabService {
   }
 
   private async orderDto(tx: Tx, o: OrderRow): Promise<Order> {
-    const [items, samples, results, names] = await Promise.all([
+    const [items, samples, results, names, payment] = await Promise.all([
       this.repo.items(tx, [o.id]),
       this.repo.samples(tx, [o.id]),
       this.repo.results(tx, [o.id]),
       this.repo.userNames(tx, [o.verifiedBy]),
+      this.payment(tx, [o]),
     ]);
     return {
-      ...summaryDto(o, items),
+      ...summaryDto(o, items, payment.get(o.id)!),
       facilityId: o.facilityId,
       doctorId: o.doctorId,
       encounterId: o.encounterId,
@@ -995,7 +1080,7 @@ function patientDto(o: OrderRow): lab.OrderPatient {
   return { id: o.patientId, uhid: o.patientUhid, name: o.patientName, gender: o.patientGender, dateOfBirth: o.patientDob, mobile: o.patientMobile };
 }
 
-function summaryDto(o: OrderRow, items: ItemRow[]): OrderSummary {
+function summaryDto(o: OrderRow, items: ItemRow[], payment: Pick<OrderSummary, 'paymentState' | 'payFirst'>): OrderSummary {
   return {
     id: o.id,
     orderNo: o.orderNo,
@@ -1008,6 +1093,7 @@ function summaryDto(o: OrderRow, items: ItemRow[]): OrderSummary {
     referredBy: o.referredBy,
     itemNames: items.map((i) => i.name),
     invoiceNo: o.invoiceNo,
+    ...payment,
     hasCritical: o.hasCritical,
     createdAt: iso(o.createdAt),
   };

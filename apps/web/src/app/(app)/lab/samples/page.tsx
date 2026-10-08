@@ -14,6 +14,8 @@ import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { ErrorBox } from '@/modules/billing/ui';
+import { CollectNow, PaymentStateBadge } from '@/modules/billing/collect-now';
+import { needsPayment } from '@/modules/lab/payment-card';
 import { PriorityBadge, ageFromDob, formatDateTime, genderShort } from '@/modules/lab/ui';
 
 const TABS: { status: L.SampleStatus; label: string }[] = [
@@ -28,6 +30,8 @@ export default function SampleWorklistPage() {
   const queryClient = useQueryClient();
   const [status, setStatus] = React.useState<L.SampleStatus>('pending');
   const [scan, setScan] = React.useState('');
+  /** Sample row whose order is being paid for ("Collect now" opened under it). */
+  const [paying, setPaying] = React.useState<string | null>(null);
   const { data, isPending, error } = useQuery({
     queryKey: ['lab', 'samples', status],
     // A rejected tube that was already recollected carries no tests any more.
@@ -100,47 +104,67 @@ export default function SampleWorklistPage() {
                 </TableRow>
               ) : (
                 data.map((s) => (
-                  <TableRow key={s.id}>
-                    <TableCell className="font-mono text-xs">{s.barcode}</TableCell>
-                    <TableCell>
-                      <div className="font-medium">{s.patient.name}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {s.patient.uhid} · {ageFromDob(s.patient.dateOfBirth)} {genderShort(s.patient.gender)}
-                      </div>
-                    </TableCell>
-                    <TableCell className="capitalize">
-                      {s.sampleType}
-                      {s.container && <div className="text-xs normal-case text-muted-foreground">{s.container}</div>}
-                    </TableCell>
-                    <TableCell className="max-w-xs text-sm">
-                      <span className="line-clamp-2">{s.testNames.join(', ')}</span>
-                      {s.rejectedReason && <div className="text-xs text-destructive">{s.rejectedReason}</div>}
-                    </TableCell>
-                    <TableCell>
-                      <Link href={`/lab/orders/${s.orderId}`} className="font-mono text-xs hover:underline">
-                        {s.orderNo}
-                      </Link>{' '}
-                      <PriorityBadge priority={s.priority} />
-                      {s.collectedAt && <div className="text-xs text-muted-foreground">{formatDateTime(s.collectedAt)}</div>}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {canCollect && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={act.isPending}
-                          onClick={() =>
-                            act.mutate(() =>
-                              s.status === 'pending' ? api.lab.samples.collect(s.id) : s.status === 'collected' ? api.lab.samples.receive(s.id) : api.lab.samples.recollect(s.id),
-                            )
-                          }
-                        >
-                          {act.isPending && <Loader2 className="animate-spin" />}
-                          {s.status === 'pending' ? 'Collected' : s.status === 'collected' ? 'Receive' : 'Recollect'}
-                        </Button>
-                      )}
-                    </TableCell>
-                  </TableRow>
+                  <React.Fragment key={s.id}>
+                    <TableRow>
+                      <TableCell className="font-mono text-xs">{s.barcode}</TableCell>
+                      <TableCell>
+                        <div className="font-medium">{s.patient.name}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {s.patient.uhid} · {ageFromDob(s.patient.dateOfBirth)} {genderShort(s.patient.gender)}
+                        </div>
+                      </TableCell>
+                      <TableCell className="capitalize">
+                        {s.sampleType}
+                        {s.container && <div className="text-xs normal-case text-muted-foreground">{s.container}</div>}
+                      </TableCell>
+                      <TableCell className="max-w-xs text-sm">
+                        <span className="line-clamp-2">{s.testNames.join(', ')}</span>
+                        {s.rejectedReason && <div className="text-xs text-destructive">{s.rejectedReason}</div>}
+                      </TableCell>
+                      <TableCell>
+                        <Link href={`/lab/orders/${s.orderId}`} className="font-mono text-xs hover:underline">
+                          {s.orderNo}
+                        </Link>{' '}
+                        <PriorityBadge priority={s.priority} /> <PaymentStateBadge state={s.paymentState} />
+                        {s.collectedAt && <div className="text-xs text-muted-foreground">{formatDateTime(s.collectedAt)}</div>}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-1">
+                          {s.status === 'pending' && needsPayment(s) && s.paymentState === 'pending' && (
+                            <Button size="sm" variant="ghost" onClick={() => setPaying(paying === s.id ? null : s.id)}>
+                              Collect now
+                            </Button>
+                          )}
+                          {canCollect && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={act.isPending}
+                              onClick={() =>
+                                act.mutate(() =>
+                                  s.status === 'pending' ? api.lab.samples.collect(s.id) : s.status === 'collected' ? api.lab.samples.receive(s.id) : api.lab.samples.recollect(s.id),
+                                )
+                              }
+                            >
+                              {act.isPending && <Loader2 className="animate-spin" />}
+                              {s.status === 'pending' ? 'Collected' : s.status === 'collected' ? 'Receive' : 'Recollect'}
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                    {paying === s.id && (
+                      <TableRow className="hover:bg-transparent">
+                        <TableCell colSpan={6}>
+                          <CollectNow
+                            patientId={s.patient.id}
+                            source={{ module: 'lab', refId: s.orderId }}
+                            onDone={() => queryClient.invalidateQueries({ queryKey: ['lab'] })}
+                          />
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </React.Fragment>
                 ))
               )}
             </TableBody>

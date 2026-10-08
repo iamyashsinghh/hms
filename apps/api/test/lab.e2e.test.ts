@@ -2,7 +2,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sql } from '@hms/db';
-import { lab } from '@hms/shared';
+import { billing, lab } from '@hms/shared';
 import { DbService } from '../src/common/db/db.service';
 import { EventBus } from '../src/common/events/event-bus';
 import { LabController } from '../src/modules/lab/lab.controller';
@@ -384,6 +384,164 @@ describe('lab orders from a signed consultation', () => {
     const emrLines = ((await inject('GET', `/emr/encounters/${enc.id}`, doctor)).json().orders as { id: string; name: string }[]).filter((l) => ['CBC', 'thyroid profile'].includes(l.name));
     expect(statusEvents.map((e) => e.payload.emrOrderId).sort()).toEqual(emrLines.map((l) => l.id).sort());
     expect(statusEvents[0]!.payload).toMatchObject({ encounterId: enc.id, patientId: malePatientId });
+  });
+});
+
+describe('lab charges on the patient account', () => {
+  const s = sfx();
+  let svcTestId: string;
+  let ownTestId: string;
+  let patientId: string;
+  const svcCode = `LSV${s}`;
+
+  /** The patient's charges posted by one lab order (any status). */
+  async function charges(orderId: string) {
+    const res = await inject('GET', `/billing/charges?patientId=${patientId}&sourceModule=lab&pageSize=500`, admin);
+    expect(res.statusCode, res.body).toBe(200);
+    return (res.json().items as billing.Charge[]).filter((c) => c.sourceRef === orderId);
+  }
+  const setRules = (rules: Partial<billing.BillingRules>) => inject('PUT', '/billing/rules', admin, { rules });
+  const resetRules = () => inject('PUT', '/billing/rules', admin, { replace: true, rules: {} });
+
+  /** Runs the billing.charges.billed event of an invoice through the bus, as the worker would (twice: at least once). */
+  async function deliverBilled(invoiceId: string) {
+    const rows = await app.get(DbService).asTenant({ tenantId }, async (tx) => {
+      const r = await tx.execute<{ payload: Record<string, unknown> }>(
+        sql`select payload from audit.outbox where topic = 'billing.charges.billed' and payload->>'invoiceId' = ${invoiceId}`,
+      );
+      return r.rows;
+    });
+    expect(rows).toHaveLength(1);
+    const event = { id: randomUUID(), tenantId, topic: 'billing.charges.billed', payload: rows[0]!.payload, createdAt: new Date().toISOString() };
+    await app.get(EventBus).dispatch(event);
+    await app.get(EventBus).dispatch({ ...event, id: randomUUID() });
+  }
+
+  beforeAll(async () => {
+    await resetRules();
+    patientId = await newPatient('female', 33);
+    const svc = await inject('POST', '/billing/services', admin, { code: svcCode, name: `Lipid profile ${s}`, category: 'lab', basePrice: 450, taxRate: 0 });
+    expect(svc.statusCode, svc.body).toBe(201);
+    let res = await inject('POST', '/lab/tests', admin, { code: `LS${s}`, name: `Lipid ${s}`, sampleType: 'serum', price: 999, serviceCode: svcCode });
+    svcTestId = res.json().id;
+    res = await inject('POST', '/lab/tests', admin, { code: `LO${s}`, name: `Urine routine ${s}`, sampleType: 'urine', price: 120 });
+    ownTestId = res.json().id;
+  });
+  afterAll(() => resetRules());
+
+  it('posts one charge per test when ordered (the default rule), priced from the service or the test', async () => {
+    const res = await inject('POST', '/lab/orders', reception, { patientId, items: [{ testId: svcTestId }, { testId: ownTestId }], bill: false });
+    expect(res.statusCode, res.body).toBe(201);
+    const o = res.json() as lab.Order;
+    expect(o.invoiceId).toBeNull();
+    expect(o).toMatchObject({ paymentState: 'pending', payFirst: true });
+    const posted = await charges(o.id);
+    expect(posted).toHaveLength(2);
+    const byLine = new Map(posted.map((c) => [c.sourceLine, c]));
+    const [svcItem, ownItem] = o.items;
+    expect(byLine.get(svcItem!.id)).toMatchObject({ status: 'pending', serviceCode: svcCode, unitPrice: 450, account: 'other' });
+    expect(byLine.get(ownItem!.id)).toMatchObject({ status: 'pending', serviceCode: null, description: `Urine routine ${s} (lab)`, unitPrice: 120, taxRate: 0 });
+
+    // The worklist flags the order as unpaid for the collector.
+    const pending = (await inject('GET', '/lab/samples?status=pending', tech)).json() as lab.WorklistSample[];
+    expect(pending.filter((x) => x.orderId === o.id).every((x) => x.paymentState === 'pending' && x.payFirst)).toBe(true);
+    const list = (await inject('GET', `/lab/orders?patientId=${patientId}`, tech)).json().items as lab.OrderSummary[];
+    expect(list.find((x) => x.id === o.id)?.paymentState).toBe('pending');
+
+    // Billed at the desk: the bill number comes back to the order through billing.charges.billed.
+    const bill = await inject('POST', '/billing/charges/bill', admin, { patientId, chargeIds: posted.map((c) => c.id), payNow: { mode: 'cash', amount: 570 } });
+    expect(bill.statusCode, bill.body).toBe(201);
+    const inv = bill.json() as billing.Invoice;
+    expect(inv.total).toBe(570);
+    await deliverBilled(inv.id);
+    const after = (await inject('GET', `/lab/orders/${o.id}`, tech)).json() as lab.Order;
+    expect(after).toMatchObject({ invoiceId: inv.id, invoiceNo: inv.number, paymentState: 'paid' });
+    expect((await inject('POST', `/lab/orders/${o.id}/bill`, reception, {})).statusCode).toBe(409);
+  });
+
+  it('charges at sample collection when the hospital says so', async () => {
+    expect((await setRules({ labChargeAt: 'collection' })).statusCode).toBe(200);
+    try {
+      const o = (await inject('POST', '/lab/orders', reception, { patientId, items: [{ testId: ownTestId }], bill: false })).json() as lab.Order;
+      expect(o.paymentState).toBe('none');
+      expect(await charges(o.id)).toHaveLength(0);
+      const res = await inject('POST', `/lab/samples/${o.samples[0]!.id}/collect`, nurse);
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().paymentState).toBe('pending');
+      const posted = await charges(o.id);
+      expect(posted).toHaveLength(1);
+      expect(posted[0]).toMatchObject({ status: 'pending', unitPrice: 120 });
+      // Receiving the same sample does not post again.
+      await inject('POST', `/lab/samples/${o.samples[0]!.id}/receive`, tech);
+      expect(await charges(o.id)).toHaveLength(1);
+
+      // An order booked from a consultation is not charged until its sample is collected either.
+      const o2 = (await inject('POST', '/lab/orders', reception, { patientId, items: [{ testId: svcTestId }], bill: false })).json() as lab.Order;
+      expect(await charges(o2.id)).toHaveLength(0);
+      await inject('POST', `/lab/orders/${o2.id}/collect`, tech);
+      expect((await charges(o2.id)).map((c) => c.unitPrice)).toEqual([450]);
+    } finally {
+      await resetRules();
+    }
+  });
+
+  it('bills through the old bill endpoint: posts what is missing, bills it and takes the money', async () => {
+    await setRules({ labChargeAt: 'collection' });
+    try {
+      const o = (await inject('POST', '/lab/orders', reception, { patientId, items: [{ testId: ownTestId }, { testId: svcTestId }], bill: false })).json() as lab.Order;
+      expect(await charges(o.id)).toHaveLength(0);
+      const res = await inject('POST', `/lab/orders/${o.id}/bill`, reception, { payNow: { mode: 'upi', amount: 570, ref: 'UPI123' } });
+      expect(res.statusCode, res.body).toBe(200);
+      const billed = res.json() as lab.Order;
+      expect(billed.invoiceNo).toBeTruthy();
+      expect(billed.paymentState).toBe('paid');
+      const posted = await charges(o.id);
+      expect(posted.map((c) => c.status)).toEqual(['billed', 'billed']);
+      expect(posted.every((c) => c.invoiceId === billed.invoiceId)).toBe(true);
+      const inv = (await inject('GET', `/billing/invoices/${billed.invoiceId}`, admin)).json() as billing.Invoice;
+      expect(inv).toMatchObject({ total: 570, paidAmount: 570, balance: 0 });
+    } finally {
+      await resetRules();
+    }
+
+    // Booked and billed at the counter in one go (bill: true), unpaid for now.
+    const res = await inject('POST', '/lab/orders', reception, { patientId, items: [{ testId: ownTestId }] });
+    expect(res.statusCode, res.body).toBe(201);
+    expect(res.json()).toMatchObject({ paymentState: 'unpaid' });
+    expect(res.json().invoiceNo).toBeTruthy();
+  });
+
+  it('cancelling an order cancels its pending charges, or flags billed ones for a credit note', async () => {
+    const o = (await inject('POST', '/lab/orders', reception, { patientId, items: [{ testId: ownTestId }, { testId: svcTestId }], bill: false })).json() as lab.Order;
+    expect((await charges(o.id)).every((c) => c.status === 'pending')).toBe(true);
+    let res = await inject('POST', `/lab/orders/${o.id}/cancel`, tech, { reason: 'Patient left' });
+    expect(res.statusCode, res.body).toBe(200);
+    expect((await charges(o.id)).map((c) => c.status)).toEqual(['cancelled', 'cancelled']);
+    expect(res.json().paymentState).toBe('none');
+
+    const billed = (await inject('POST', '/lab/orders', reception, { patientId, items: [{ testId: ownTestId }] })).json() as lab.Order;
+    res = await inject('POST', `/lab/orders/${billed.id}/cancel`, tech, { reason: 'Ordered twice' });
+    expect(res.statusCode, res.body).toBe(200);
+    const [c] = await charges(billed.id);
+    expect(c).toMatchObject({ status: 'billed', invoiceId: billed.invoiceId });
+    expect(c!.reversalRequestedAt).toBeTruthy();
+    expect(c!.reversalReason).toContain('Ordered twice');
+  });
+
+  it('charges a consultation order on the OPD visit when it is booked', async () => {
+    const visitId = randomUUID();
+    const enc = (await inject('POST', '/emr/encounters', doctor, { patientId, visitId })).json();
+    await inject('PATCH', `/emr/encounters/${enc.id}`, doctor, { notes: { chiefComplaints: 'Routine check' } });
+    await inject('PUT', `/emr/encounters/${enc.id}/orders`, doctor, { orders: [{ kind: 'lab', name: `Lipid ${s}`, code: `LS${s}` }, { kind: 'lab', name: 'Unknown thing' }] });
+    expect((await inject('POST', `/emr/encounters/${enc.id}/sign`, doctor)).statusCode).toBe(200);
+    const event = { id: randomUUID(), tenantId, topic: 'emr.encounter.signed', payload: { encounterId: enc.id, patientId, doctorId }, createdAt: new Date().toISOString() };
+    await app.get(EventBus).dispatch(event);
+    await app.get(EventBus).dispatch({ ...event, id: randomUUID() });
+    const o = ((await inject('GET', `/lab/orders?patientId=${patientId}&pageSize=50`, tech)).json().items as lab.OrderSummary[]).find((x) => x.source === 'emr')!;
+    const posted = await charges(o.id);
+    // The unmatched line has no price, so only the matched test is charged.
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({ status: 'pending', visitId, account: 'opd', doctorId, unitPrice: 450 });
   });
 });
 

@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { EventBus } from '../src/common/events/event-bus';
 import { DbService } from '../src/common/db/db.service';
 import { sql } from '@hms/db';
-import { todayIso } from '@hms/shared';
+import { todayIso, type billing, type emr } from '@hms/shared';
 import { bearer, bootApp, login } from './helpers';
 
 let app: NestFastifyApplication;
@@ -360,6 +360,114 @@ describe('emr order status from lab/radiology', () => {
     await send('radiology.order.status_changed', randomUUID(), 'finalized'); // unknown order
     res = await inject('GET', `/emr/encounters/${enc.id}`, doctor);
     expect(res.json().orders.map((o: { status: string }) => o.status)).toEqual(['completed', 'completed']);
+  });
+});
+
+describe('emr procedure orders post charges', () => {
+  const tag = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`.toUpperCase();
+  const DRESS = `DRS-${tag}`;
+  let admin: string;
+  let pid: string;
+
+  const call = (method: 'GET' | 'POST' | 'PUT' | 'PATCH', url: string, token: string, payload?: object) =>
+    app.inject({ method, url: `/api/v1${url}`, headers: { ...bearer(token), 'x-facility-id': facilityId }, payload });
+  async function charges(encounterId: string) {
+    const res = await call('GET', `/billing/charges?patientId=${pid}&sourceModule=emr&pageSize=500`, admin);
+    expect(res.statusCode, res.body).toBe(200);
+    return (res.json().items as billing.Charge[]).filter((c) => c.sourceRef === encounterId);
+  }
+  async function signedWith(orders: object[], visitId?: string) {
+    const enc = (await inject('POST', '/emr/encounters', doctor, { patientId: pid, ...(visitId ? { visitId } : {}) })).json();
+    await inject('PATCH', `/emr/encounters/${enc.id}`, doctor, { notes: { chiefComplaints: 'Wound on the forearm' } });
+    const res = await inject('PUT', `/emr/encounters/${enc.id}/orders`, doctor, { orders });
+    expect(res.statusCode, res.body).toBe(200);
+    expect((await inject('POST', `/emr/encounters/${enc.id}/sign`, doctor)).statusCode).toBe(200);
+    return (await inject('GET', `/emr/encounters/${enc.id}`, doctor)).json() as emr.Encounter;
+  }
+
+  beforeAll(async () => {
+    admin = (await login(app, 'admin@demo.hms')).accessToken;
+    pid = await newPatient();
+    const res = await call('POST', '/billing/services', admin, { code: DRESS, name: `Dressing small ${tag}`, category: 'procedure', basePrice: 150, taxRate: 18 });
+    expect(res.statusCode, res.body).toBe(201);
+  });
+
+  it('keeps the service of a procedure and refuses an unknown one', async () => {
+    const enc = (await inject('POST', '/emr/encounters', doctor, { patientId: pid })).json();
+    let res = await inject('PUT', `/emr/encounters/${enc.id}/orders`, doctor, { orders: [{ kind: 'procedure', name: 'Dressing', serviceCode: `NOPE-${tag}` }] });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('unknown_service');
+    res = await inject('PUT', `/emr/encounters/${enc.id}/orders`, doctor, {
+      orders: [
+        { kind: 'procedure', name: 'Dressing small', serviceCode: DRESS.toLowerCase() },
+        { kind: 'lab', name: 'CBC', serviceCode: 'IGNORED' },
+      ],
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().orders.map((o: emr.Order) => o.serviceCode)).toEqual([DRESS, null]);
+  });
+
+  it('posts one charge per priced procedure when the consultation is signed, on its OPD visit', async () => {
+    const visitId = randomUUID();
+    const enc = await signedWith(
+      [
+        { kind: 'procedure', name: 'Dressing small', serviceCode: DRESS, notes: 'Left forearm' },
+        { kind: 'procedure', name: 'Suture removal (free text)' },
+        { kind: 'lab', name: 'CBC' },
+      ],
+      visitId,
+    );
+    const [dressing] = enc.orders;
+    const posted = await charges(enc.id);
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({
+      status: 'pending',
+      sourceLine: dressing!.id,
+      serviceCode: DRESS,
+      unitPrice: 150,
+      taxRate: 18,
+      amount: 177,
+      visitId,
+      account: 'opd',
+      doctorId,
+      notes: 'Left forearm',
+    });
+  });
+
+  it('cancels a signed procedure and its pending charge', async () => {
+    const enc = await signedWith([
+      { kind: 'procedure', name: 'Dressing small', serviceCode: DRESS },
+      { kind: 'lab', name: 'CBC' },
+    ]);
+    const [dressing, cbc] = enc.orders;
+    const url = `/emr/encounters/${enc.id}/orders/${dressing!.id}/cancel`;
+    expect((await inject('POST', url, nurse, { reason: 'Not needed' })).statusCode).toBe(403);
+    expect((await inject('POST', `/emr/encounters/${enc.id}/orders/${cbc!.id}/cancel`, doctor, { reason: 'Not needed' })).json().error.code).toBe('not_a_procedure');
+    expect((await inject('POST', url, doctor, { reason: 'x' })).statusCode).toBe(400);
+    let res = await inject('POST', url, doctor, { reason: 'Wound healed, not needed' });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().orders.find((o: emr.Order) => o.id === dressing!.id).status).toBe('cancelled');
+    expect((await charges(enc.id)).map((c) => [c.status, c.cancelReason])).toEqual([['cancelled', 'Wound healed, not needed']]);
+    res = await inject('POST', url, doctor, { reason: 'Wound healed, not needed' });
+    expect(res.statusCode).toBe(200);
+
+    // Before signing the doctor just removes the line.
+    const open = (await inject('POST', '/emr/encounters', doctor, { patientId: pid })).json();
+    const saved = (await inject('PUT', `/emr/encounters/${open.id}/orders`, doctor, { orders: [{ kind: 'procedure', name: 'Dressing', serviceCode: DRESS }] })).json();
+    res = await inject('POST', `/emr/encounters/${open.id}/orders/${saved.orders[0].id}/cancel`, doctor, { reason: 'Not needed' });
+    expect(res.statusCode).toBe(409);
+  });
+
+  it('suggests a credit note when a billed procedure is cancelled', async () => {
+    const enc = await signedWith([{ kind: 'procedure', name: 'Dressing small', serviceCode: DRESS }]);
+    const [c] = await charges(enc.id);
+    const bill = await call('POST', '/billing/charges/bill', admin, { patientId: pid, chargeIds: [c!.id] });
+    expect(bill.statusCode, bill.body).toBe(201);
+    const res = await inject('POST', `/emr/encounters/${enc.id}/orders/${enc.orders[0]!.id}/cancel`, doctor, { reason: 'Done by mistake' });
+    expect(res.statusCode, res.body).toBe(200);
+    const [after] = await charges(enc.id);
+    expect(after).toMatchObject({ status: 'billed', invoiceId: bill.json().id, reversalReason: 'Done by mistake' });
+    expect(after!.reversalRequestedAt).toBeTruthy();
   });
 });
 

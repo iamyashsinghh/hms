@@ -15,6 +15,8 @@ export const emrApi = (http: Http) => ({
   addVitals: (id: string, body: emr.VitalsInput) => http.post<emr.Encounter>(`/emr/encounters/${id}/vitals`, body),
   setDiagnoses: (id: string, body: emr.DiagnosesInput) => http.put<emr.Encounter>(`/emr/encounters/${id}/diagnoses`, body),
   setOrders: (id: string, body: emr.OrdersInput) => http.put<emr.Encounter>(`/emr/encounters/${id}/orders`, body),
+  /** Cancel a procedure of a signed consultation (its charge is cancelled or flagged for a credit note). */
+  cancelOrder: (id: string, orderId: string, body: emr.CancelOrder) => http.post<emr.Encounter>(`/emr/encounters/${id}/orders/${orderId}/cancel`, body),
   setPrescription: (id: string, body: emr.PrescriptionInput) => http.put<emr.Encounter>(`/emr/encounters/${id}/prescription`, body),
   sign: (id: string) => http.post<emr.Encounter>(`/emr/encounters/${id}/sign`),
   cancel: (id: string) => http.post<emr.Encounter>(`/emr/encounters/${id}/cancel`),

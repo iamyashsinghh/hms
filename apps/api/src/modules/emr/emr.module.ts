@@ -1,6 +1,7 @@
 import { Module, OnModuleInit } from '@nestjs/common';
 import { EventBus } from '../../common/events/event-bus';
 import { requestContext } from '../../common/context/request-context';
+import { BillingModule } from '../billing/billing.module';
 import { PatientsModule } from '../patients/patients.module';
 import { SetupModule } from '../setup/setup.module';
 import { EmrController } from './emr.controller';
@@ -9,10 +10,11 @@ import { EmrService, type OrderStatusChanged, type VisitCheckedIn } from './emr.
 
 /**
  * OPD / EMR: doctor's queue, consultations (vitals, notes, ICD-10 diagnoses, orders), e-prescriptions
- * with favourites and allergy check, sign & lock, addenda, certificates, patient timeline.
+ * with favourites and allergy check, sign & lock, addenda, certificates, patient timeline. Signing posts
+ * procedure orders picked from the billing service master as charges (ChargesService).
  * Other modules import EmrModule and use EmrService.
  */
-@Module({ imports: [PatientsModule, SetupModule], controllers: [EmrController], providers: [EmrService, EmrRepository], exports: [EmrService] })
+@Module({ imports: [PatientsModule, SetupModule, BillingModule], controllers: [EmrController], providers: [EmrService, EmrRepository], exports: [EmrService] })
 export class EmrModule implements OnModuleInit {
   constructor(
     private readonly bus: EventBus,

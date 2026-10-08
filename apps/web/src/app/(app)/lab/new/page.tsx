@@ -189,8 +189,9 @@ export default function NewLabOrderPage() {
               <span className="text-2xl font-semibold tabular-nums">{formatINR(total)}</span>
             </div>
             <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={bill} onChange={(e) => setBill(e.target.checked)} /> Create the bill now
+              <input type="checkbox" checked={bill} onChange={(e) => setBill(e.target.checked)} /> Bill now
             </label>
+            {!bill && <p className="text-xs text-muted-foreground">The tests go on the patient&apos;s account and are billed at the billing desk.</p>}
             {bill && canCollect && (
               <Field id="pay" label="Collect payment">
                 <Select id="pay" value={payMode} onChange={(e) => setPayMode(e.target.value as typeof payMode)}>
