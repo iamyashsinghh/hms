@@ -1,11 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { iso, type Tx } from '@hms/db';
-import { todayIso, type CreatePatient, type Paginated, type Patient, type UpdatePatient } from '@hms/shared';
+import { todayIso, type billing as B, type CreatePatient, type Paginated, type Patient, type UpdatePatient } from '@hms/shared';
 import { DbService } from '../../common/db/db.service';
 import { AuditService } from '../../common/db/audit.service';
 import { OutboxService } from '../../common/events/outbox.service';
 import { currentContext } from '../../common/context/request-context';
 import { conflict, notFound } from '../../common/errors/errors';
+import { ChargesService } from '../billing/charges.service';
 import { SetupService } from '../setup/setup.service';
 import { PatientsRepository, type NewPatientRow, type PatientRow } from './patients.repository';
 
@@ -23,6 +24,7 @@ export class PatientsService {
     private readonly audit: AuditService,
     private readonly outbox: OutboxService,
     private readonly setup: SetupService,
+    private readonly charges: ChargesService,
   ) {}
 
   search(q: string | undefined, page: number, pageSize: number): Promise<Paginated<Patient>> {
@@ -58,6 +60,8 @@ export class PatientsService {
         updatedBy: ctx.userId,
       });
       await this.outbox.publish(tx, 'core.patient.registered', { patientId: row.id, uhid });
+      // Registration fee (billing rule). Registrations with no branch (portal, ABDM) are charged at the first check-in.
+      if (ctx.facilityId) await this.chargeRegistration(tx, row.id, ctx.facilityId, 'registration');
       return toDto(row);
     });
   }
@@ -73,6 +77,39 @@ export class PatientsService {
       }
       const row = await this.repo.update(tx, id, { ...toColumns(input), updatedBy: ctx.userId });
       return toDto(row!);
+    });
+  }
+
+  /**
+   * Called at OPD check-in: posts the registration fee when the hospital charges one and the patient's
+   * registration is due, i.e. never charged yet (line 'registration') or older than the rule's validityMonths
+   * (renewal, line 'registration-<today>'). A fee the desk cancelled (waived) still counts for its period.
+   * Returns the charge, or null when nothing is due.
+   */
+  async chargeRegistrationIfDue(tx: Tx, patientId: string, facilityId: string, visitId?: string): Promise<B.Charge | null> {
+    const rules = await this.charges.rules(tx, facilityId);
+    if (!rules.registrationFee.enabled || !(rules.registrationFee.amount > 0)) return null;
+    const today = todayIso();
+    const last = await this.repo.lastRegistrationCharge(tx, patientId);
+    const months = rules.registrationFee.validityMonths;
+    if (!last) return this.chargeRegistration(tx, patientId, facilityId, 'registration', visitId);
+    if (months === null || addMonths(last.chargeDate, months) > today) return null;
+    return this.chargeRegistration(tx, patientId, facilityId, `registration-${today}`, visitId);
+  }
+
+  /** Posts the registration fee (rule amount) to the patient's account, inside the caller's transaction. */
+  private async chargeRegistration(tx: Tx, patientId: string, facilityId: string, line: string, visitId?: string): Promise<B.Charge | null> {
+    const rules = await this.charges.rules(tx, facilityId);
+    if (!rules.registrationFee.enabled || !(rules.registrationFee.amount > 0)) return null;
+    return this.charges.postCharge(tx, {
+      patientId,
+      facilityId,
+      source: { module: 'patients', refId: patientId, line },
+      description: line === 'registration' ? 'Registration fee' : 'Registration fee (renewal)',
+      unitPrice: rules.registrationFee.amount,
+      taxRate: 0,
+      // A renewal at check-in sits on that OPD visit; a new registration stands on its own.
+      ...(visitId ? { visitId } : { standalone: true }),
     });
   }
 
@@ -100,6 +137,15 @@ export class PatientsService {
     await this.outbox.publish(tx, 'core.patient.merged', { sourceId, targetId });
     return toDto(row!);
   }
+}
+
+/** YYYY-MM-DD plus whole months (end of month clamps, e.g. 31 Jan + 1 = 28/29 Feb). */
+function addMonths(isoDate: string, months: number): string {
+  const [y, m, d] = isoDate.split('-').map(Number);
+  const first = new Date(Date.UTC(y!, m! - 1 + months, 1));
+  const last = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).getUTCDate();
+  first.setUTCDate(Math.min(d!, last));
+  return first.toISOString().slice(0, 10);
 }
 
 function toColumns(input: UpdatePatient): Partial<NewPatientRow> {

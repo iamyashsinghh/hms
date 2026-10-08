@@ -95,6 +95,13 @@ export const VISIT_PRIORITIES = ['normal', 'senior', 'urgent'] as const;
 export type VisitPriority = (typeof VISIT_PRIORITIES)[number];
 
 export const VISIT_KINDS = ['appointment', 'walk_in'] as const;
+
+/**
+ * Consultation charge posted at check-in: the doctor's full fee, the follow-up fee (a revisit inside the
+ * doctor's follow-up days), a free follow-up (follow-up fee 0), or none (the doctor has no fee).
+ */
+export const VISIT_FEE_TYPES = ['full', 'follow_up', 'free_follow_up', 'none'] as const;
+export type VisitFeeType = (typeof VISIT_FEE_TYPES)[number];
 export type VisitKind = (typeof VISIT_KINDS)[number];
 
 /** Slot length for doctors with no schedule set up in the setup module (free-form booking). */
@@ -268,6 +275,14 @@ export const visitSchema = z.object({
   calledAt: z.string().nullable(),
   startedAt: z.string().nullable(),
   completedAt: z.string().nullable(),
+  /** How the consultation was charged at check-in (null for visits from before charges). */
+  feeType: z.enum(VISIT_FEE_TYPES).nullable().optional(),
+  /** Payment state of the visit's charges, for the "unpaid" flag in the queue. */
+  paymentState: z.enum(['none', 'pending', 'unpaid', 'paid']).optional(),
+  /** Check-in / walk-in responses only: the pending charges posted for this visit (consultation, registration renewal). */
+  chargeIds: z.array(z.uuid()).optional(),
+  /** Check-in / walk-in responses only: the hospital collects OPD fees at check-in (billing rule), so offer "Collect now". */
+  collectNow: z.boolean().optional(),
 });
 export type Visit = z.infer<typeof visitSchema>;
 
@@ -284,6 +299,8 @@ export interface QueueResponse {
   date: string;
   items: Visit[];
   summary: QueueSummary;
+  /** Billing rules for OPD at this facility: collect the consultation at check-in, and refuse to call unpaid tokens. */
+  billing?: { collectAtCheckIn: boolean; blockUnpaid: boolean };
 }
 
 export const displayQuerySchema = z.object({

@@ -248,6 +248,26 @@ export class FrontofficeRepository {
       );
   }
 
+  /**
+   * Was there a full-fee consultation with this doctor in the last `days` days (before this visit)? Counts
+   * visits charged the full fee whose charge was not cancelled, and completed visits from before charges
+   * existed (fee_type NULL). Follow-ups never start a new window.
+   */
+  async followUpReference(tx: Tx, v: { id: string; patientId: string; doctorId: string; visitDate: string }, days: number): Promise<boolean> {
+    const res = await tx.execute<{ id: string }>(sql`
+      select v.id from clinical.opd_visits v
+       where v.patient_id = ${v.patientId} and v.doctor_id = ${v.doctorId} and v.id <> ${v.id}
+         and v.visit_date between ${v.visitDate}::date - ${days}::int and ${v.visitDate}::date
+         and v.status <> 'cancelled'
+         and ((v.fee_type = 'full' and exists (
+                select 1 from billing.charges c
+                 where c.source_module = 'frontoffice' and c.source_ref = v.id::text and c.source_line = 'consultation'
+                   and c.status <> 'cancelled'))
+              or (v.fee_type is null and v.status = 'completed'))
+       limit 1`);
+    return res.rows.length > 0;
+  }
+
   // ---------- duplicates, merge, ABHA ----------
 
   /**

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import {
   and,
   asc,
+  billingServices,
   eq,
   facilities,
   inArray,
@@ -159,6 +160,50 @@ export class StaffService {
       .insert(setupStaffProfiles)
       .values({ ...values, tenantId: c.tenantId, userId, createdBy: c.userId })
       .onConflictDoUpdate({ target: [setupStaffProfiles.tenantId, setupStaffProfiles.userId], set: values });
+    await this.syncFeeServices(tx, userId);
+  }
+
+  // ---------- doctor fees → billing services ----------
+
+  /**
+   * Keeps the doctor's fees in the billing service master (S.doctorFeeServiceCodes), inside the caller's
+   * transaction, so the consultation charge posted at check-in is priced from there and payer price lists
+   * apply. A fee above 0 makes the service active at that price (name follows the doctor's name); a cleared
+   * or zero fee switches it off. GST, HSN/SAC and price lists set in Billing are left alone.
+   * Written straight to billing.services because BillingService.createService opens its own transaction.
+   */
+  async syncFeeServices(tx: Tx, userId: string): Promise<void> {
+    const res = await tx.execute<{ name: string; consultation_fee: string | null; follow_up_fee: string | null }>(sql`
+      select u.name, sp.consultation_fee::text as consultation_fee, sp.follow_up_fee::text as follow_up_fee
+        from iam.users u left join setup.staff_profiles sp on sp.tenant_id = u.tenant_id and sp.user_id = u.id
+       where u.id = ${userId}`);
+    const row = res.rows[0];
+    if (!row) return;
+    const codes = S.doctorFeeServiceCodes(userId);
+    const doctor = `Dr. ${row.name.replace(/^Dr\.?\s*/i, '')}`;
+    await this.syncFeeService(tx, codes.consultation, `Consultation - ${doctor}`, num(row.consultation_fee));
+    await this.syncFeeService(tx, codes.followUp, `Follow-up consultation - ${doctor}`, num(row.follow_up_fee));
+  }
+
+  private async syncFeeService(tx: Tx, code: string, name: string, fee: number | null): Promise<void> {
+    const c = ctx();
+    const active = fee !== null && fee > 0;
+    const [existing] = await tx.select().from(billingServices).where(eq(billingServices.code, code)).limit(1);
+    if (!existing) {
+      if (!active) return;
+      // Two check-ins can create it at once: the second one just keeps the first row.
+      await tx
+        .insert(billingServices)
+        .values({ tenantId: c.tenantId, code, name, category: 'consultation', basePrice: money(fee)!, taxRate: '0', isActive: true, createdBy: c.userId, updatedBy: c.userId })
+        .onConflictDoNothing();
+      return;
+    }
+    const price = active ? money(fee)! : existing.basePrice;
+    if (existing.name === name && Number(existing.basePrice) === Number(price) && existing.isActive === active) return;
+    await tx
+      .update(billingServices)
+      .set({ name, basePrice: price, isActive: active, updatedBy: c.userId })
+      .where(eq(billingServices.id, existing.id));
   }
 
   // ---------- doctors (cross-module contract) ----------

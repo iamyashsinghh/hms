@@ -336,6 +336,16 @@ export interface Doctor {
   followUpDays?: number;
 }
 
+/**
+ * Billing service codes Setup keeps in sync with a doctor's fees (category 'consultation'), so payer price
+ * lists can price them: CONS-<code> for the consultation fee and FUP-<code> for the follow-up fee.
+ * <code> is the last 8 hex digits of the doctor's user id (stable when the name or employee code changes).
+ */
+export function doctorFeeServiceCodes(userId: string): { consultation: string; followUp: string } {
+  const code = userId.replace(/-/g, '').slice(-8).toUpperCase();
+  return { consultation: `CONS-${code}`, followUp: `FUP-${code}` };
+}
+
 export const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
 
 export const scheduleBlockSchema = z

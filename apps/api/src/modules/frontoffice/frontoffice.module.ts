@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { BillingModule } from '../billing/billing.module';
 import { PatientsModule } from '../patients/patients.module';
 import { SetupModule } from '../setup/setup.module';
 import { FrontofficeController } from './frontoffice.controller';
@@ -11,7 +12,7 @@ import { FrontofficeService } from './frontoffice.service';
  * (book, getQueue). Contracts and permissions: packages/shared/src/modules/frontoffice.ts.
  */
 @Module({
-  imports: [PatientsModule, SetupModule],
+  imports: [PatientsModule, SetupModule, BillingModule],
   controllers: [FrontofficeController],
   providers: [FrontofficeService, FrontofficeRepository],
   exports: [FrontofficeService],

@@ -48,4 +48,18 @@ export class PatientsRepository {
     const [row] = await tx.update(patients).set(values).where(eq(patients.id, id)).returning();
     return row;
   }
+
+  /**
+   * The patient's latest registration-fee charge (lines 'registration' / 'registration-<date>'), cancelled ones
+   * included: a fee the desk waived still counts as this period's registration. Read-only join to billing.charges.
+   */
+  async lastRegistrationCharge(tx: Tx, patientId: string): Promise<{ chargeDate: string; status: string } | undefined> {
+    const res = await tx.execute<{ charge_date: string; status: string }>(sql`
+      select charge_date::text as charge_date, status from billing.charges
+       where source_module = 'patients' and source_ref = ${patientId}
+         and (source_line = 'registration' or source_line like 'registration-%')
+       order by charge_date desc, created_at desc limit 1`);
+    const r = res.rows[0];
+    return r ? { chargeDate: r.charge_date, status: r.status } : undefined;
+  }
 }
