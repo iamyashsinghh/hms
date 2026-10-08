@@ -132,3 +132,47 @@ export const notFutureDateTime = (label = 'Time', graceMinutes = 5) =>
  */
 export const datesInOrder = (from?: string | null, to?: string | null) => !from || !to || to >= from;
 export const END_BEFORE_START = 'End date is before start date';
+
+// ---------- friendlier default messages ----------
+
+/**
+ * Zod's built-in messages ("Too small: expected string to have >=1 characters") read badly on a form.
+ * This replaces the common ones everywhere @hms/shared is loaded (web, API, mobile).
+ * Messages given in a schema always win over these.
+ */
+z.config({
+  customError: (iss) => {
+    switch (iss.code) {
+      case 'invalid_type':
+        if (iss.input === undefined || iss.input === null || iss.input === '') return 'This field is required';
+        if (iss.expected === 'number') return 'Enter a number';
+        if (iss.expected === 'int') return 'Must be a whole number';
+        if (iss.expected === 'date') return 'Enter a valid date';
+        return undefined;
+      case 'too_small':
+        if (iss.origin === 'string') return Number(iss.minimum) <= 1 ? 'This field is required' : `Enter at least ${iss.minimum} characters`;
+        if (iss.origin === 'number') return iss.inclusive === false ? `Must be more than ${iss.minimum}` : `Must be at least ${iss.minimum}`;
+        if (iss.origin === 'array') return Number(iss.minimum) <= 1 ? 'Add at least one' : `Add at least ${iss.minimum}`;
+        return undefined;
+      case 'too_big':
+        if (iss.origin === 'string') return `Enter at most ${iss.maximum} characters`;
+        if (iss.origin === 'number') return iss.inclusive === false ? `Must be less than ${iss.maximum}` : `Cannot be more than ${iss.maximum}`;
+        if (iss.origin === 'array') return `Add at most ${iss.maximum}`;
+        return undefined;
+      case 'invalid_format':
+        if (iss.format === 'email') return 'Enter a valid email address';
+        if (iss.format === 'date') return 'Enter a valid date (YYYY-MM-DD)';
+        if (iss.format === 'datetime') return 'Enter a valid date and time';
+        if (iss.format === 'url') return 'Enter a valid URL';
+        if (iss.format === 'uuid') return 'Pick a valid record';
+        if (iss.format === 'regex') return 'Not in the right format';
+        return undefined;
+      case 'invalid_value':
+        return 'Pick one of the listed options';
+      case 'not_multiple_of':
+        return iss.divisor === 1 ? 'Must be a whole number' : undefined;
+      default:
+        return undefined;
+    }
+  },
+});

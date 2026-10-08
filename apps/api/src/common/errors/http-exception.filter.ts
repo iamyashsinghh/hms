@@ -15,6 +15,17 @@ function statusCode(status: number): string {
   return (HttpStatus[status] ?? 'error').toLowerCase();
 }
 
+/** Names the first few problems so forms without per-field errors still say what is wrong. */
+export function validationMessage(err: ZodError): string {
+  const parts = [...new Set(err.issues.map((i) => {
+    const field = i.path.filter((p) => typeof p === 'string').at(-1);
+    const generic = /^(Invalid input|Required|Too (small|big)|Invalid)/i.test(i.message);
+    return generic && field ? `${String(field)}: ${i.message}` : i.message;
+  }))];
+  if (!parts.length) return 'Some fields are invalid';
+  return parts.length > 3 ? `${parts.slice(0, 3).join('; ')} (and ${parts.length - 3} more)` : parts.join('; ');
+}
+
 /** Every error leaves the API as { error: { code, message, details?, requestId } }. */
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
@@ -29,7 +40,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     if (exception instanceof ZodError) {
       status = 400;
-      body = { code: 'validation_failed', message: 'Some fields are invalid', details: exception.issues, requestId };
+      body = { code: 'validation_failed', message: validationMessage(exception), details: exception.issues, requestId };
     } else if (exception instanceof HttpException) {
       status = exception.getStatus();
       const res = exception.getResponse();
