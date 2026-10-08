@@ -14,6 +14,7 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { PaymentStateBadge } from '@/modules/billing/collect-now';
 import { OrderStatusBadge, PriorityBadge, dateTime, patientLine, todayIso } from '@/modules/radiology/ui';
 import { cn } from '@/lib/utils';
 
@@ -162,7 +163,9 @@ export default function RadiologyWorklistPage() {
                   <TableCell className="text-sm">{o.referringDoctorName ?? '—'}</TableCell>
                   <TableCell className="text-sm">{dateTime(o.scheduledAt)}</TableCell>
                   <TableCell>
-                    <OrderStatusBadge status={o.status} />
+                    <div className="flex flex-wrap items-center gap-1">
+                      <OrderStatusBadge status={o.status} /> <PaymentStateBadge state={o.paymentState} />
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}

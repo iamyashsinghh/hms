@@ -4,7 +4,7 @@ import * as React from 'react';
 import { use } from 'react';
 import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, ArrowLeft, Ban, CheckCheck, FileText, Loader2, Pencil, Printer, ReceiptIndianRupee, Save, TestTube } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Ban, CheckCheck, FileText, Loader2, Pencil, Printer, Save, TestTube } from 'lucide-react';
 import { lab as L } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { Can, usePermission } from '@/lib/auth';
@@ -26,6 +26,7 @@ import {
   groupBySection,
   rangeText,
 } from '@/modules/lab/ui';
+import { OrderPaymentCard } from '@/modules/lab/payment-card';
 
 type Draft = Record<string, { value: string; remarks: string }>;
 
@@ -53,6 +54,8 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
     onSuccess: (o) => {
       queryClient.setQueryData(key, o);
       queryClient.invalidateQueries({ queryKey: ['lab', 'orders'], exact: false, refetchType: 'none' });
+      // Collecting a sample or billing may have put charges on the patient's account.
+      queryClient.invalidateQueries({ queryKey: ['billing', 'charges', 'patient', o.patient.id] });
     },
   });
 
@@ -117,25 +120,6 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
           <Link href={`/lab/orders/${id}/report`} className={buttonVariants({ variant: order.status === 'completed' ? 'default' : 'outline' })}>
             <FileText /> {order.status === 'completed' ? 'Report' : 'Preview report'}
           </Link>
-          {order.invoiceId ? (
-            <Can permission="billing.invoice.read" fallback={<Badge variant="outline">Bill {order.invoiceNo}</Badge>}>
-              <Link href={`/billing/invoices/${order.invoiceId}`} className={buttonVariants({ variant: 'outline' })}>
-                <ReceiptIndianRupee /> {order.invoiceNo}
-              </Link>
-            </Can>
-          ) : (
-            open && (
-              <Can permission="lab.order.create">
-                <Button
-                  variant="outline"
-                  disabled={act.isPending || unmatched.length === order.items.length}
-                  onClick={() => act.mutate(() => api.lab.orders.bill(id))}
-                >
-                  <ReceiptIndianRupee /> Create bill
-                </Button>
-              </Can>
-            )
-          )}
           {open && order.status !== 'completed' && !editing && (
             <Can permission="lab.order.create">
               <Button variant="outline" onClick={() => setEditing(true)}>
@@ -179,6 +163,23 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
       <div className="mb-4">
         <ErrorBox error={act.error ? errorMessage(act.error) : null} />
       </div>
+
+      <OrderPaymentCard
+        patientId={order.patient.id}
+        source={{ module: 'lab', refId: order.id }}
+        paymentState={order.paymentState}
+        payFirst={order.payFirst && order.samples.some((s) => s.status === 'pending')}
+        invoiceId={order.invoiceId}
+        invoiceNo={order.invoiceNo}
+        open={open}
+        step="sample"
+        billNow={{
+          permission: 'lab.order.create',
+          disabled: act.isPending || unmatched.length === order.items.length,
+          onClick: () => act.mutate(() => api.lab.orders.bill(id)),
+        }}
+        onBilled={() => queryClient.invalidateQueries({ queryKey: key })}
+      />
 
       {unmatched.length > 0 && (
         <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">

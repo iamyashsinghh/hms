@@ -15,7 +15,6 @@ import {
   Pencil,
   Play,
   Printer,
-  ReceiptIndianRupee,
   X,
 } from 'lucide-react';
 import { radiology as R, type radiology } from '@hms/shared';
@@ -29,7 +28,8 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { OrderStatusBadge, PriorityBadge, Textarea, dateTime, localInputValue, localToIso, patientLine, rupees } from '@/modules/radiology/ui';
+import { OrderPaymentCard } from '@/modules/lab/payment-card';
+import { OrderStatusBadge, PriorityBadge, Textarea, dateTime, localInputValue, localToIso, patientLine } from '@/modules/radiology/ui';
 
 type OrderWithReports = radiology.OrderWithReports;
 type Order = radiology.RadiologyOrder;
@@ -102,7 +102,7 @@ function EditOrderCard({ order, onClose }: { order: Order; onClose: () => void }
     ...(f.testId && f.testId !== order.testId ? { testId: f.testId } : {}),
   });
   const save = useOrderMutation(order.id, () => api.radiology.updateOrder(order.id, body()), onClose);
-  const testLocked = !!order.invoiceId;
+  const testLocked = !!order.invoiceId || order.paymentState === 'unpaid' || order.paymentState === 'paid';
   return (
     <Card>
       <CardHeader>
@@ -295,42 +295,27 @@ function ScanActions({ order }: { order: Order }) {
   );
 }
 
-function BillCard({ order }: { order: Order }) {
-  const canCollect = usePermission('billing.payment.collect');
-  const test = useQuery({ queryKey: ['radiology', 'test', order.testId], queryFn: () => api.radiology.test(order.testId!), enabled: !!order.testId });
-  const [mode, setMode] = React.useState<'none' | 'cash' | 'upi' | 'card'>('cash');
-  const amount = test.data?.price ?? null;
-  const bill = useOrderMutation(order.id, () => api.radiology.bill(order.id, mode !== 'none' && amount ? { payNow: { mode, amount } } : {}));
-  if (order.invoiceId) {
-    return (
-      <Row label="Bill">
-        <Link href={`/billing/invoices/${order.invoiceId}`} className="underline">
-          {order.invoiceNo ?? 'Draft bill'}
-        </Link>
-      </Row>
-    );
-  }
-  if (order.status === 'cancelled' || !order.testId) return null;
+/** What the order put on the patient's account: Collect now, the bill, or bill it now. */
+function PaymentCard({ order }: { order: Order }) {
+  const qc = useQueryClient();
+  const bill = useOrderMutation(order.id, () => api.radiology.bill(order.id, {}));
   return (
-    <Can permission="radiology.order.bill">
-      <div className="mt-3 space-y-2 border-t pt-3">
-        <p className="text-sm">Not billed yet{test.data?.serviceCode ? ' (price from billing services)' : amount != null ? `: ${rupees(amount)}` : ''}.</p>
-        <div className="flex gap-2">
-          {canCollect && !test.data?.serviceCode && (
-            <Select className="w-36" value={mode} onChange={(e) => setMode(e.target.value as typeof mode)} aria-label="Payment">
-              <option value="cash">Paid cash</option>
-              <option value="upi">Paid UPI</option>
-              <option value="card">Paid card</option>
-              <option value="none">Pay later</option>
-            </Select>
-          )}
-          <Button variant="outline" disabled={bill.isPending} onClick={() => bill.mutate(undefined)}>
-            <ReceiptIndianRupee /> Raise bill
-          </Button>
-        </div>
-        {bill.error && <p className="text-sm text-destructive">{errorMessage(bill.error)}</p>}
-      </div>
-    </Can>
+    <>
+      <OrderPaymentCard
+        className=""
+        patientId={order.patient.id}
+        source={{ module: 'radiology', refId: order.id }}
+        paymentState={order.paymentState}
+        payFirst={order.payFirst && (order.status === 'ordered' || order.status === 'scheduled')}
+        invoiceId={order.invoiceId}
+        invoiceNo={order.invoiceNo}
+        open={order.status !== 'cancelled'}
+        step="scan"
+        billNow={order.testId ? { permission: 'radiology.order.bill', disabled: bill.isPending, onClick: () => bill.mutate(undefined) } : undefined}
+        onBilled={() => void qc.invalidateQueries({ queryKey: ['radiology', 'order', order.id] })}
+      />
+      {bill.error && <p className="text-sm text-destructive">{errorMessage(bill.error)}</p>}
+    </>
   );
 }
 
@@ -589,9 +574,9 @@ export default function RadiologyOrderPage({ params }: { params: Promise<{ id: s
                 </Row>
               )}
               {o.cancelReason && <Row label="Cancelled">{o.cancelReason}</Row>}
-              <BillCard order={o} />
             </CardContent>
           </Card>
+          <PaymentCard order={o} />
           {editable && editing && <EditOrderCard order={o} onClose={() => setEditing(false)} />}
           {!o.testId && o.status !== 'cancelled' && !editing && (
             <Can permission="radiology.order.create">

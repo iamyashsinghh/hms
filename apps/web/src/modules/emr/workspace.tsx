@@ -3,7 +3,7 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Loader2, Plus, Save, Star, Trash2, X } from 'lucide-react';
-import { emr as E, todayIso, type emr } from '@hms/shared';
+import { emr as E, todayIso, type billing, type emr } from '@hms/shared';
 import { api, ApiError, errorMessage } from '@/lib/api';
 import { validate, type FieldErrors } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { formatINR, useDebounced } from '@/modules/billing/ui';
 import { Textarea, TIMING_LABEL, formatTime, vitalsLine } from './ui';
 
 type Enc = emr.Encounter;
@@ -576,13 +577,64 @@ export function PrescriptionCard({ enc, editable }: { enc: Enc; editable: boolea
 
 // ---------- orders ----------
 
-export function OrdersCard({ enc, editable }: { enc: Enc; editable: boolean }) {
-  const [rows, setRows] = React.useState<emr.OrderInput[]>(() =>
-    enc.orders.map((o) => ({ kind: o.kind, name: o.name, code: o.code ?? undefined, priority: o.priority, notes: o.notes ?? undefined })),
+type OrderDraft = { kind: emr.OrderInput['kind']; name: string; priority: 'routine' | 'urgent' };
+
+const toInput = (o: emr.Order): emr.OrderInput => ({
+  kind: o.kind,
+  name: o.name,
+  code: o.code ?? undefined,
+  serviceCode: o.serviceCode ?? undefined,
+  priority: o.priority,
+  notes: o.notes ?? undefined,
+});
+
+/** Procedure search over the billing service master (category "procedure"), so the procedure has a price. */
+function ProcedureSearch({ value, onChange, onPick }: { value: string; onChange: (v: string) => void; onPick: (s: billing.Service) => void }) {
+  const canSearch = usePermission('billing.service.read');
+  const term = useDebounced(value.trim(), 250);
+  const { data } = useQuery({
+    queryKey: ['billing', 'services', 'procedure', term],
+    queryFn: () => api.billing.services.list({ category: 'procedure', q: term, active: 'true', pageSize: 10 }),
+    enabled: canSearch && term.length >= 2,
+    staleTime: 60_000,
+  });
+  const hits = term.length >= 2 ? (data?.items ?? []) : [];
+  return (
+    <div className="relative sm:col-span-4">
+      <Input placeholder="Search procedures (e.g. dressing)" maxLength={200} value={value} onChange={(e) => onChange(e.target.value)} />
+      {hits.length > 0 && (
+        <ul className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-md border bg-card shadow-lg">
+          {hits.map((s) => (
+            <li key={s.id}>
+              <button type="button" className="flex w-full justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-muted" onClick={() => onPick(s)}>
+                <span>
+                  {s.name} <span className="font-mono text-xs text-muted-foreground">{s.code}</span>
+                </span>
+                <span className="tabular-nums text-muted-foreground">{formatINR(s.basePrice)}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
-  const [draft, setDraft] = React.useState<{ kind: emr.OrderInput['kind']; name: string; priority: 'routine' | 'urgent' }>({ kind: 'lab', name: '', priority: 'routine' });
+}
+
+export function OrdersCard({ enc, editable }: { enc: Enc; editable: boolean }) {
+  const [rows, setRows] = React.useState<emr.OrderInput[]>(() => enc.orders.map(toInput));
+  const [draft, setDraft] = React.useState<OrderDraft>({ kind: 'lab', name: '', priority: 'routine' });
   const save = useEncounterMutation(enc.id, (body: emr.OrdersInput) => api.emr.setOrders(enc.id, body));
-  const dirty = rows.length !== enc.orders.length || rows.some((r, i) => r.name !== enc.orders[i]?.name || r.priority !== enc.orders[i]?.priority);
+  const cancel = useEncounterMutation(enc.id, ({ orderId, reason }: { orderId: string; reason: string }) => api.emr.cancelOrder(enc.id, orderId, { reason }));
+  const canWrite = usePermission('emr.encounter.write');
+  const dirty =
+    rows.length !== enc.orders.length ||
+    rows.some((r, i) => r.name !== enc.orders[i]?.name || r.priority !== enc.orders[i]?.priority || (r.serviceCode ?? null) !== enc.orders[i]?.serviceCode);
+  const add = (row: emr.OrderInput) => {
+    setRows((r) => [...r, row]);
+    setDraft((d) => ({ ...d, name: '' }));
+  };
+  // Once signed the orders are fixed; show the server's copy with each line's progress.
+  const shown: (emr.OrderInput & { id?: string; status?: string })[] = editable ? rows : enc.orders.map((o) => ({ ...toInput(o), id: o.id, status: o.status }));
 
   return (
     <SectionCard
@@ -595,16 +647,34 @@ export function OrdersCard({ enc, editable }: { enc: Enc; editable: boolean }) {
         )
       }
     >
-      {rows.length === 0 && <p className="text-sm text-muted-foreground">No orders.</p>}
+      {shown.length === 0 && <p className="text-sm text-muted-foreground">No orders.</p>}
       <ul className="space-y-1.5 text-sm">
-        {rows.map((o, i) => (
-          <li key={i} className="flex items-center gap-2">
+        {shown.map((o, i) => (
+          <li key={o.id ?? i} className="flex flex-wrap items-center gap-2">
             <Badge variant="secondary">{o.kind}</Badge>
-            <span>{o.name}</span>
+            <span className={o.status === 'cancelled' ? 'line-through' : undefined}>{o.name}</span>
+            {o.serviceCode && <span className="font-mono text-xs text-muted-foreground">{o.serviceCode}</span>}
+            {o.kind === 'procedure' && !o.serviceCode && <span className="text-xs text-muted-foreground">(not in the service list, not charged)</span>}
             {o.priority === 'urgent' && <Badge variant="destructive">Urgent</Badge>}
+            {o.status && o.status !== 'ordered' && <Badge variant="outline">{o.status.replace('_', ' ')}</Badge>}
             {editable && (
               <Button size="icon" variant="ghost" aria-label="Remove" onClick={() => setRows((r) => r.filter((_, j) => j !== i))}>
                 <X />
+              </Button>
+            )}
+            {!editable && enc.status === 'completed' && canWrite && o.id && o.kind === 'procedure' && o.status === 'ordered' && (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={cancel.isPending}
+                onClick={() => {
+                  const reason = window.prompt('Why is this procedure not being done?');
+                  if (reason === null) return;
+                  if (reason.trim().length >= 3) cancel.mutate({ orderId: o.id!, reason: reason.trim() });
+                  else window.alert('Give a reason of at least 3 characters');
+                }}
+              >
+                Cancel
               </Button>
             )}
           </li>
@@ -616,8 +686,7 @@ export function OrdersCard({ enc, editable }: { enc: Enc; editable: boolean }) {
           onSubmit={(e) => {
             e.preventDefault();
             if (!draft.name.trim()) return;
-            setRows((r) => [...r, { ...draft, name: draft.name.trim() }]);
-            setDraft((d) => ({ ...d, name: '' }));
+            add({ ...draft, name: draft.name.trim() });
           }}
         >
           <Select className="sm:col-span-3" value={draft.kind} onChange={(e) => setDraft((d) => ({ ...d, kind: e.target.value as typeof d.kind }))}>
@@ -627,7 +696,15 @@ export function OrdersCard({ enc, editable }: { enc: Enc; editable: boolean }) {
               </option>
             ))}
           </Select>
-          <Input className="sm:col-span-4" placeholder="Test / scan / procedure (e.g. CBC)" maxLength={200} value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} />
+          {draft.kind === 'procedure' ? (
+            <ProcedureSearch
+              value={draft.name}
+              onChange={(name) => setDraft((d) => ({ ...d, name }))}
+              onPick={(s) => add({ kind: 'procedure', name: s.name, serviceCode: s.code, priority: draft.priority })}
+            />
+          ) : (
+            <Input className="sm:col-span-4" placeholder="Test / scan (e.g. CBC)" maxLength={200} value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} />
+          )}
           <Select className="sm:col-span-3" value={draft.priority} onChange={(e) => setDraft((d) => ({ ...d, priority: e.target.value as 'routine' | 'urgent' }))}>
             <option value="routine">Routine</option>
             <option value="urgent">Urgent</option>
@@ -637,7 +714,7 @@ export function OrdersCard({ enc, editable }: { enc: Enc; editable: boolean }) {
           </Button>
         </form>
       )}
-      <ErrorLine error={save.error} />
+      <ErrorLine error={save.error ?? cancel.error} />
     </SectionCard>
   );
 }
