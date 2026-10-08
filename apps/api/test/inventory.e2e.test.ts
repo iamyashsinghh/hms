@@ -314,3 +314,81 @@ describe('access control', () => {
     expect((await ok(call(admin, 'GET', `/purchase-orders/${po.id}`))).notes).toBeNull();
   });
 });
+
+describe('validation', () => {
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  const addDays = (d: string, n: number) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+  const msg = (res: { json: () => unknown }) => {
+    const e = (res.json() as { error: { message: string; details?: unknown } }).error;
+    return [e.message, ...(Array.isArray(e.details) ? (e.details as { message: string }[]).map((d) => d.message) : [])].join(' | ');
+  };
+
+  it('checks vendor identifiers and contact details', async () => {
+    const bad = await call(admin, 'POST', '/vendors', { code: `BAD${run}`, name: 'Bad Vendor', gstin: '27ABC', pan: '1234', phone: 'abc', email: 'x@' });
+    expect(bad.statusCode).toBe(400);
+    for (const m of ['valid 15-character GSTIN', 'valid PAN', 'valid phone number', 'valid email']) expect(msg(bad)).toContain(m);
+
+    const space = await call(admin, 'POST', '/vendors', { code: 'MS 01', name: 'Spacey' });
+    expect(msg(space)).toContain('no spaces');
+
+    const mismatch = await call(admin, 'POST', '/vendors', { code: `MM${run}`, name: 'Mismatch', gstin: '27AAPFU0939F1ZV', pan: 'ABCDE1234F' });
+    expect(mismatch.statusCode).toBe(400);
+    expect(msg(mismatch)).toContain('PAN does not match the GSTIN');
+
+    const blanks = await call(admin, 'POST', '/vendors', { code: `BL${run}`, name: 'Blank Fields', phone: '', email: '', gstin: '', pan: '' });
+    expect(blanks.statusCode, blanks.body).toBe(201);
+    expect(blanks.json()).toMatchObject({ phone: null, email: null, gstin: null, pan: null });
+  });
+
+  it('refuses past needed-by and expected dates, duplicate items and bad quantities', async () => {
+    const item = await newItem();
+    const past = await call(pharmacist, 'POST', '/requisitions', { storeId: mainStoreId, neededBy: addDays(today, -1), lines: [{ itemId: item.id, qty: 5 }] });
+    expect(past.statusCode).toBe(400);
+    expect(msg(past)).toContain('Needed-by date cannot be in the past');
+
+    const dup = await call(pharmacist, 'POST', '/requisitions', { storeId: mainStoreId, lines: [{ itemId: item.id, qty: 5 }, { itemId: item.id, qty: 2 }] });
+    expect(dup.statusCode).toBe(400);
+    expect(msg(dup)).toContain('listed twice');
+
+    const frac = await call(pharmacist, 'POST', '/requisitions', { storeId: mainStoreId, lines: [{ itemId: item.id, qty: 1.5 }] });
+    expect(msg(frac)).toContain('whole number');
+
+    const poPast = await call(admin, 'POST', '/purchase-orders', { vendorId, storeId: mainStoreId, expectedDate: addDays(today, -3), lines: [{ itemId: item.id, qty: 1, rate: 1 }] });
+    expect(poPast.statusCode).toBe(400);
+    expect(msg(poPast)).toContain('Expected delivery date cannot be in the past');
+
+    const rate = await call(admin, 'POST', '/purchase-orders', { vendorId, storeId: mainStoreId, lines: [{ itemId: item.id, qty: 1, rate: 1.005 }] });
+    expect(msg(rate)).toContain('2 decimal');
+
+    const draft = await ok(call(admin, 'POST', '/purchase-orders', { vendorId, storeId: mainStoreId, expectedDate: addDays(today, 7), lines: [{ itemId: item.id, qty: 1, rate: 1 }] }), 201);
+    const edit = await call(admin, 'PATCH', `/purchase-orders/${draft.id}`, { expectedDate: addDays(today, -1) });
+    expect(edit.statusCode).toBe(400);
+    expect(edit.json().error.code).toBe('expected_date_past');
+    // Saving the same date again is fine.
+    expect((await call(admin, 'PATCH', `/purchase-orders/${draft.id}`, { expectedDate: addDays(today, 7), notes: 'ok' })).statusCode).toBe(200);
+  });
+
+  it('refuses expired batches, future invoice dates and MRP below the rate on a GRN', async () => {
+    const item = await newItem();
+    const po = await approvedPo(item.id, 10, 10);
+    const lineId = po.lines[0].id;
+    const expired = await call(admin, 'POST', '/grns', { purchaseOrderId: po.id, lines: [{ poLineId: lineId, qty: 1, batchNo: 'OLD1', expiryDate: addDays(today, -1) }] });
+    expect(expired.statusCode).toBe(400);
+    expect(msg(expired)).toContain('already expired');
+
+    const invoice = await call(admin, 'POST', '/grns', { purchaseOrderId: po.id, invoiceDate: addDays(today, 1), lines: [{ poLineId: lineId, qty: 1 }] });
+    expect(msg(invoice)).toContain('Invoice date cannot be in the future');
+
+    const cheap = await call(admin, 'POST', '/grns', { purchaseOrderId: po.id, lines: [{ poLineId: lineId, qty: 1, mrp: 5 }] });
+    expect(cheap.statusCode).toBe(400);
+    expect(cheap.json().error.code).toBe('mrp_below_rate');
+
+    const good = await call(admin, 'POST', '/grns', { purchaseOrderId: po.id, invoiceNo: '', invoiceDate: today, lines: [{ poLineId: lineId, qty: 2, batchNo: '', expiryDate: addDays(today, 365), mrp: 12 }] });
+    expect(good.statusCode, good.body).toBe(201);
+    expect(good.json().lines[0]).toMatchObject({ batchNo: 'NA', mrp: 12 });
+
+    const noReason = await call(admin, 'POST', `/grns/${good.json().id}/returns`, { reason: ' ', lines: [{ grnLineId: good.json().lines[0].id, qty: 1 }] });
+    expect(noReason.statusCode).toBe(400);
+    expect(msg(noReason)).toContain('reason');
+  });
+});

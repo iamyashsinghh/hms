@@ -3,8 +3,9 @@
 import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
-import { hr as H, setup as S } from '@hms/shared';
+import { hr as H, setup as S, todayIso } from '@hms/shared';
 import { api } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { useAuth, usePermission } from '@/lib/auth';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -146,6 +147,7 @@ export function EmployeeForm({
   const canPay = usePermission('hr.payroll.manage');
   const [f, setF] = React.useState(initial);
   const [staff, setStaff] = React.useState<S.StaffMember | null>(null);
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const set = <K extends keyof EmployeeFormValues>(k: K, v: EmployeeFormValues[K]) => setF((x) => ({ ...x, [k]: v }));
   const { data: departments } = useQuery({ queryKey: ['hr', 'departments'], queryFn: () => api.hr.departments() });
   const gross = Number(f.basic || 0) + Number(f.hra || 0) + Number(f.otherAllowances || 0);
@@ -173,10 +175,15 @@ export function EmployeeForm({
       className="space-y-6"
       onSubmit={(e) => {
         e.preventDefault();
+        // Same rules as the API, so mistakes show next to the field before saving.
+        const body = { ...toBody(f, canPay), employeeCode: isNew ? f.employeeCode || undefined : undefined };
+        const r = validate(isNew ? H.createEmployeeSchema : H.updateEmployeeSchema, body);
+        setErrors(r.errors ?? {});
+        if (r.errors) return;
         onSubmit(f, staff);
       }}
     >
-      <ErrorBox error={error} />
+      <ErrorBox error={error ?? (Object.keys(errors).length ? 'Please correct the highlighted fields.' : null)} />
       <Card>
         <CardHeader>
           <CardTitle>Person</CardTitle>
@@ -187,13 +194,13 @@ export function EmployeeForm({
               <StaffPicker onPick={pick} />
             </div>
           )}
-          <Field id="name" label="Full name *" className="sm:col-span-2">
-            <Input id="name" value={f.fullName} onChange={(e) => set('fullName', e.target.value)} required />
+          <Field id="name" error={errors.fullName} label="Full name *" className="sm:col-span-2">
+            <Input id="name" maxLength={150} value={f.fullName} onChange={(e) => set('fullName', e.target.value)} required />
           </Field>
-          <Field id="code" label={isNew ? 'Employee code (blank = automatic)' : 'Employee code'}>
+          <Field id="code" error={errors.employeeCode} label={isNew ? 'Employee code (blank = automatic)' : 'Employee code'}>
             <Input id="code" value={f.employeeCode} disabled={!isNew} onChange={(e) => set('employeeCode', e.target.value.toUpperCase())} placeholder="EMP00001" />
           </Field>
-          <Field id="gender" label="Gender">
+          <Field id="gender" error={errors.gender} label="Gender">
             <Select id="gender" value={f.gender} onChange={(e) => set('gender', e.target.value)}>
               <option value="">—</option>
               <option value="female">Female</option>
@@ -201,22 +208,22 @@ export function EmployeeForm({
               <option value="other">Other</option>
             </Select>
           </Field>
-          <Field id="dob" label="Date of birth">
-            <Input id="dob" type="date" value={f.dateOfBirth} onChange={(e) => set('dateOfBirth', e.target.value)} />
+          <Field id="dob" error={errors.dateOfBirth} label="Date of birth">
+            <Input id="dob" type="date" min={todayIso(-150 * 365)} max={todayIso()} value={f.dateOfBirth} onChange={(e) => set('dateOfBirth', e.target.value)} />
           </Field>
-          <Field id="mobile" label="Mobile">
-            <Input id="mobile" inputMode="numeric" maxLength={10} value={f.mobile} onChange={(e) => set('mobile', e.target.value.replace(/\D/g, ''))} />
+          <Field id="mobile" error={errors.mobile} label="Mobile">
+            <Input id="mobile" inputMode="numeric" maxLength={10} placeholder="10 digits" value={f.mobile} onChange={(e) => set('mobile', e.target.value.replace(/\D/g, ''))} />
           </Field>
-          <Field id="email" label="Email">
-            <Input id="email" type="email" value={f.email} onChange={(e) => set('email', e.target.value)} />
+          <Field id="email" error={errors.email} label="Email">
+            <Input id="email" type="email" maxLength={254} value={f.email} onChange={(e) => set('email', e.target.value)} />
           </Field>
-          <Field id="ecn" label="Emergency contact">
+          <Field id="ecn" error={errors.emergencyContactName} label="Emergency contact">
             <Input id="ecn" value={f.emergencyContactName} onChange={(e) => set('emergencyContactName', e.target.value)} placeholder="Name" />
           </Field>
-          <Field id="ecp" label="Emergency phone">
-            <Input id="ecp" value={f.emergencyContactPhone} onChange={(e) => set('emergencyContactPhone', e.target.value)} />
+          <Field id="ecp" error={errors.emergencyContactPhone} label="Emergency phone">
+            <Input id="ecp" type="tel" inputMode="tel" maxLength={20} value={f.emergencyContactPhone} onChange={(e) => set('emergencyContactPhone', e.target.value)} />
           </Field>
-          <Field id="addr" label="Address" className="sm:col-span-3">
+          <Field id="addr" error={errors.address} label="Address" className="sm:col-span-3">
             <Input id="addr" value={f.address} onChange={(e) => set('address', e.target.value)} />
           </Field>
           {f.userId && <p className="text-xs text-muted-foreground sm:col-span-3">Linked to a staff login, so this person can punch in, apply for leave and see payslips under My HR.</p>}
@@ -237,10 +244,10 @@ export function EmployeeForm({
               ))}
             </Select>
           </Field>
-          <Field id="desig" label="Designation">
+          <Field id="desig" error={errors.designation} label="Designation">
             <Input id="desig" value={f.designation} onChange={(e) => set('designation', e.target.value)} placeholder="e.g. Staff Nurse" />
           </Field>
-          <Field id="dept" label="Department / ward">
+          <Field id="dept" error={errors.department} label="Department / ward">
             <Input id="dept" list="hr-departments" value={f.department} onChange={(e) => set('department', e.target.value)} />
             <datalist id="hr-departments">
               {departments?.map((d) => <option key={d} value={d} />)}
@@ -255,8 +262,8 @@ export function EmployeeForm({
               ))}
             </Select>
           </Field>
-          <Field id="doj" label="Date of joining *">
-            <Input id="doj" type="date" value={f.dateOfJoining} onChange={(e) => set('dateOfJoining', e.target.value)} required />
+          <Field id="doj" error={errors.dateOfJoining} label="Date of joining *">
+            <Input id="doj" type="date" min={f.dateOfBirth || '1950-01-01'} max={todayIso(366)} value={f.dateOfJoining} onChange={(e) => set('dateOfJoining', e.target.value)} required />
           </Field>
           <Field id="fac" label="Works at">
             <Select id="fac" value={f.facilityId} onChange={(e) => set('facilityId', e.target.value)}>
@@ -277,13 +284,13 @@ export function EmployeeForm({
             <CardTitle>Salary, statutory and bank</CardTitle>
           </CardHeader>
           <CardContent className="grid gap-4 sm:grid-cols-4">
-            <Field id="basic" label="Basic (₹/month)">
+            <Field id="basic" error={errors.basic} label="Basic (₹/month)">
               <Input id="basic" type="number" min={0} step="0.01" value={f.basic} onChange={(e) => set('basic', e.target.value)} />
             </Field>
-            <Field id="hra" label="HRA (₹/month)">
+            <Field id="hra" error={errors.hra} label="HRA (₹/month)">
               <Input id="hra" type="number" min={0} step="0.01" value={f.hra} onChange={(e) => set('hra', e.target.value)} />
             </Field>
-            <Field id="allow" label="Other allowances (₹/month)">
+            <Field id="allow" error={errors.otherAllowances} label="Other allowances (₹/month)">
               <Input id="allow" type="number" min={0} step="0.01" value={f.otherAllowances} onChange={(e) => set('otherAllowances', e.target.value)} />
             </Field>
             <div className="pt-7 text-sm">
@@ -295,29 +302,29 @@ export function EmployeeForm({
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={f.esiApplicable} onChange={(e) => set('esiApplicable', e.target.checked)} /> ESI (gross up to ₹21,000)
             </label>
-            <Field id="pt" label="Professional tax (₹/month)">
+            <Field id="pt" error={errors.professionalTax} label="Professional tax (₹/month)">
               <Input id="pt" type="number" min={0} step="0.01" value={f.professionalTax} onChange={(e) => set('professionalTax', e.target.value)} />
             </Field>
-            <Field id="tds" label="TDS (₹/month)">
+            <Field id="tds" error={errors.tdsMonthly} label="TDS (₹/month)">
               <Input id="tds" type="number" min={0} step="0.01" value={f.tdsMonthly} onChange={(e) => set('tdsMonthly', e.target.value)} />
             </Field>
-            <Field id="pan" label="PAN">
+            <Field id="pan" error={errors.pan} label="PAN">
               <Input id="pan" maxLength={10} value={f.pan} onChange={(e) => set('pan', e.target.value.toUpperCase())} />
             </Field>
-            <Field id="uan" label="UAN (PF)">
+            <Field id="uan" error={errors.uan} label="UAN (PF)">
               <Input id="uan" inputMode="numeric" maxLength={12} value={f.uan} onChange={(e) => set('uan', e.target.value.replace(/\D/g, ''))} />
             </Field>
-            <Field id="esic" label="ESIC number">
-              <Input id="esic" value={f.esicNo} onChange={(e) => set('esicNo', e.target.value)} />
+            <Field id="esic" error={errors.esicNo} label="ESIC number">
+              <Input id="esic" inputMode="numeric" maxLength={17} value={f.esicNo} onChange={(e) => set('esicNo', e.target.value.replace(/\D/g, ''))} />
             </Field>
             <div />
-            <Field id="acct" label="Bank account number">
-              <Input id="acct" inputMode="numeric" value={f.bankAccountNo} onChange={(e) => set('bankAccountNo', e.target.value.replace(/\D/g, ''))} />
+            <Field id="acct" error={errors.bankAccountNo} label="Bank account number">
+              <Input id="acct" inputMode="numeric" maxLength={18} value={f.bankAccountNo} onChange={(e) => set('bankAccountNo', e.target.value.replace(/\D/g, ''))} />
             </Field>
-            <Field id="ifsc" label="IFSC">
+            <Field id="ifsc" error={errors.bankIfsc} label="IFSC">
               <Input id="ifsc" maxLength={11} value={f.bankIfsc} onChange={(e) => set('bankIfsc', e.target.value.toUpperCase())} />
             </Field>
-            <Field id="bank" label="Bank name" className="sm:col-span-2">
+            <Field id="bank" error={errors.bankName} label="Bank name" className="sm:col-span-2">
               <Input id="bank" value={f.bankName} onChange={(e) => set('bankName', e.target.value)} />
             </Field>
           </CardContent>

@@ -132,11 +132,12 @@ export function Textarea({ className, ...props }: React.ComponentProps<'textarea
 }
 
 /** Small labelled field wrapper. */
-export function Field({ id, label, children, className }: { id?: string; label: string; children: React.ReactNode; className?: string }) {
+export function Field({ id, label, children, className, error }: { id?: string; label: string; children: React.ReactNode; className?: string; error?: string }) {
   return (
     <div className={className}>
       <Label htmlFor={id}>{label}</Label>
       <div className="mt-2">{children}</div>
+      {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
     </div>
   );
 }

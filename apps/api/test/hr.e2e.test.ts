@@ -374,3 +374,95 @@ describe('isolation', () => {
     expect(runs.find((r: { month: string; employeeCount: number }) => r.month === lastMonth && r.employeeCount === 2)).toBeUndefined();
   });
 });
+
+describe('validation', () => {
+  /** All issue messages (the summary message is shortened when there are many). */
+  const msg = (res: { json: () => { error: { message: string; details?: { message: string }[] } } }) => {
+    const e = res.json().error;
+    return [e.message, ...(Array.isArray(e.details) ? e.details.map((d) => d.message) : [])].join(' | ');
+  };
+
+  it('refuses bad employee identifiers and dates with clear messages', async () => {
+    const bad = await call(hrManager, 'POST', '/hr/employees', {
+      fullName: 'Bad Fields', dateOfJoining: '2025-01-01', mobile: '12345', pan: 'ABC', uan: '123', bankIfsc: 'SBIN123', email: 'not-an-email', emergencyContactPhone: 'abc',
+    });
+    expect(bad.statusCode).toBe(400);
+    for (const m of ['10-digit Indian mobile', 'valid PAN', 'UAN is 12 digits', 'valid 11-character IFSC', 'valid email', 'valid phone number']) expect(msg(bad)).toContain(m);
+
+    const futureDob = await call(hrManager, 'POST', '/hr/employees', { fullName: 'Future Born', dateOfJoining: '2025-01-01', dateOfBirth: addDays(today, 2) });
+    expect(futureDob.statusCode).toBe(400);
+    expect(msg(futureDob)).toContain('Date of birth cannot be in the future');
+
+    const child = await call(hrManager, 'POST', '/hr/employees', { fullName: 'Too Young', dateOfJoining: '2025-01-01', dateOfBirth: '2015-06-01' });
+    expect(child.statusCode).toBe(400);
+    expect(msg(child)).toContain('at least 14 years old');
+
+    const farJoin = await call(hrManager, 'POST', '/hr/employees', { fullName: 'Far Future', dateOfJoining: addDays(today, 400) });
+    expect(farJoin.statusCode).toBe(400);
+    expect(msg(farJoin)).toContain('more than a year ahead');
+
+    const digits = await call(hrManager, 'POST', '/hr/employees', { fullName: '12345', dateOfJoining: '2025-01-01' });
+    expect(digits.statusCode).toBe(400);
+  });
+
+  it('accepts a +91 mobile and blank optional fields, and checks exit and birth dates against the record', async () => {
+    const ok = await call(hrManager, 'POST', '/hr/employees', {
+      fullName: 'Valid Person', dateOfJoining: '2025-01-01', dateOfBirth: '1990-04-12', mobile: '+91 98111 00077', email: '', pan: '', emergencyContactPhone: '020-2612 3456',
+    });
+    expect(ok.statusCode, ok.body).toBe(201);
+    expect(ok.json().mobile).toBe('9811100077');
+    const id = ok.json().id;
+
+    const early = await call(hrManager, 'PATCH', `/hr/employees/${id}`, { status: 'exited', dateOfExit: '2024-12-31' });
+    expect(early.statusCode).toBe(400);
+    expect(msg(early)).toContain('Exit date cannot be before the joining date');
+
+    // Only the joining date is sent; the stored date of birth makes the person 10 at joining.
+    const young = await call(hrManager, 'PATCH', `/hr/employees/${id}`, { dateOfJoining: '2000-05-01' });
+    expect(young.statusCode).toBe(400);
+    expect(msg(young)).toContain('at least 14 years old');
+
+    const exited = await call(hrManager, 'PATCH', `/hr/employees/${id}`, { status: 'exited', dateOfExit: '2025-06-30' });
+    expect(exited.statusCode, exited.body).toBe(200);
+    const backdated = await call(hrManager, 'PATCH', `/hr/employees/${id}`, { dateOfJoining: '2025-07-01' });
+    expect(backdated.statusCode).toBe(400);
+  });
+
+  it('checks licence, shift, attendance and leave dates', async () => {
+    const lic = await call(hrManager, 'POST', `/hr/employees/${nurseEmpId}/licences`, { kind: 'bls', number: 'BLS-X', validFrom: '2025-01-10', validUntil: '2025-01-01' });
+    expect(lic.statusCode).toBe(400);
+    expect(msg(lic)).toContain('Valid until date is before the valid from date');
+    const futureFrom = await call(hrManager, 'POST', `/hr/employees/${nurseEmpId}/licences`, { kind: 'bls', number: 'BLS-Y', validFrom: addDays(today, 5) });
+    expect(futureFrom.statusCode).toBe(400);
+
+    const same = await call(hrManager, 'POST', '/hr/shifts', { code: 'Z1', name: 'Zero', startTime: '10:00', endTime: '10:00' });
+    expect(same.statusCode).toBe(400);
+    expect(msg(same)).toContain('End time must be different from start time');
+    const longBreak = await call(hrManager, 'POST', '/hr/shifts', { code: 'Z2', name: 'Short', startTime: '10:00', endTime: '11:00', breakMinutes: 90 });
+    expect(longBreak.statusCode).toBe(400);
+    expect(msg(longBreak)).toContain('Break must be shorter than the shift');
+
+    const tomorrow = await call(hrManager, 'PUT', '/hr/attendance', { date: addDays(today, 1), rows: [{ employeeId: nurseEmpId, status: 'present' }] });
+    expect(tomorrow.statusCode).toBe(400);
+    expect(msg(tomorrow)).toContain('Attendance date cannot be in the future');
+    const hourIST = Number(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' }));
+    if (hourIST < 23) {
+      const later = await call(hrManager, 'PUT', '/hr/attendance', { date: today, rows: [{ employeeId: wardBoyId, status: 'present', checkIn: '23:55' }] });
+      expect(later.statusCode).toBe(400);
+      expect(later.json().error.code).toBe('future_time');
+    }
+
+    const types = (await call(nurse, 'GET', '/hr/leave-types')).json() as { id: string; code: string }[];
+    const sl = types.find((t) => t.code === 'SL')!;
+    const old = await call(nurse, 'POST', '/hr/me/leaves', { leaveTypeId: sl.id, fromDate: addDays(today, -45), toDate: addDays(today, -45) });
+    expect(old.statusCode).toBe(400);
+    expect(old.json().error.code).toBe('leave_too_old');
+    const backwards = await call(nurse, 'POST', '/hr/me/leaves', { leaveTypeId: sl.id, fromDate: addDays(today, 5), toDate: addDays(today, 4) });
+    expect(backwards.statusCode).toBe(400);
+    expect(msg(backwards)).toContain('To date must be on or after from date');
+
+    const quota = await call(hrManager, 'POST', '/hr/leave-types', { code: 'HQ', name: 'Odd quota', annualQuota: 2.3 });
+    expect(quota.statusCode).toBe(400);
+    expect(msg(quota)).toContain('half days');
+  });
+});

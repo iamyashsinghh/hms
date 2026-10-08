@@ -4,7 +4,9 @@ import * as React from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
+import { inventory, todayIso } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -12,7 +14,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { inr, lineTotal, LinesEditor, linesValid, newLine, StoreSelect, useStores, type QtyLine } from '@/modules/inventory/ui';
+import { formErrorMessage, inr, lineTotal, LinesEditor, linesValid, newLine, StoreSelect, useStores, type QtyLine } from '@/modules/inventory/ui';
 
 export default function NewPurchaseOrderPage() {
   return (
@@ -33,6 +35,15 @@ function NewPurchaseOrder() {
   const [expectedDate, setExpectedDate] = React.useState('');
   const [terms, setTerms] = React.useState('');
   const [lines, setLines] = React.useState<QtyLine[]>([]);
+  const [formError, setFormError] = React.useState<string | null>(null);
+  const body = () => ({
+    vendorId,
+    storeId,
+    requisitionId,
+    expectedDate: expectedDate || undefined,
+    terms: terms || undefined,
+    lines: lines.map((l) => ({ itemId: l.itemId, qty: Number(l.qty), rate: Number(l.rate), gstRate: l.gstRate })),
+  });
 
   const vendors = useQuery({ queryKey: ['inventory', 'vendors', 'active'], queryFn: () => api.inventory.vendors.list({ pageSize: 200 }), enabled: canOrder });
   const requisition = useQuery({
@@ -52,15 +63,7 @@ function NewPurchaseOrder() {
   }, [requisition.data]);
 
   const save = useMutation({
-    mutationFn: () =>
-      api.inventory.purchaseOrders.create({
-        vendorId,
-        storeId,
-        requisitionId,
-        expectedDate: expectedDate || undefined,
-        terms: terms || undefined,
-        lines: lines.map((l) => ({ itemId: l.itemId, qty: Number(l.qty), rate: Number(l.rate), gstRate: l.gstRate })),
-      }),
+    mutationFn: () => api.inventory.purchaseOrders.create(body()),
     onSuccess: (po) => {
       queryClient.invalidateQueries({ queryKey: ['inventory'] });
       router.push(`/inventory/purchase-orders/${po.id}`);
@@ -77,7 +80,9 @@ function NewPurchaseOrder() {
         className="space-y-6"
         onSubmit={(e) => {
           e.preventDefault();
-          save.mutate();
+          const r = validate(inventory.createPurchaseOrderSchema, body());
+          setFormError(formErrorMessage(r.errors, lines));
+          if (!r.errors) save.mutate();
         }}
       >
         <Card>
@@ -104,11 +109,11 @@ function NewPurchaseOrder() {
             </div>
             <div>
               <Label htmlFor="po-date">Expected on</Label>
-              <Input id="po-date" type="date" className="mt-2" value={expectedDate} onChange={(e) => setExpectedDate(e.target.value)} />
+              <Input id="po-date" type="date" className="mt-2" min={todayIso()} max={todayIso(366)} value={expectedDate} onChange={(e) => setExpectedDate(e.target.value)} />
             </div>
             <div className="sm:col-span-4">
               <Label htmlFor="po-terms">Terms</Label>
-              <Input id="po-terms" className="mt-2" placeholder="Delivery, payment, warranty…" value={terms} onChange={(e) => setTerms(e.target.value)} />
+              <Input id="po-terms" className="mt-2" maxLength={1000} placeholder="Delivery, payment, warranty…" value={terms} onChange={(e) => setTerms(e.target.value)} />
             </div>
           </CardContent>
         </Card>
@@ -120,7 +125,7 @@ function NewPurchaseOrder() {
             <LinesEditor lines={lines} setLines={setLines} withRate />
           </CardContent>
         </Card>
-        {save.error && <p className="text-sm text-destructive">{errorMessage(save.error)}</p>}
+        {(formError || save.error) && <p className="text-sm text-destructive">{formError ?? errorMessage(save.error)}</p>}
         <div className="flex items-center justify-end gap-4">
           {lines.length > 0 && <span className="text-sm text-muted-foreground">Total incl. GST {inr(total)}</span>}
           <Button type="submit" disabled={!vendorId || !storeId || !linesValid(lines, true) || save.isPending}>

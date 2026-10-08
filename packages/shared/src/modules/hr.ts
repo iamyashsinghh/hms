@@ -1,5 +1,17 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import {
+  datesInOrder,
+  dateOfBirth as dobDate,
+  emailAddress,
+  ifsc,
+  indianMobile,
+  isoDate as validDate,
+  pan as panNumber,
+  pastOrTodayDate,
+  phoneNumber,
+  todayIso,
+} from '../validation';
 
 /**
  * HR & Roster: permissions and API contracts (Zod schemas + types).
@@ -49,14 +61,15 @@ export const hrModule = defineModule({
 // ---------- shared bits ----------
 
 const money = z.coerce
-  .number()
-  .min(0)
-  .max(99_999_999.99)
+  .number({ error: 'Enter an amount' })
+  .refine(Number.isFinite, 'Enter an amount')
+  .min(0, 'Amount cannot be negative')
+  .max(99_999_999.99, 'Amount is too large')
   .refine((v) => Math.abs(Math.round(v * 100) - v * 100) < 1e-6, 'At most 2 decimal places');
 const text = (max: number) => z.string().trim().max(max);
 const optionalText = (max: number) => text(max).optional();
 const nullableText = (max: number) => text(max).nullable().optional();
-const isoDate = z.iso.date();
+const isoDate = validDate;
 const hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:MM (24-hour)');
 /** Empty strings from forms become undefined. */
 const blankToUndef = <T extends z.ZodType>(s: T) => z.union([z.literal('').transform(() => undefined), s]);
@@ -111,27 +124,67 @@ export const DEFAULT_SHIFTS = [
 
 // ---------- employees ----------
 
+/** Youngest and oldest age (in whole years) allowed on the joining date. */
+export const MIN_JOINING_AGE = 14;
+export const MAX_JOINING_AGE = 100;
+
+/** Joining dates from 1950 up to a year ahead (offer letters for staff who join later). */
+const joiningDate = isoDate.refine((d) => d >= '1950-01-01', 'Joining date is too far in the past').refine((d) => d <= todayIso(366), 'Joining date cannot be more than a year ahead');
+
+/** Whole years between a date of birth and another date. */
+export function ageOn(dob: string, on: string): number {
+  const years = Number(on.slice(0, 4)) - Number(dob.slice(0, 4));
+  return on.slice(5) < dob.slice(5) ? years - 1 : years;
+}
+
+/** Problems between date of birth, joining and exit dates (any may be missing). Shared by the schemas and the API. */
+export function employeeDateIssues(d: { dateOfBirth?: string | null; dateOfJoining?: string | null; dateOfExit?: string | null }): { path: string; message: string }[] {
+  const out: { path: string; message: string }[] = [];
+  if (d.dateOfBirth && d.dateOfJoining) {
+    if (d.dateOfJoining <= d.dateOfBirth) out.push({ path: 'dateOfJoining', message: 'Joining date must be after the date of birth' });
+    else {
+      const age = ageOn(d.dateOfBirth, d.dateOfJoining);
+      if (age < MIN_JOINING_AGE) out.push({ path: 'dateOfBirth', message: `Employee must be at least ${MIN_JOINING_AGE} years old on the joining date` });
+      else if (age > MAX_JOINING_AGE) out.push({ path: 'dateOfBirth', message: `Employee cannot be older than ${MAX_JOINING_AGE} on the joining date; check the date of birth` });
+    }
+  }
+  if (d.dateOfExit && d.dateOfJoining && d.dateOfExit < d.dateOfJoining) out.push({ path: 'dateOfExit', message: 'Exit date cannot be before the joining date' });
+  return out;
+}
+
+const checkEmployeeDates = (v: { dateOfBirth?: string | null; dateOfJoining?: string | null; dateOfExit?: string | null }, ctx: z.RefinementCtx) => {
+  for (const i of employeeDateIssues(v)) ctx.addIssue({ code: 'custom', path: [i.path], message: i.message });
+};
+
 const employeeFields = {
   userId: z.uuid().nullable().optional(),
-  fullName: text(150).min(1),
+  fullName: text(150)
+    .min(1, 'Enter the full name')
+    .min(2, 'Full name needs at least 2 characters')
+    .regex(/^[\p{L}\p{M}][\p{L}\p{M} .'()-]*$/u, "Full name can only have letters, spaces and . ' -"),
   gender: blankToUndef(z.enum(['male', 'female', 'other']).nullable().optional()),
-  dateOfBirth: blankToUndef(isoDate.nullable().optional()),
-  mobile: blankToUndef(z.string().regex(/^[6-9]\d{9}$/, 'Enter a 10-digit Indian mobile number').nullable().optional()),
-  email: blankToUndef(z.email().nullable().optional()),
+  dateOfBirth: blankToUndef(dobDate.nullable().optional()),
+  mobile: blankToUndef(indianMobile.nullable().optional()),
+  email: blankToUndef(emailAddress.nullable().optional()),
   category: z.enum(EMPLOYEE_CATEGORIES).default('other'),
   designation: nullableText(100),
   department: nullableText(100),
   facilityId: blankToUndef(z.uuid().nullable().optional()),
   employmentType: z.enum(EMPLOYMENT_TYPES).default('permanent'),
-  dateOfJoining: isoDate,
+  dateOfJoining: joiningDate,
   address: nullableText(500),
-  emergencyContactName: nullableText(100),
-  emergencyContactPhone: nullableText(20),
-  pan: blankToUndef(z.string().trim().toUpperCase().regex(/^[A-Z]{5}\d{4}[A-Z]$/, 'Enter a valid PAN').nullable().optional()),
-  uan: blankToUndef(z.string().regex(/^\d{12}$/, 'UAN is 12 digits').nullable().optional()),
-  esicNo: nullableText(20),
-  bankAccountNo: blankToUndef(z.string().regex(/^\d{6,18}$/, 'Account number is 6 to 18 digits').nullable().optional()),
-  bankIfsc: blankToUndef(z.string().trim().toUpperCase().regex(/^[A-Z]{4}0[A-Z0-9]{6}$/, 'Enter a valid IFSC').nullable().optional()),
+  emergencyContactName: blankToUndef(
+    text(100)
+      .regex(/^[\p{L}\p{M}][\p{L}\p{M} .'()-]*$/u, "Emergency contact name can only have letters, spaces and . ' -")
+      .nullable()
+      .optional(),
+  ),
+  emergencyContactPhone: blankToUndef(phoneNumber.nullable().optional()),
+  pan: blankToUndef(panNumber.nullable().optional()),
+  uan: blankToUndef(z.string().trim().regex(/^\d{12}$/, 'UAN is 12 digits').nullable().optional()),
+  esicNo: blankToUndef(z.string().trim().regex(/^\d{10}(\d{7})?$/, 'ESIC number is 10 or 17 digits').nullable().optional()),
+  bankAccountNo: blankToUndef(z.string().trim().regex(/^\d{6,18}$/, 'Account number is 6 to 18 digits').nullable().optional()),
+  bankIfsc: blankToUndef(ifsc.nullable().optional()),
   bankName: nullableText(100),
   basic: money.optional(),
   hra: money.optional(),
@@ -142,20 +195,28 @@ const employeeFields = {
   tdsMonthly: money.optional(),
 };
 
-export const createEmployeeSchema = z.object({
-  ...employeeFields,
-  /** Leave empty to get the next EMP number. */
-  employeeCode: blankToUndef(z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9_/-]{0,29}$/, 'Letters, digits, - _ /').optional()),
-});
+export const createEmployeeSchema = z
+  .object({
+    ...employeeFields,
+    /** Leave empty to get the next EMP number. */
+    employeeCode: blankToUndef(z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9_/-]{0,29}$/, 'Employee code can have letters, digits, - _ / (up to 30)').optional()),
+  })
+  .superRefine(checkEmployeeDates);
 export type CreateEmployee = z.input<typeof createEmployeeSchema>;
 
 export const updateEmployeeSchema = z
   .object({
     ...employeeFields,
     status: z.enum(EMPLOYEE_STATUSES),
-    dateOfExit: blankToUndef(isoDate.nullable().optional()),
+    dateOfExit: blankToUndef(
+      isoDate
+        .refine((d) => d <= todayIso(366), 'Exit date cannot be more than a year ahead')
+        .nullable()
+        .optional(),
+    ),
   })
-  .partial();
+  .partial()
+  .superRefine(checkEmployeeDates);
 export type UpdateEmployee = z.input<typeof updateEmployeeSchema>;
 export type EmployeeValues = z.output<typeof updateEmployeeSchema>;
 
@@ -222,12 +283,12 @@ export interface Employee {
 
 export const licenceInputSchema = z.object({
   kind: z.enum(LICENCE_KINDS),
-  number: text(60).min(1),
+  number: text(60).min(1, 'Enter the licence number'),
   issuedBy: nullableText(150),
-  validFrom: blankToUndef(isoDate.nullable().optional()),
-  validUntil: blankToUndef(isoDate.nullable().optional()),
+  validFrom: blankToUndef(pastOrTodayDate('Valid from date').nullable().optional()),
+  validUntil: blankToUndef(isoDate.refine((d) => d >= '1950-01-01' && d <= '2100-12-31', 'Enter a valid expiry date').nullable().optional()),
   notes: nullableText(500),
-});
+}).refine((v) => datesInOrder(v.validFrom, v.validUntil), { message: 'Valid until date is before the valid from date', path: ['validUntil'] });
 export type LicenceInput = z.input<typeof licenceInputSchema>;
 export type LicenceValues = z.output<typeof licenceInputSchema>;
 
@@ -254,18 +315,36 @@ export const expiringQuerySchema = z.object({ days: z.coerce.number().int().min(
 
 // ---------- shifts ----------
 
-export const shiftInputSchema = z.object({
+const shiftBaseSchema = z.object({
   code: z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9_-]{0,9}$/, 'Up to 10 letters or digits'),
-  name: text(60).min(1),
+  name: text(60).min(1, 'Enter the shift name'),
   startTime: hhmm,
   endTime: hhmm,
-  breakMinutes: z.coerce.number().int().min(0).max(240).default(0),
-  graceMinutes: z.coerce.number().int().min(0).max(120).default(10),
-  color: blankToUndef(z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional()),
+  breakMinutes: z.coerce.number().int('Break must be whole minutes').min(0, 'Break cannot be negative').max(240, 'Break can be at most 240 minutes').default(0),
+  graceMinutes: z.coerce.number().int('Grace must be whole minutes').min(0, 'Grace cannot be negative').max(120, 'Grace can be at most 120 minutes').default(10),
+  color: blankToUndef(z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Colour must look like #22aa88').nullable().optional()),
   isActive: z.boolean().default(true),
 });
+
+/** Shift length in minutes (overnight shifts wrap past midnight). */
+export function shiftLengthMinutes(start: string, end: string): number {
+  const m = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
+  const d = m(end) - m(start);
+  return d > 0 ? d : d + 24 * 60;
+}
+const checkShiftTimes = (v: { startTime?: string; endTime?: string; breakMinutes?: number }, ctx: z.RefinementCtx) => {
+  if (!v.startTime || !v.endTime) return;
+  if (v.startTime === v.endTime) {
+    ctx.addIssue({ code: 'custom', path: ['endTime'], message: 'End time must be different from start time' });
+    return;
+  }
+  if (v.breakMinutes !== undefined && v.breakMinutes >= shiftLengthMinutes(v.startTime, v.endTime)) {
+    ctx.addIssue({ code: 'custom', path: ['breakMinutes'], message: 'Break must be shorter than the shift' });
+  }
+};
+export const shiftInputSchema = shiftBaseSchema.superRefine(checkShiftTimes);
 export type ShiftInput = z.input<typeof shiftInputSchema>;
-export const updateShiftSchema = shiftInputSchema.omit({ code: true }).partial();
+export const updateShiftSchema = shiftBaseSchema.omit({ code: true }).partial().superRefine(checkShiftTimes);
 export type UpdateShift = z.input<typeof updateShiftSchema>;
 
 export interface Shift {
@@ -286,17 +365,19 @@ export interface Shift {
 
 // ---------- roster ----------
 
-export const rosterQuerySchema = z.object({
-  from: isoDate,
-  to: isoDate,
-  department: optionalText(100),
-  employeeId: z.uuid().optional(),
-});
+export const rosterQuerySchema = z
+  .object({
+    from: isoDate,
+    to: isoDate,
+    department: optionalText(100),
+    employeeId: z.uuid().optional(),
+  })
+  .refine((v) => datesInOrder(v.from, v.to), { message: 'To date is before from date', path: ['to'] });
 export type RosterQuery = z.input<typeof rosterQuerySchema>;
 
 export const rosterCellSchema = z.object({
   employeeId: z.uuid(),
-  date: isoDate,
+  date: isoDate.refine((d) => d <= todayIso(366), 'Roster can be planned at most a year ahead'),
   /** null clears the cell. */
   kind: z.enum(ROSTER_KINDS).nullable(),
   shiftId: z.uuid().nullable().optional(),
@@ -308,7 +389,7 @@ export type SaveRoster = z.input<typeof saveRosterSchema>;
 export const copyRosterSchema = z.object({
   /** Monday (or any day) of the week to copy from; 7 days are copied. */
   fromWeekStart: isoDate,
-  toWeekStart: isoDate,
+  toWeekStart: isoDate.refine((d) => d <= todayIso(366), 'Roster can be planned at most a year ahead'),
   /** Overwrite cells that already have an entry in the target week. */
   overwrite: z.boolean().default(false),
 });
@@ -349,7 +430,7 @@ export const attendanceQuerySchema = z.object({
 export type AttendanceQuery = z.input<typeof attendanceQuerySchema>;
 
 export const markAttendanceSchema = z.object({
-  date: isoDate,
+  date: pastOrTodayDate('Attendance date'),
   rows: z
     .array(
       z.object({
@@ -365,7 +446,12 @@ export const markAttendanceSchema = z.object({
 });
 export type MarkAttendance = z.input<typeof markAttendanceSchema>;
 
-export const monthQuerySchema = z.object({ month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Use YYYY-MM') });
+export const monthQuerySchema = z.object({
+  month: z
+    .string({ error: 'Pick a month' })
+    .regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Use YYYY-MM')
+    .refine((m) => m >= '2000-01', 'Pick a month from 2000 onwards'),
+});
 export type MonthQuery = z.input<typeof monthQuerySchema>;
 
 export interface AttendanceRecord {
@@ -407,8 +493,12 @@ export interface AttendanceSummary {
 
 export const leaveTypeInputSchema = z.object({
   code: z.string().trim().toUpperCase().regex(/^[A-Z][A-Z0-9_]{0,9}$/, 'Up to 10 capital letters'),
-  name: text(60).min(1),
-  annualQuota: z.coerce.number().min(0).max(365).multipleOf(0.5),
+  name: text(60).min(1, 'Enter the leave type name'),
+  annualQuota: z.coerce
+    .number({ error: 'Enter the yearly quota' })
+    .min(0, 'Quota cannot be negative')
+    .max(365, 'Quota can be at most 365 days')
+    .multipleOf(0.5, 'Quota must be in half days (e.g. 12 or 12.5)'),
   isPaid: z.boolean().default(true),
   isActive: z.boolean().default(true),
 });
@@ -427,13 +517,13 @@ export interface LeaveType {
 
 export const applyLeaveSchema = z
   .object({
-    leaveTypeId: z.uuid(),
-    fromDate: isoDate,
+    leaveTypeId: z.uuid({ error: 'Pick a leave type' }),
+    fromDate: isoDate.refine((d) => d <= todayIso(366), 'Leave can be applied at most a year ahead'),
     toDate: isoDate,
     halfDay: z.boolean().default(false),
     reason: optionalText(500),
   })
-  .refine((v) => v.toDate >= v.fromDate, { message: 'To date must be on or after from date', path: ['toDate'] })
+  .refine((v) => datesInOrder(v.fromDate, v.toDate), { message: 'To date must be on or after from date', path: ['toDate'] })
   .refine((v) => !v.halfDay || v.fromDate === v.toDate, { message: 'A half day is a single date', path: ['halfDay'] });
 export type ApplyLeave = z.input<typeof applyLeaveSchema>;
 
@@ -447,14 +537,16 @@ export const decideLeaveSchema = z.object({
 });
 export type DecideLeave = z.input<typeof decideLeaveSchema>;
 
-export const leaveQuerySchema = z.object({
+export const leaveQuerySchema = z
+  .object({
   status: z.enum([...LEAVE_STATUSES, 'all']).default('all'),
   employeeId: z.uuid().optional(),
   from: isoDate.optional(),
   to: isoDate.optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(50),
-});
+  })
+  .refine((v) => datesInOrder(v.from, v.to), { message: 'To date is before from date', path: ['to'] });
 export type LeaveQuery = z.input<typeof leaveQuerySchema>;
 
 export interface LeaveRequest {

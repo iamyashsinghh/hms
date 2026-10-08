@@ -5,6 +5,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { Check, Loader2, Plus, X } from 'lucide-react';
 import { hr as H } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { firstError, validate, type FieldErrors } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
 import { PageHeader } from '@/components/page-header';
@@ -157,8 +158,10 @@ function RecordLeave({ onDone }: { onDone: () => void }) {
   const { data: staff } = useQuery({ queryKey: ['hr', 'employees', { status: 'current', pageSize: 500 }], queryFn: () => api.hr.employees.list({ status: 'current', pageSize: 500 }) });
   const { data: types } = useQuery({ queryKey: ['hr', 'leave-types'], queryFn: () => api.hr.leaveTypes.list() });
   const [f, setF] = React.useState({ employeeId: '', leaveTypeId: '', fromDate: todayIST(), toDate: todayIST(), halfDay: false, reason: '', autoApprove: true });
+  const [errors, setErrors] = React.useState<FieldErrors>({});
+  const body = () => ({ ...f, toDate: f.halfDay ? f.fromDate : f.toDate, reason: f.reason || undefined });
   const save = useMutation({
-    mutationFn: () => api.hr.leaves.create({ ...f, reason: f.reason || undefined }),
+    mutationFn: () => api.hr.leaves.create(body()),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['hr'] });
       onDone();
@@ -174,13 +177,15 @@ function RecordLeave({ onDone }: { onDone: () => void }) {
           className="grid gap-4 sm:grid-cols-4"
           onSubmit={(e) => {
             e.preventDefault();
-            save.mutate();
+            const r = validate(H.createLeaveSchema, body());
+            setErrors(r.errors ?? {});
+            if (!r.errors) save.mutate();
           }}
         >
           <div className="sm:col-span-4">
-            <ErrorBox error={save.error ? errorMessage(save.error) : null} />
+            <ErrorBox error={save.error ? errorMessage(save.error) : errors.halfDay ?? null} />
           </div>
-          <Field id="emp" label="Staff *" className="sm:col-span-2">
+          <Field id="emp" label="Staff *" className="sm:col-span-2" error={errors.employeeId && 'Pick a staff member'}>
             <Select id="emp" value={f.employeeId} onChange={(e) => setF({ ...f, employeeId: e.target.value })} required>
               <option value="">Choose…</option>
               {staff?.items.map((s) => (
@@ -190,7 +195,7 @@ function RecordLeave({ onDone }: { onDone: () => void }) {
               ))}
             </Select>
           </Field>
-          <Field id="type" label="Leave type *" className="sm:col-span-2">
+          <Field id="type" label="Leave type *" className="sm:col-span-2" error={errors.leaveTypeId}>
             <Select id="type" value={f.leaveTypeId} onChange={(e) => setF({ ...f, leaveTypeId: e.target.value })} required>
               <option value="">Choose…</option>
               {types
@@ -202,14 +207,14 @@ function RecordLeave({ onDone }: { onDone: () => void }) {
                 ))}
             </Select>
           </Field>
-          <Field id="from" label="From">
+          <Field id="from" label="From" error={errors.fromDate}>
             <Input id="from" type="date" value={f.fromDate} onChange={(e) => setF({ ...f, fromDate: e.target.value, toDate: e.target.value > f.toDate ? e.target.value : f.toDate })} required />
           </Field>
-          <Field id="to" label="To">
+          <Field id="to" label="To" error={errors.toDate}>
             <Input id="to" type="date" min={f.fromDate} value={f.halfDay ? f.fromDate : f.toDate} disabled={f.halfDay} onChange={(e) => setF({ ...f, toDate: e.target.value })} required />
           </Field>
-          <Field id="reason" label="Reason" className="sm:col-span-2">
-            <Input id="reason" value={f.reason} onChange={(e) => setF({ ...f, reason: e.target.value })} />
+          <Field id="reason" label="Reason" className="sm:col-span-2" error={errors.reason}>
+            <Input id="reason" maxLength={500} value={f.reason} onChange={(e) => setF({ ...f, reason: e.target.value })} />
           </Field>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={f.halfDay} onChange={(e) => setF({ ...f, halfDay: e.target.checked, toDate: f.fromDate })} /> Half day
@@ -235,6 +240,7 @@ function LeaveTypes() {
   const queryClient = useQueryClient();
   const { data } = useQuery({ queryKey: ['hr', 'leave-types'], queryFn: () => api.hr.leaveTypes.list() });
   const [f, setF] = React.useState({ code: '', name: '', annualQuota: '0', isPaid: true });
+  const [typeError, setTypeError] = React.useState<string | null>(null);
   const create = useMutation({
     mutationFn: () => api.hr.leaveTypes.create({ code: f.code, name: f.name, annualQuota: Number(f.annualQuota), isPaid: f.isPaid }),
     onSuccess: () => {
@@ -252,7 +258,7 @@ function LeaveTypes() {
         <CardTitle>Leave types and yearly quota</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <ErrorBox error={create.error ? errorMessage(create.error) : update.error ? errorMessage(update.error) : null} />
+        <ErrorBox error={typeError ?? (create.error ? errorMessage(create.error) : update.error ? errorMessage(update.error) : null)} />
         <Table>
           <TableHeader>
             <TableRow className="hover:bg-transparent">
@@ -272,6 +278,7 @@ function LeaveTypes() {
                   <Input
                     type="number"
                     min={0}
+                    max={365}
                     step="0.5"
                     className="h-8 w-24"
                     defaultValue={t.annualQuota}
@@ -292,7 +299,9 @@ function LeaveTypes() {
           className="flex flex-wrap items-end gap-3"
           onSubmit={(e) => {
             e.preventDefault();
-            create.mutate();
+            const r = validate(H.leaveTypeInputSchema, { code: f.code, name: f.name, annualQuota: f.annualQuota, isPaid: f.isPaid });
+            setTypeError(firstError(r.errors));
+            if (!r.errors) create.mutate();
           }}
         >
           <Field id="lt-code" label="Code">
@@ -302,7 +311,7 @@ function LeaveTypes() {
             <Input id="lt-name" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="e.g. Maternity leave" required />
           </Field>
           <Field id="lt-q" label="Days per year">
-            <Input id="lt-q" type="number" min={0} step="0.5" className="w-24" value={f.annualQuota} onChange={(e) => setF({ ...f, annualQuota: e.target.value })} />
+            <Input id="lt-q" type="number" min={0} max={365} step="0.5" className="w-24" value={f.annualQuota} onChange={(e) => setF({ ...f, annualQuota: e.target.value })} />
           </Field>
           <label className="flex items-center gap-2 pb-2 text-sm">
             <input type="checkbox" checked={f.isPaid} onChange={(e) => setF({ ...f, isPaid: e.target.checked })} /> Paid

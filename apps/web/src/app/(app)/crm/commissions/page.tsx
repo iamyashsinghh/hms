@@ -5,6 +5,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { Loader2, Plus, Printer } from 'lucide-react';
 import { crm as C } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { firstError, validate } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
 import { PageHeader } from '@/components/page-header';
@@ -185,6 +186,7 @@ function NewStatement({ onClose, onSaved }: { onClose: () => void; onSaved: (s: 
   const [referrerId, setReferrerId] = React.useState('');
   const [from, setFrom] = React.useState(lm.from);
   const [to, setTo] = React.useState(lm.to);
+  const [formError, setFormError] = React.useState<string | null>(null);
   const m = useMutation({ mutationFn: () => api.crm.statements.create({ referrerId, periodFrom: from, periodTo: to }), onSuccess: onSaved });
   return (
     <Card className="mb-6">
@@ -192,23 +194,30 @@ function NewStatement({ onClose, onSaved }: { onClose: () => void; onSaved: (s: 
         <CardTitle>New commission statement</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <ErrorBox error={m.error ? errorMessage(m.error) : null} />
+        <ErrorBox error={formError ?? (m.error ? errorMessage(m.error) : null)} />
         <div className="grid gap-4 sm:grid-cols-4">
           <Field id="st-ref" label="Referrer *" className="sm:col-span-2">
             <ReferrerSelect id="st-ref" value={referrerId} onChange={setReferrerId} allowNone={false} />
           </Field>
           <Field id="st-from" label="Bills from">
-            <Input id="st-from" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+            <Input id="st-from" type="date" max={to || todayIST()} value={from} onChange={(e) => setFrom(e.target.value)} />
           </Field>
           <Field id="st-to" label="Bills to">
-            <Input id="st-to" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+            <Input id="st-to" type="date" min={from || undefined} max={todayIST()} value={to} onChange={(e) => setTo(e.target.value)} />
           </Field>
         </div>
         <div className="flex justify-end gap-2">
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          <Button disabled={m.isPending || !referrerId} onClick={() => m.mutate()}>
+          <Button
+            disabled={m.isPending || !referrerId}
+            onClick={() => {
+              const problem = firstError(validate(C.createStatementSchema, { referrerId, periodFrom: from, periodTo: to }).errors);
+              setFormError(problem);
+              if (!problem) m.mutate();
+            }}
+          >
             {m.isPending && <Loader2 className="animate-spin" />}
             Create statement
           </Button>
@@ -224,6 +233,7 @@ function StatementDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const queryClient = useQueryClient();
   const [mode, setMode] = React.useState<C.CommissionPaymentMode>('bank');
   const [reference, setReference] = React.useState('');
+  const [payError, setPayError] = React.useState<string | null>(null);
   const { data: s, error } = useQuery({ queryKey: ['crm', 'statement', id], queryFn: () => api.crm.statements.get(id) });
   const act = useMutation({
     mutationFn: (what: 'approve' | 'pay' | 'cancel') =>
@@ -260,7 +270,7 @@ function StatementDetail({ id, onClose }: { id: string; onClose: () => void }) {
       </CardHeader>
       <CardContent className="space-y-4">
         {error && <p className="text-sm text-destructive">{errorMessage(error)}</p>}
-        <ErrorBox error={act.error ? errorMessage(act.error) : null} />
+        <ErrorBox error={payError ?? (act.error ? errorMessage(act.error) : null)} />
         {s && (
           <>
             <Table>
@@ -321,8 +331,16 @@ function StatementDetail({ id, onClose }: { id: string; onClose: () => void }) {
                           </option>
                         ))}
                       </Select>
-                      <Input aria-label="Reference" className="w-48" placeholder="UTR / cheque no." value={reference} onChange={(e) => setReference(e.target.value)} />
-                      <Button disabled={act.isPending} onClick={() => act.mutate('pay')}>
+                      <Input aria-label="Reference" className="w-48" maxLength={100} placeholder="UTR / cheque no." value={reference} onChange={(e) => setReference(e.target.value)} />
+                      <Button
+                        disabled={act.isPending}
+                        onClick={() => {
+                          // Non-cash payments need the UTR or cheque number.
+                          const problem = mode !== 'cash' && !reference.trim() ? `Enter the ${mode === 'cheque' ? 'cheque number' : 'UTR / transaction reference'}` : null;
+                          setPayError(problem);
+                          if (!problem) act.mutate('pay');
+                        }}
+                      >
                         Mark paid
                       </Button>
                     </>

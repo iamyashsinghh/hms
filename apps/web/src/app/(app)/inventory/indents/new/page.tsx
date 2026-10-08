@@ -4,7 +4,9 @@ import * as React from 'react';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
+import { inventory } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -12,7 +14,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { LinesEditor, linesValid, StoreSelect, useStores, type QtyLine } from '@/modules/inventory/ui';
+import { formErrorMessage, LinesEditor, linesValid, StoreSelect, useStores, type QtyLine } from '@/modules/inventory/ui';
 
 export default function NewIndentPage() {
   const canCreate = usePermission('inventory.indent.create');
@@ -24,17 +26,11 @@ export default function NewIndentPage() {
   const [priority, setPriority] = React.useState<'normal' | 'urgent'>('normal');
   const [notes, setNotes] = React.useState('');
   const [lines, setLines] = React.useState<QtyLine[]>([]);
+  const [formError, setFormError] = React.useState<string | null>(null);
   const supplier = fromStoreId || stores.find((s) => s.type === 'main' && s.id !== toStoreId)?.id || '';
 
   const save = useMutation({
-    mutationFn: () =>
-      api.inventory.indents.create({
-        toStoreId,
-        fromStoreId: supplier,
-        priority,
-        notes: notes || undefined,
-        lines: lines.map((l) => ({ itemId: l.itemId, qty: Number(l.qty) })),
-      }),
+    mutationFn: (body: inventory.CreateIndent) => api.inventory.indents.create(body),
     onSuccess: (i) => {
       queryClient.invalidateQueries({ queryKey: ['inventory', 'indents'] });
       router.push(`/inventory/indents/${i.id}`);
@@ -50,7 +46,11 @@ export default function NewIndentPage() {
         className="space-y-6"
         onSubmit={(e) => {
           e.preventDefault();
-          save.mutate();
+          const body = { toStoreId, fromStoreId: supplier, priority, notes: notes || undefined, lines: lines.map((l) => ({ itemId: l.itemId, qty: Number(l.qty) })) };
+          const r = validate(inventory.createIndentSchema, body);
+          const problem = toStoreId && toStoreId === supplier ? 'The store asking and the store supplying must be different' : formErrorMessage(r.errors, lines);
+          setFormError(problem);
+          if (!problem) save.mutate(body);
         }}
       >
         <Card>
@@ -79,7 +79,7 @@ export default function NewIndentPage() {
             </div>
             <div>
               <Label htmlFor="ind-notes">Notes</Label>
-              <Input id="ind-notes" className="mt-2" value={notes} onChange={(e) => setNotes(e.target.value)} />
+              <Input id="ind-notes" className="mt-2" maxLength={500} value={notes} onChange={(e) => setNotes(e.target.value)} />
             </div>
           </CardContent>
         </Card>
@@ -91,7 +91,7 @@ export default function NewIndentPage() {
             <LinesEditor lines={lines} setLines={setLines} />
           </CardContent>
         </Card>
-        {save.error && <p className="text-sm text-destructive">{errorMessage(save.error)}</p>}
+        {(formError || save.error) && <p className="text-sm text-destructive">{formError ?? errorMessage(save.error)}</p>}
         <div className="flex justify-end">
           <Button type="submit" disabled={!toStoreId || !supplier || toStoreId === supplier || !linesValid(lines) || save.isPending}>
             {save.isPending && <Loader2 className="animate-spin" />}

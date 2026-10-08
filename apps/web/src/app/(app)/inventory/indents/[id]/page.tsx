@@ -25,6 +25,7 @@ export default function IndentPage({ params }: { params: Promise<{ id: string }>
   const canIssue = usePermission('inventory.indent.issue');
   const queryClient = useQueryClient();
   const [qty, setQty] = React.useState<Record<string, string>>({});
+  const [qtyError, setQtyError] = React.useState<string | null>(null);
 
   const indent = useQuery({ queryKey: ['inventory', 'indents', id], queryFn: () => api.inventory.indents.get(id), enabled: canRead });
   const data = indent.data;
@@ -70,6 +71,17 @@ export default function IndentPage({ params }: { params: Promise<{ id: string }>
   if (indent.error || !data) return <p className="text-sm text-destructive">{errorMessage(indent.error)}</p>;
   const lines = data.lines ?? [];
   const error = decide.error ?? issue.error ?? other.error;
+  /** Whole numbers from 0 up to what was asked for (approve) or is still pending (issue). */
+  const checkQty = (): string | null => {
+    for (const l of data.lines ?? []) {
+      const raw = valueOf(l).trim();
+      const n = Number(raw || 0);
+      const max = mode === 'approve' ? l.requestedQty : l.pendingQty;
+      if (!Number.isInteger(n) || n < 0) return `${l.itemName}: enter a whole number of ${l.unit}`;
+      if (n > max) return `${l.itemName}: cannot ${mode === 'approve' ? 'approve more than the' : 'issue more than the'} ${max} ${mode === 'approve' ? 'asked for' : 'pending'}`;
+    }
+    return null;
+  };
 
   return (
     <>
@@ -94,7 +106,7 @@ export default function IndentPage({ params }: { params: Promise<{ id: string }>
         </div>
       </div>
       {issue.data && <Notice>Issued. Stock has moved to {data.toStoreName}.</Notice>}
-      {error && <Notice tone="error">{errorMessage(error)}</Notice>}
+      {(qtyError || error) && <Notice tone="error">{qtyError ?? errorMessage(error)}</Notice>}
 
       <Card className="mb-6">
         <CardHeader>
@@ -141,6 +153,7 @@ export default function IndentPage({ params }: { params: Promise<{ id: string }>
                         className="w-24"
                         type="number"
                         min={0}
+                        step={1}
                         max={mode === 'approve' ? l.requestedQty : l.pendingQty}
                         disabled={mode === 'issue' && l.pendingQty === 0}
                         aria-label={`${mode === 'approve' ? 'Approve' : 'Issue'} qty of ${l.itemName}`}
@@ -158,7 +171,11 @@ export default function IndentPage({ params }: { params: Promise<{ id: string }>
               <Button variant="outline" disabled={decide.isPending} onClick={() => decide.mutate(false)}>
                 Reject
               </Button>
-              <Button disabled={decide.isPending} onClick={() => decide.mutate(true)}>
+              <Button disabled={decide.isPending} onClick={() => {
+                  const problem = checkQty();
+                  setQtyError(problem);
+                  if (!problem) decide.mutate(true);
+                }}>
                 {decide.isPending && <Loader2 className="animate-spin" />}
                 Approve
               </Button>
@@ -167,7 +184,11 @@ export default function IndentPage({ params }: { params: Promise<{ id: string }>
           {mode === 'issue' && (
             <div className="flex items-center justify-end gap-4">
               <span className="text-xs text-muted-foreground">Batches are picked first-expiry-first-out from {data.fromStoreName}.</span>
-              <Button disabled={issue.isPending || !entries().some(([, q]) => Number(q) > 0)} onClick={() => issue.mutate()}>
+              <Button disabled={issue.isPending || !entries().some(([, q]) => Number(q) > 0)} onClick={() => {
+                  const problem = checkQty();
+                  setQtyError(problem);
+                  if (!problem) issue.mutate();
+                }}>
                 {issue.isPending && <Loader2 className="animate-spin" />}
                 Issue stock
               </Button>

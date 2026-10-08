@@ -7,6 +7,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { BellRing, Check, Loader2, Plus, Send, X } from 'lucide-react';
 import { crm as C, type Patient } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { firstError, validate } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
 import { PageHeader } from '@/components/page-header';
@@ -239,6 +240,7 @@ function NewFollowUp({ onClose, onSaved }: { onClose: () => void; onSaved: () =>
   const [dueDate, setDueDate] = React.useState(addDaysISO(todayIST(), 7));
   const [type, setType] = React.useState<C.FollowUpType>('revisit');
   const [reason, setReason] = React.useState('');
+  const [formError, setFormError] = React.useState<string | null>(null);
   const m = useMutation({
     mutationFn: () => api.crm.followUps.create({ patientId: patient!.id, dueDate, type, reason: reason || null }),
     onSuccess: onSaved,
@@ -249,13 +251,13 @@ function NewFollowUp({ onClose, onSaved }: { onClose: () => void; onSaved: () =>
         <CardTitle>New follow-up</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <ErrorBox error={m.error ? errorMessage(m.error) : null} />
+        <ErrorBox error={formError ?? (m.error ? errorMessage(m.error) : null)} />
         <div className="grid gap-4 sm:grid-cols-4">
           <div className="sm:col-span-2">
             <PatientPicker value={patient} onChange={setPatient} />
           </div>
           <Field id="fu-due" label="Due on *">
-            <Input id="fu-due" type="date" min={todayIST()} value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+            <Input id="fu-due" type="date" min={todayIST()} max={addDaysISO(todayIST(), 3 * 366)} value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
           </Field>
           <Field id="fu-type" label="Type">
             <Select id="fu-type" value={type} onChange={(e) => setType(e.target.value as C.FollowUpType)}>
@@ -267,14 +269,21 @@ function NewFollowUp({ onClose, onSaved }: { onClose: () => void; onSaved: () =>
             </Select>
           </Field>
           <Field id="fu-reason" label="Reason" className="sm:col-span-4">
-            <Input id="fu-reason" placeholder="e.g. Review BP after medicine change" value={reason} onChange={(e) => setReason(e.target.value)} />
+            <Input id="fu-reason" maxLength={1000} placeholder="e.g. Review BP after medicine change" value={reason} onChange={(e) => setReason(e.target.value)} />
           </Field>
         </div>
         <div className="flex justify-end gap-2">
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          <Button disabled={m.isPending || !patient || !dueDate} onClick={() => m.mutate()}>
+          <Button
+            disabled={m.isPending || !patient || !dueDate}
+            onClick={() => {
+              const problem = firstError(validate(C.followUpInputSchema, { patientId: patient?.id, dueDate, type, reason: reason || null }).errors);
+              setFormError(problem);
+              if (!problem) m.mutate();
+            }}
+          >
             {m.isPending && <Loader2 className="animate-spin" />}
             Save
           </Button>
@@ -303,7 +312,7 @@ function CloseFollowUp({ f, onClose, onSaved }: { f: C.FollowUp; onClose: () => 
             </Select>
           </Field>
           <Field id="cl-outcome" label="Outcome" className="sm:col-span-3">
-            <Input id="cl-outcome" placeholder="e.g. Booked for Monday 10 AM" value={outcome} onChange={(e) => setOutcome(e.target.value)} />
+            <Input id="cl-outcome" maxLength={1000} placeholder="e.g. Booked for Monday 10 AM" value={outcome} onChange={(e) => setOutcome(e.target.value)} />
           </Field>
         </div>
         <div className="flex justify-end gap-2">

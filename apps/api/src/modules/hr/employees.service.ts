@@ -99,11 +99,20 @@ export class EmployeesService {
     assertMayEditPay(body);
     const ctx = currentContext()!;
     return this.db.tx(async (tx) => {
+      const current = await this.requireEmployee(tx, id);
       const values: Partial<NewEmployeeRow> = { ...toColumns(body), updatedBy: ctx.userId };
       if (body.status !== undefined) values.status = body.status;
       if (body.dateOfExit !== undefined) values.dateOfExit = body.dateOfExit;
       if (body.status === 'exited' && !body.dateOfExit) values.dateOfExit = todayIST();
       if (body.status && body.status !== 'exited' && body.dateOfExit === undefined) values.dateOfExit = null;
+      // Check the dates as they will be saved, against the ones already on file.
+      const merged = {
+        dateOfBirth: values.dateOfBirth !== undefined ? values.dateOfBirth : current.dateOfBirth,
+        dateOfJoining: values.dateOfJoining ?? current.dateOfJoining,
+        dateOfExit: values.dateOfExit !== undefined ? values.dateOfExit : current.dateOfExit,
+      };
+      const issue = contracts.employeeDateIssues(merged)[0];
+      if (issue) throw badRequest('invalid_dates', issue.message);
       const [row] = await tx.update(hrEmployees).set(values).where(eq(hrEmployees.id, id)).returning();
       if (!row) throw notFound('Employee');
       if (body.status !== undefined) {

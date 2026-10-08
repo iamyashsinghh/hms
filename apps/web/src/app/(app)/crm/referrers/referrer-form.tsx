@@ -4,6 +4,7 @@ import * as React from 'react';
 import { Loader2 } from 'lucide-react';
 import { crm as C } from '@hms/shared';
 import { errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -37,13 +38,14 @@ export function ReferrerForm({
     isActive: initial?.isActive ?? true,
   });
   const set = (patch: Partial<typeof f>) => setF({ ...f, ...patch });
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   return (
     <Card className="mb-6">
       <CardHeader>
         <CardTitle>{title}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <ErrorBox error={error ? errorMessage(error) : null} />
+        <ErrorBox error={error ? errorMessage(error) : Object.keys(errors).length ? 'Please correct the highlighted fields.' : null} />
         <div className="grid gap-4 sm:grid-cols-4">
           <Field id="rf-type" label="Type">
             <Select id="rf-type" value={f.type} onChange={(e) => set({ type: e.target.value as C.ReferrerType })}>
@@ -54,28 +56,28 @@ export function ReferrerForm({
               ))}
             </Select>
           </Field>
-          <Field id="rf-name" label="Name *" className="sm:col-span-2">
-            <Input id="rf-name" value={f.name} onChange={(e) => set({ name: e.target.value })} placeholder="e.g. Dr. Anil Kulkarni" />
+          <Field id="rf-name" label="Name *" className="sm:col-span-2" error={errors.name}>
+            <Input id="rf-name" maxLength={200} value={f.name} onChange={(e) => set({ name: e.target.value })} placeholder="e.g. Dr. Anil Kulkarni" />
           </Field>
-          <Field id="rf-mobile" label="Mobile">
+          <Field id="rf-mobile" label="Mobile" error={errors.mobile}>
             <Input id="rf-mobile" inputMode="numeric" maxLength={10} value={f.mobile} onChange={(e) => set({ mobile: e.target.value.replace(/\D/g, '') })} />
           </Field>
-          <Field id="rf-org" label="Clinic / organisation" className="sm:col-span-2">
-            <Input id="rf-org" value={f.organization} onChange={(e) => set({ organization: e.target.value })} />
+          <Field id="rf-org" label="Clinic / organisation" className="sm:col-span-2" error={errors.organization}>
+            <Input id="rf-org" maxLength={200} value={f.organization} onChange={(e) => set({ organization: e.target.value })} />
           </Field>
-          <Field id="rf-city" label="City">
-            <Input id="rf-city" value={f.city} onChange={(e) => set({ city: e.target.value })} />
+          <Field id="rf-city" label="City" error={errors.city}>
+            <Input id="rf-city" maxLength={100} value={f.city} onChange={(e) => set({ city: e.target.value })} />
           </Field>
-          <Field id="rf-email" label="Email">
-            <Input id="rf-email" type="email" value={f.email} onChange={(e) => set({ email: e.target.value })} />
+          <Field id="rf-email" label="Email" error={errors.email}>
+            <Input id="rf-email" type="email" maxLength={254} value={f.email} onChange={(e) => set({ email: e.target.value })} />
           </Field>
-          <Field id="rf-reg" label="Registration no.">
-            <Input id="rf-reg" value={f.registrationNo} onChange={(e) => set({ registrationNo: e.target.value })} />
+          <Field id="rf-reg" label="Registration no." error={errors.registrationNo}>
+            <Input id="rf-reg" maxLength={50} value={f.registrationNo} onChange={(e) => set({ registrationNo: e.target.value })} />
           </Field>
-          <Field id="rf-pan" label="PAN (for TDS)">
-            <Input id="rf-pan" maxLength={10} value={f.pan} onChange={(e) => set({ pan: e.target.value.toUpperCase() })} />
+          <Field id="rf-pan" label="PAN (for TDS)" error={errors.pan}>
+            <Input id="rf-pan" maxLength={10} placeholder="ABCDE1234F" value={f.pan} onChange={(e) => set({ pan: e.target.value.toUpperCase().trim() })} />
           </Field>
-          <Field id="rf-notes" label="Notes" className="sm:col-span-2">
+          <Field id="rf-notes" label="Notes" className="sm:col-span-2" error={errors.notes}>
             <Textarea id="rf-notes" className="min-h-9" value={f.notes} onChange={(e) => set({ notes: e.target.value })} />
           </Field>
         </div>
@@ -88,8 +90,8 @@ export function ReferrerForm({
           </Button>
           <Button
             disabled={saving || !f.name.trim()}
-            onClick={() =>
-              onSave({
+            onClick={() => {
+              const body: C.ReferrerInput = {
                 type: f.type,
                 name: f.name,
                 mobile: f.mobile || null,
@@ -100,8 +102,11 @@ export function ReferrerForm({
                 pan: f.pan || null,
                 notes: f.notes || null,
                 isActive: f.isActive,
-              })
-            }
+              };
+              const r = validate(C.referrerInputSchema, body);
+              setErrors(r.errors ?? {});
+              if (!r.errors) onSave(body);
+            }}
           >
             {saving && <Loader2 className="animate-spin" />}
             Save
