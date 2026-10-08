@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { GSTIN_REGEX, PAN_REGEX } from '../validation';
 
 /**
  * Inventory & Procurement: permissions and API contracts (Zod schemas + types).
@@ -54,8 +55,6 @@ const pageQuery = {
 };
 export type PageQuery = { page?: number; pageSize?: number };
 
-export const GSTIN_REGEX = /^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
-export const PAN_REGEX = /^[A-Z]{5}\d{4}[A-Z]$/;
 
 // ---------- vendors ----------
 
