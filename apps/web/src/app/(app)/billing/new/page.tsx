@@ -2,44 +2,48 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
-import { ArrowLeft } from 'lucide-react';
-import type { Patient } from '@hms/shared';
-import { api } from '@/lib/api';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { ArrowLeft, FilePlus2 } from 'lucide-react';
 import { usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
 import { buttonVariants } from '@/components/ui/button';
-import { BillForm } from '@/modules/billing/bill-form';
+import { BillPatient, BillPatientStart } from '@/modules/billing/bill-patient';
 
 export default function Page() {
   return (
     <React.Suspense>
-      <NewBillPage />
+      <BillAPatientPage />
     </React.Suspense>
   );
 }
 
-function NewBillPage() {
+/** Bill a patient: other screens link here with ?patientId=. */
+function BillAPatientPage() {
   const canCreate = usePermission('billing.invoice.create');
   const params = useSearchParams();
-  const [patient, setPatient] = React.useState<Patient | null>(null);
-
-  const presetPatient = params.get('patientId');
-  React.useEffect(() => {
-    if (presetPatient) api.patients.get(presetPatient).then(setPatient).catch(() => undefined);
-  }, [presetPatient]);
+  const router = useRouter();
+  const pathname = usePathname();
+  const patientId = params.get('patientId');
+  const setPatient = (id: string | null) => router.replace(id ? `${pathname}?patientId=${id}` : pathname);
 
   if (!canCreate) return <NoAccess />;
 
   return (
-    <div className="max-w-5xl">
+    <div className="max-w-6xl">
       <Link href="/billing" className={buttonVariants({ variant: 'ghost', size: 'sm', className: '-ml-3 mb-2' })}>
         <ArrowLeft /> All bills
       </Link>
-      <PageHeader title="New bill" description="Pick services from the master; leave the price blank to use the price list. The bill number is given when it is finalized." />
-      {/* Remounts once a ?patientId= patient has loaded so the form starts with them picked. */}
-      <BillForm key={patient?.id ?? 'none'} presetPatient={patient} />
+      <PageHeader
+        title="Bill a patient"
+        description="Everything the departments charged is already here. Untick what the patient will pay later, add anything missing, and collect."
+        actions={
+          <Link href={patientId ? `/billing/new/manual?patientId=${patientId}` : '/billing/new/manual'} className={buttonVariants({ variant: 'outline' })}>
+            <FilePlus2 /> Bill without charges
+          </Link>
+        }
+      />
+      {patientId ? <BillPatient key={patientId} patientId={patientId} onChangePatient={() => setPatient(null)} /> : <BillPatientStart onPick={setPatient} />}
     </div>
   );
 }

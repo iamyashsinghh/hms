@@ -2,61 +2,51 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight, Loader2, Plus, Search } from 'lucide-react';
 import type { billing as B } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { Can, usePermission } from '@/lib/auth';
-import { formatDate } from '@/lib/format';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
+import { Badge } from '@/components/ui/badge';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { BillsTabs } from '@/modules/billing/tabs';
-import { InvoiceStatusBadge, formatINR, useDebounced } from '@/modules/billing/ui';
+import { ACCOUNT_LABELS, formatDateTime, formatINR, useDebounced } from '@/modules/billing/ui';
 
-const PAGE_SIZE = 25;
+const PAGE_SIZE = 50;
 
-export default function Page() {
-  return (
-    <React.Suspense>
-      <BillsPage />
-    </React.Suspense>
-  );
-}
-
-function BillsPage() {
+/** Every patient with charges still waiting for a bill, oldest first, so nothing is forgotten at day end. */
+export default function UnbilledPage() {
   const canRead = usePermission('billing.invoice.read');
+  const canBill = usePermission('billing.invoice.create');
   const router = useRouter();
-  // ?q= opens the list already searched (e.g. "earlier bills due" on the billing desk).
-  const params = useSearchParams();
-  const [search, setSearch] = React.useState(() => params.get('q') ?? '');
-  const [filter, setFilter] = React.useState('');
+  const [search, setSearch] = React.useState('');
+  const [account, setAccount] = React.useState<B.ChargeAccount | ''>('');
   const [page, setPage] = React.useState(1);
   const q = useDebounced(search.trim());
 
-  const query: B.InvoiceQuery = { q: q || undefined, page, pageSize: PAGE_SIZE };
-  if (filter === 'draft' || filter === 'cancelled') query.status = filter;
-  if (filter === 'unpaid' || filter === 'partial' || filter === 'paid') query.paymentStatus = filter;
-
+  const query: B.UnbilledQuery = { q: q || undefined, account: account || undefined, page, pageSize: PAGE_SIZE };
   const { data, isPending, isFetching, error } = useQuery({
-    queryKey: ['billing', 'invoices', query],
-    queryFn: () => api.billing.invoices.list(query),
+    queryKey: ['billing', 'unbilled', query],
+    queryFn: () => api.billing.charges.unbilled(query),
     placeholderData: keepPreviousData,
     enabled: canRead,
   });
 
   if (!canRead) return <NoAccess />;
   const pages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;
+  const open = (u: B.UnbilledPatient) => canBill && router.push(`/billing/new?patientId=${u.patientId}`);
 
   return (
     <>
       <PageHeader
         title="Bills"
-        description="OPD, pharmacy and other bills. Search by bill number, patient name, UHID or mobile."
+        description="Patients with charges that are not on a bill yet, oldest first."
         actions={
           <Can permission="billing.invoice.create">
             <Link href="/billing/new" className={buttonVariants()}>
@@ -72,7 +62,7 @@ function BillsPage() {
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               type="search"
-              placeholder="Search bills…"
+              placeholder="Patient name, UHID or mobile…"
               className="pl-9"
               value={search}
               onChange={(e) => {
@@ -82,20 +72,18 @@ function BillsPage() {
             />
           </div>
           <Select
-            className="w-44"
-            value={filter}
-            aria-label="Filter"
+            className="w-40"
+            value={account}
+            aria-label="Visit type"
             onChange={(e) => {
-              setFilter(e.target.value);
+              setAccount(e.target.value as B.ChargeAccount | '');
               setPage(1);
             }}
           >
-            <option value="">All bills</option>
-            <option value="unpaid">Unpaid</option>
-            <option value="partial">Part paid</option>
-            <option value="paid">Paid</option>
-            <option value="draft">Drafts</option>
-            <option value="cancelled">Cancelled</option>
+            <option value="">OPD, IPD and other</option>
+            <option value="opd">OPD</option>
+            <option value="ipd">IPD</option>
+            <option value="other">Other</option>
           </Select>
           {isFetching && <Loader2 className="size-4 animate-spin text-muted-foreground" />}
         </div>
@@ -106,41 +94,52 @@ function BillsPage() {
           <Table>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
-                <TableHead>Bill no.</TableHead>
-                <TableHead>Date</TableHead>
                 <TableHead>Patient</TableHead>
-                <TableHead>Source</TableHead>
-                <TableHead className="text-right">Total</TableHead>
-                <TableHead className="text-right">Balance</TableHead>
-                <TableHead>Status</TableHead>
+                <TableHead>Visit</TableHead>
+                <TableHead>Waiting since</TableHead>
+                <TableHead className="text-right">Charges</TableHead>
+                <TableHead className="text-right">Amount</TableHead>
+                <TableHead />
               </TableRow>
             </TableHeader>
             <TableBody>
               {isPending ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                  <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
                     Loading…
                   </TableCell>
                 </TableRow>
               ) : data.items.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
-                    No bills found.
+                  <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
+                    {q || account ? 'No unbilled patients match.' : 'Everything is billed.'}
                   </TableCell>
                 </TableRow>
               ) : (
-                data.items.map((inv) => (
-                  <TableRow key={inv.id} className="cursor-pointer" onClick={() => router.push(`/billing/invoices/${inv.id}`)}>
-                    <TableCell className="font-mono text-xs">{inv.number ?? 'Draft'}</TableCell>
-                    <TableCell>{formatDate(inv.invoiceDate)}</TableCell>
+                data.items.map((u) => (
+                  <TableRow key={u.patientId} className={canBill ? 'cursor-pointer' : undefined} onClick={() => open(u)}>
                     <TableCell>
-                      <span className="font-medium">{inv.patientName}</span> <span className="font-mono text-xs text-muted-foreground">{inv.patientUhid}</span>
+                      <span className="font-medium">{u.patientName}</span> <span className="font-mono text-xs text-muted-foreground">{u.uhid}</span>
+                      {u.mobile && <span className="block text-xs text-muted-foreground">{u.mobile}</span>}
                     </TableCell>
-                    <TableCell className="capitalize">{inv.sourceModule}</TableCell>
-                    <TableCell className="text-right tabular-nums">{formatINR(inv.total)}</TableCell>
-                    <TableCell className="text-right tabular-nums">{inv.status === 'final' ? formatINR(inv.balance) : '—'}</TableCell>
                     <TableCell>
-                      <InvoiceStatusBadge inv={inv} />
+                      <div className="flex gap-1">
+                        {u.accounts.map((a) => (
+                          <Badge key={a} variant={a === 'ipd' ? 'default' : 'outline'}>
+                            {ACCOUNT_LABELS[a]}
+                          </Badge>
+                        ))}
+                      </div>
+                    </TableCell>
+                    <TableCell>{formatDateTime(u.oldestChargeAt)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{u.pendingCount}</TableCell>
+                    <TableCell className="text-right font-medium tabular-nums">{formatINR(u.pendingTotal)}</TableCell>
+                    <TableCell className="text-right">
+                      {canBill && (
+                        <Link href={`/billing/new?patientId=${u.patientId}`} className={buttonVariants({ variant: 'outline', size: 'sm' })} onClick={(e) => e.stopPropagation()}>
+                          Bill
+                        </Link>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))
