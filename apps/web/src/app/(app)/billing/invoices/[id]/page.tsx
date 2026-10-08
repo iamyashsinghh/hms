@@ -247,27 +247,18 @@ export default function InvoicePage({ params }: { params: Promise<{ id: string }
   );
 }
 
-/**
- * Bill line → department that posted its charge (line number → label). Charges carry their bill but
- * not their line number, so each charge is matched to the first unmatched line with the same
- * description and quantity.
- */
+/** Bill line → department that posted its charge (line number → label). */
 function useLineDepartments(inv: B.Invoice | undefined): Map<number, string> {
   const { data } = useQuery({
-    queryKey: ['billing', 'charges', { patientId: inv?.patientId, status: 'billed' }],
-    queryFn: () => api.billing.charges.list({ patientId: inv!.patientId, status: 'billed', pageSize: 500 }),
+    queryKey: ['billing', 'charges', { invoiceId: inv?.id }],
+    queryFn: () => api.billing.charges.list({ invoiceId: inv!.id, pageSize: 500 }),
     enabled: !!inv && inv.status !== 'draft',
   });
   return React.useMemo(() => {
     const out = new Map<number, string>();
-    if (!inv || !data) return out;
-    const charges = data.items.filter((c) => c.invoiceId === inv.id);
-    for (const c of charges) {
-      const line = inv.lines.find((l) => !out.has(l.lineNo) && l.description === c.description && l.qty === c.qty);
-      if (line) out.set(line.lineNo, sourceLabel(c.sourceModule));
-    }
+    for (const c of data?.items ?? []) if (c.invoiceLineNo) out.set(c.invoiceLineNo, sourceLabel(c.sourceModule));
     return out;
-  }, [inv, data]);
+  }, [data]);
 }
 
 function Row({ label, value }: { label: string; value: number }) {

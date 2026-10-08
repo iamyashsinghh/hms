@@ -44,7 +44,7 @@ export class ChargesRepository {
 
   async search(
     tx: Tx,
-    f: { patientId?: string; visitId?: string; admissionId?: string; status?: string; sourceModule?: string; reversal?: string; page: number; pageSize: number },
+    f: { patientId?: string; visitId?: string; admissionId?: string; status?: string; sourceModule?: string; invoiceId?: string; reversal?: string; page: number; pageSize: number },
   ) {
     const c = billingCharges;
     const conds: (SQL | undefined)[] = [];
@@ -53,6 +53,7 @@ export class ChargesRepository {
     if (f.admissionId) conds.push(eq(c.admissionId, f.admissionId));
     if (f.status) conds.push(eq(c.status, f.status));
     if (f.sourceModule) conds.push(eq(c.sourceModule, f.sourceModule));
+    if (f.invoiceId) conds.push(eq(c.invoiceId, f.invoiceId));
     if (f.reversal === 'true') conds.push(sql`${c.reversalRequestedAt} is not null and ${c.reversalDoneAt} is null`);
     const where = and(...conds);
     const [items, [{ total }]] = await Promise.all([

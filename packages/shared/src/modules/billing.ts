@@ -685,6 +685,8 @@ export interface Charge {
   status: ChargeStatus;
   invoiceId: string | null;
   invoiceNumber: string | null;
+  /** Line on that bill. */
+  invoiceLineNo: number | null;
   /** Set when the source was cancelled after the charge was billed: a credit note is suggested. */
   reversalRequestedAt: string | null;
   reversalReason: string | null;
@@ -699,6 +701,7 @@ export const chargeQuerySchema = z.object({
   admissionId: z.uuid().optional(),
   status: z.enum(CHARGE_STATUSES).optional(),
   sourceModule: z.string().max(40).optional(),
+  invoiceId: z.uuid().optional(),
   /** Only billed charges whose source was cancelled afterwards (credit note suggested). */
   reversal: z.enum(['true', 'false']).optional(),
   page: z.coerce.number().int().min(1).default(1),
@@ -724,11 +727,15 @@ export const billChargesSchema = z.object({
   notes: optionalText(1000),
   /** Use the patient's advance first (up to the bill total). */
   useDeposit: z.boolean().default(false),
-  /** Money taken now, after any advance. */
+  /** Money taken now, after any advance (at most what is due). */
   payNow: payNowSchema.optional(),
+  /** Collect whatever is due on the final bill, after any advance, in this mode. */
+  payDue: z.object({ mode: z.enum(PAYMENT_MODES), ref: optionalText(100) }).optional(),
   /** Invoice source, e.g. { module: 'ipd', refId: admissionId }; default { module: 'billing' }. */
   source: z.object({ module: z.string().min(1).max(40), refId: z.string().max(100).optional() }).optional(),
-}).refine((b) => b.chargeIds.length + b.extraLines.length > 0, { message: 'Pick at least one charge to bill', path: ['chargeIds'] });
+})
+  .refine((b) => b.chargeIds.length + b.extraLines.length > 0, { message: 'Pick at least one charge to bill', path: ['chargeIds'] })
+  .refine((b) => !(b.payNow && b.payDue), { message: 'Give either payNow or payDue', path: ['payDue'] });
 export type BillChargesInput = z.input<typeof billChargesSchema>;
 
 /** One group on the billing desk: an OPD visit, an IPD admission, or other charges. */

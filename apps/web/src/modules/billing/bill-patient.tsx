@@ -206,9 +206,8 @@ export function BillPatient({ patientId, onChangePatient }: { patientId: string;
         })),
         discount: discountValue > 0 ? discountValue : undefined,
         useDeposit: applyAdvance,
-        // The server takes at most what is due on the final bill, so a little headroom over the
-        // estimate (round-off, payer prices on desk items) still settles the bill in full.
-        payNow: collect && due > 0 ? { mode, amount: Math.ceil(due * (approximate ? 1.1 : 1) + 1), ref: reference.trim() || undefined } : undefined,
+        // The server collects exactly what is due on the final bill (round-off, payer prices on desk items).
+        payDue: collect && due > 0 ? { mode, ref: reference.trim() || undefined } : undefined,
         notes: notes.trim() || undefined,
       }),
     onSuccess: (inv) => {

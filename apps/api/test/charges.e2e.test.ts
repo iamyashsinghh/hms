@@ -147,6 +147,22 @@ describe('patient charges', () => {
     expect(row).toMatchObject({ id: c.id, status: 'cancelled', cancelReason: 'Patient left' });
   });
 
+  it('collects exactly what is due with payDue, and lists a bill\'s charges by line', async () => {
+    const c = await inTenant((s, tx) => s.postCharge(tx, { patientId, facilityId, source: { module: 'emr', refId: `ENC2-${tag}`, line: DRESS }, serviceCode: DRESS }));
+    const res = await call(clerk, 'POST', '/billing/charges/bill', { patientId, chargeIds: [c.id], extraLines: [{ serviceCode: CBC }], payDue: { mode: 'upi', ref: 'UPI123' } });
+    expect(res.statusCode, res.body).toBe(201);
+    const inv = res.json();
+    expect(inv).toMatchObject({ total: 527, balance: 0, paymentStatus: 'paid' });
+    const lines = (await call(clerk, 'GET', `/billing/charges?invoiceId=${inv.id}`)).json().items;
+    expect(lines.map((l: { invoiceLineNo: number; sourceModule: string }) => [l.invoiceLineNo, l.sourceModule]).sort()).toEqual([[1, 'emr'], [2, 'billing']]);
+  });
+
+  it('finds services word by word, ignoring punctuation', async () => {
+    const res = (await call(clerk, 'GET', `/billing/services?q=${encodeURIComponent('dressing sm')}`)).json();
+    expect(res.items.map((s: { code: string }) => s.code)).toContain(DRESS);
+    expect((await call(clerk, 'GET', `/billing/services?q=${encodeURIComponent(`dress${tag}`.toLowerCase())}`)).json().items[0]?.code).toBe(DRESS);
+  });
+
   it('doctors cannot see the billing desk', async () => {
     expect((await call(doctor, 'GET', `/billing/patients/${patientId}/charges`)).statusCode).toBe(403);
   });

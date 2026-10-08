@@ -317,6 +317,8 @@ export class ChargesService {
     if (d.payNow) {
       const amount = Math.min(paise(d.payNow.amount), due);
       if (amount > 0) await this.billing.collectPaymentTx(tx, created.invoiceId, { mode: d.payNow.mode, amount: amount / 100, reference: d.payNow.ref });
+    } else if (d.payDue && due > 0) {
+      await this.billing.collectPaymentTx(tx, created.invoiceId, { mode: d.payDue.mode, amount: due / 100, reference: d.payDue.ref });
     }
 
     const event: B.ChargesBilledEvent = {
@@ -447,7 +449,7 @@ export class ChargesService {
   billFromApi(input: B.BillChargesInput): Promise<B.Invoice> {
     const d = contracts.billChargesSchema.parse(input);
     requirePermission('billing.invoice.finalize');
-    if (d.payNow || d.useDeposit) requirePermission('billing.payment.collect');
+    if (d.payNow || d.payDue || d.useDeposit) requirePermission('billing.payment.collect');
     return this.db.tx((tx) => this.billCharges(tx, d, { checkLimits: true }));
   }
 
@@ -570,6 +572,7 @@ function chargeDto(r: ChargeRow, invoiceNumber: string | null): B.Charge {
     status: r.status as B.ChargeStatus,
     invoiceId: r.invoiceId,
     invoiceNumber,
+    invoiceLineNo: r.invoiceLineNo,
     reversalRequestedAt: r.reversalRequestedAt ? new Date(r.reversalRequestedAt).toISOString() : null,
     reversalReason: r.reversalReason,
     cancelReason: r.cancelReason,
