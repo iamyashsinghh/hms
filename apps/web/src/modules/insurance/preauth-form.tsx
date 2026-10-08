@@ -4,8 +4,9 @@ import * as React from 'react';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
-import { insurance as I } from '@hms/shared';
+import { insurance as I, todayIso } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { Button } from '@/components/ui/button';
 import { Input, Select } from '@/components/ui/input';
 import { ErrorBox, Field, formatINR, opt, optNum } from '@/modules/insurance/ui';
@@ -48,6 +49,7 @@ export function PreauthForm({ policy, preauth, onCancel }: { policy: I.Policy; p
   const queryClient = useQueryClient();
   const [v, setV] = React.useState<Values>(() => valuesOf(preauth));
   const [formError, setFormError] = React.useState<string | null>(null);
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const set = (k: keyof Values) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setV((s) => ({ ...s, [k]: e.target.value }));
   const packages = useQuery({
     queryKey: ['insurance', 'packages', policy.payerId],
@@ -60,7 +62,8 @@ export function PreauthForm({ policy, preauth, onCancel }: { policy: I.Policy; p
     diagnosis: v.diagnosis.trim(),
     icdCodes: v.icdCodes.split(/[,\s]+/).filter(Boolean),
     procedure: opt(v.procedure) ?? null,
-    expectedAdmission: v.expectedAdmission || null,
+    // Unchanged on edit: not re-sent, so an older admission date does not block other edits.
+    ...(!(preauth && (preauth.expectedAdmission ?? '') === v.expectedAdmission) && { expectedAdmission: v.expectedAdmission || null }),
     expectedLosDays: optNum(v.expectedLosDays) ?? null,
     estimatedAmount: Number(v.estimatedAmount),
     ...(preauth && v.requestedAmount.trim() !== '' && { requestedAmount: Number(v.requestedAmount) }),
@@ -79,24 +82,35 @@ export function PreauthForm({ policy, preauth, onCancel }: { policy: I.Policy; p
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
-    if (v.estimatedAmount.trim() === '') return setFormError('Enter the estimated cost');
-    const b = body();
-    const parsed = (preauth ? I.updatePreauthSchema : I.preauthInputSchema).safeParse({ ...b, policyId: policy.id });
-    if (!parsed.success) {
-      const issue = parsed.error.issues[0];
-      return setFormError(issue ? `${issue.path.join('.') || 'Form'}: ${issue.message}` : 'Check the form');
+    if (v.estimatedAmount.trim() === '') {
+      setErrors({ estimatedAmount: 'Enter the estimated cost' });
+      return;
     }
-    if (preauth && b.requestedAmount != null && Number(b.requestedAmount) <= 0) return setFormError('Requested amount must be more than 0');
+    const b = body();
+    const r = validate(preauth ? I.updatePreauthSchema : I.preauthInputSchema, { ...b, policyId: policy.id });
+    const errs: FieldErrors = { ...(r.errors ?? {}) };
+    // ICD errors come back per code (icdCodes.1); show them on the one input.
+    const icd = Object.entries(errs).find(([k]) => k.startsWith('icdCodes'));
+    if (icd) errs.icdCodes = icd[1];
+    if (preauth && b.requestedAmount != null && Number(b.requestedAmount) <= 0) errs.requestedAmount ??= 'Requested amount must be more than 0';
+    setErrors(errs);
+    if (Object.keys(errs).length) {
+      // Anything without its own field (e.g. policyId) goes in the box at the bottom.
+      const shown = ['diagnosis', 'icdCodes', 'procedure', 'expectedAdmission', 'expectedLosDays', 'estimatedAmount', 'requestedAmount', 'admissionRef', 'notes'];
+      const other = Object.entries(errs).find(([k]) => !shown.includes(k) && !k.startsWith('icdCodes'));
+      if (other) setFormError(`${other[0]}: ${other[1]}`);
+      return;
+    }
     save.mutate(b);
   };
 
   return (
     <form className="space-y-4" onSubmit={submit} noValidate>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Field id="diagnosis" label="Provisional diagnosis *" className="sm:col-span-2">
+        <Field id="diagnosis" error={errors.diagnosis} label="Provisional diagnosis *" className="sm:col-span-2">
           <Input id="diagnosis" required minLength={2} maxLength={1000} value={v.diagnosis} onChange={set('diagnosis')} />
         </Field>
-        <Field id="icd" label="ICD-10 codes (comma separated)">
+        <Field id="icd" error={errors.icdCodes} label="ICD-10 codes (comma separated)">
           <Input id="icd" value={v.icdCodes} onChange={set('icdCodes')} placeholder="K35.8" />
         </Field>
         <Field id="package" label="Package">
@@ -125,27 +139,27 @@ export function PreauthForm({ policy, preauth, onCancel }: { policy: I.Policy; p
             )}
           </Select>
         </Field>
-        <Field id="procedure" label="Planned treatment / procedure" className="sm:col-span-2">
+        <Field id="procedure" error={errors.procedure} label="Planned treatment / procedure" className="sm:col-span-2">
           <Input id="procedure" maxLength={1000} value={v.procedure} onChange={set('procedure')} />
         </Field>
-        <Field id="adm" label="Expected admission">
-          <Input id="adm" type="date" value={v.expectedAdmission} onChange={set('expectedAdmission')} />
+        <Field id="adm" error={errors.expectedAdmission} label="Expected admission">
+          <Input id="adm" type="date" min={preauth ? undefined : todayIso(-30)} max={todayIso(366)} value={v.expectedAdmission} onChange={set('expectedAdmission')} />
         </Field>
-        <Field id="los" label="Expected stay (days)">
+        <Field id="los" error={errors.expectedLosDays} label="Expected stay (days)">
           <Input id="los" type="number" min={0} max={365} step={1} value={v.expectedLosDays} onChange={set('expectedLosDays')} />
         </Field>
-        <Field id="est" label="Estimated cost (₹) *">
+        <Field id="est" error={errors.estimatedAmount} label="Estimated cost (₹) *">
           <Input id="est" type="number" step="0.01" min={0} required value={v.estimatedAmount} onChange={set('estimatedAmount')} />
         </Field>
         {preauth && (
-          <Field id="req" label="Requested from payer (₹)">
+          <Field id="req" error={errors.requestedAmount} label="Requested from payer (₹)">
             <Input id="req" type="number" step="0.01" min={0} value={v.requestedAmount} onChange={set('requestedAmount')} />
           </Field>
         )}
-        <Field id="ref" label="Admission / IP number">
+        <Field id="ref" error={errors.admissionRef} label="Admission / IP number">
           <Input id="ref" maxLength={100} value={v.admissionRef} onChange={set('admissionRef')} />
         </Field>
-        <Field id="notes" label="Notes" className="sm:col-span-2">
+        <Field id="notes" error={errors.notes} label="Notes" className="sm:col-span-2">
           <Input id="notes" maxLength={1000} value={v.notes} onChange={set('notes')} />
         </Field>
       </div>

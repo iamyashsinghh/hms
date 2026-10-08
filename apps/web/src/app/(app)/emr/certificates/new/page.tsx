@@ -8,6 +8,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { ArrowLeft, Loader2 } from 'lucide-react';
 import { emr } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { fullName } from '@/lib/format';
 import { NoAccess } from '@/components/no-access';
@@ -37,7 +38,7 @@ function NewCertificate() {
   const [toDate, setToDate] = React.useState(todayIso);
   const [diagnosisInput, setDiagnosis] = React.useState<string | null>(null);
   const [remarks, setRemarks] = React.useState('');
-  const [problem, setProblem] = React.useState<string | null>(null);
+  const [errors, setErrors] = React.useState<FieldErrors>({});
 
   // Until the doctor types, prefill from the consultation's diagnoses.
   const diagnosis = diagnosisInput ?? encounter.data?.diagnoses.map((x) => x.description).join(', ') ?? '';
@@ -61,10 +62,10 @@ function NewCertificate() {
       diagnosis: diagnosis || undefined,
       remarks: remarks || undefined,
     };
-    const parsed = emr.createCertificateSchema.safeParse(body);
-    if (!parsed.success) return setProblem(parsed.error.issues[0]?.message ?? 'Check the form');
-    setProblem(null);
-    create.mutate(parsed.data);
+    const checked = validate(emr.createCertificateSchema, body);
+    if (checked.errors) return setErrors(checked.errors);
+    setErrors({});
+    create.mutate(checked.data);
   };
 
   return (
@@ -89,24 +90,47 @@ function NewCertificate() {
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <Label htmlFor="from">{kind === 'fitness' ? 'Fit to resume from' : 'From'}</Label>
-                <Input id="from" type="date" className="mt-1.5" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+                <Input
+                  id="from"
+                  type="date"
+                  className="mt-1.5"
+                  min={todayIso(-emr.CERTIFICATE_MAX_BACKDATE_DAYS)}
+                  value={fromDate}
+                  aria-invalid={!!errors.fromDate}
+                  onChange={(e) => setFromDate(e.target.value)}
+                />
+                {errors.fromDate && <p className="mt-1 text-xs text-destructive">{errors.fromDate}</p>}
               </div>
               {kind !== 'fitness' && (
                 <div>
                   <Label htmlFor="to">To</Label>
-                  <Input id="to" type="date" className="mt-1.5" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+                  <Input
+                    id="to"
+                    type="date"
+                    className="mt-1.5"
+                    min={fromDate || undefined}
+                    max={todayIso(emr.CERTIFICATE_MAX_DAYS)}
+                    value={toDate}
+                    aria-invalid={!!errors.toDate}
+                    onChange={(e) => setToDate(e.target.value)}
+                  />
+                  {errors.toDate && <p className="mt-1 text-xs text-destructive">{errors.toDate}</p>}
                 </div>
               )}
             </div>
             <div>
               <Label htmlFor="dx">Diagnosis / condition</Label>
-              <Input id="dx" className="mt-1.5" value={diagnosis} onChange={(e) => setDiagnosis(e.target.value)} />
+              <Input id="dx" className="mt-1.5" maxLength={300} value={diagnosis} onChange={(e) => setDiagnosis(e.target.value)} />
             </div>
             <div>
               <Label htmlFor="remarks">Remarks</Label>
-              <Textarea id="remarks" className="mt-1.5" rows={3} value={remarks} onChange={(e) => setRemarks(e.target.value)} />
+              <Textarea id="remarks" className="mt-1.5" rows={3} maxLength={2000} value={remarks} onChange={(e) => setRemarks(e.target.value)} />
             </div>
-            {(problem || create.error) && <p className="text-sm text-destructive">{problem ?? errorMessage(create.error)}</p>}
+            {(() => {
+              const other = Object.entries(errors).find(([k]) => k !== 'fromDate' && k !== 'toDate')?.[1];
+              const msg = other ?? (create.error ? errorMessage(create.error) : null);
+              return msg ? <p className="text-sm text-destructive">{msg}</p> : null;
+            })()}
             <Button type="submit" disabled={create.isPending}>
               {create.isPending && <Loader2 className="animate-spin" />} Issue certificate
             </Button>

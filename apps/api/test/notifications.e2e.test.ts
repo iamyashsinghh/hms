@@ -515,3 +515,42 @@ describe('notifications: access control and isolation', () => {
     await api('DELETE', `/opt-outs/${opt.id}`, reception);
   });
 });
+
+describe('notifications: input validation', () => {
+  it('rejects bad recipients, opt-out addresses, template ids and settings with clear messages', async () => {
+    const badMobile = await api('POST', '/messages', reception, { to: { mobile: '12345' }, template: 'custom.message', data: { message: 'Hi' }, channels: ['sms'] });
+    expect(badMobile.statusCode).toBe(400);
+    expect(badMobile.json().error.message).toContain('Enter a 10-digit Indian mobile number');
+
+    const badEmail = await api('POST', '/messages', reception, { to: { email: 'not-an-email' }, template: 'custom.message', data: { message: 'Hi' }, channels: ['email'] });
+    expect(badEmail.statusCode).toBe(400);
+    expect(badEmail.json().error.message).toContain('Enter a valid email address');
+
+    const emailOptOut = await api('POST', '/opt-outs', reception, { channel: 'email', address: 'nobody' });
+    expect(emailOptOut.statusCode).toBe(400);
+    expect(emailOptOut.json().error.message).toContain('Enter a valid email address');
+    const allOptOut = await api('POST', '/opt-outs', reception, { channel: 'all', address: 'abc' });
+    expect(allOptOut.statusCode).toBe(400);
+    expect(allOptOut.json().error.message).toContain('mobile number or an email');
+
+    const emptyBody = await api('PUT', '/templates/appointment.booked/sms', admin, { body: '   ' });
+    expect(emptyBody.statusCode).toBe(400);
+    expect(emptyBody.json().error.message).toContain('Enter the message text');
+    const badDlt = await api('PUT', '/templates/appointment.booked/sms', admin, { body: 'Hi', dltTemplateId: '1107 16-x' });
+    expect(badDlt.statusCode).toBe(400);
+    expect(badDlt.json().error.message).toContain('Template id can only have letters and digits');
+
+    const badReplyTo = await api('PUT', '/settings', admin, { emailReplyTo: 'reply@' });
+    expect(badReplyTo.statusCode).toBe(400);
+    expect(badReplyTo.json().error.message).toContain('Enter a valid email address');
+    const negative = await api('PUT', '/settings', admin, { lowBalanceThreshold: -5 });
+    expect(negative.statusCode).toBe(400);
+    expect(negative.json().error.message).toContain('Amount cannot be negative');
+  });
+
+  it('still accepts a +91 mobile and normalises it', async () => {
+    const res = await api('POST', '/messages', reception, { to: { mobile: '+91 98765 00071' }, template: 'custom.message', data: { message: 'Validation check' }, channels: ['sms'] });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().messages[0]).toMatchObject({ channel: 'sms', status: 'queued' });
+  });
+});

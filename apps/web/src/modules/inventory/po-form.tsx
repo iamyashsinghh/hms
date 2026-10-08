@@ -4,13 +4,14 @@ import * as React from 'react';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
-import { inventory } from '@hms/shared';
+import { inventory, todayIso } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate } from '@/lib/validate';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { inr, lineTotal, LinesEditor, linesValid, newLine, StoreSelect, useStores, type QtyLine } from '@/modules/inventory/ui';
+import { formErrorMessage, inr, lineTotal, LinesEditor, linesValid, newLine, StoreSelect, useStores, type QtyLine } from '@/modules/inventory/ui';
 
 const todayIST = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
@@ -73,14 +74,21 @@ export function PurchaseOrderForm({ po, requisition }: { po?: inventory.Purchase
     if (lines.some((l) => !(l.gstRate >= 0 && l.gstRate <= 40))) return setFormError('GST must be between 0 and 40%');
     if (new Set(lines.map((l) => l.itemId)).size !== lines.length) return setFormError('An item is listed twice; combine the lines');
     if (expectedDate && expectedDate < todayIST() && expectedDate !== po?.expectedDate) return setFormError('Expected date cannot be in the past');
-    const parsed = inventory.updatePurchaseOrderSchema.safeParse({
-      vendorId,
-      expectedDate: expectedDate || null,
-      terms,
-      notes,
-      lines: lines.map((l) => ({ itemId: l.itemId, qty: Number(l.qty), rate: Number(l.rate), gstRate: l.gstRate })),
-    });
-    if (!parsed.success) return setFormError(parsed.error.issues[0]?.message ?? 'Check the order');
+    const lineBodies = lines.map((l) => ({ itemId: l.itemId, qty: Number(l.qty), rate: Number(l.rate), gstRate: l.gstRate }));
+    // New orders get the full create rules (date up to a year ahead); a draft edit uses the update rules.
+    const r = po
+      ? validate(inventory.updatePurchaseOrderSchema, { vendorId, expectedDate: expectedDate || null, terms, notes, lines: lineBodies })
+      : validate(inventory.createPurchaseOrderSchema, {
+          vendorId,
+          storeId,
+          requisitionId: requisition?.id,
+          expectedDate: expectedDate || undefined,
+          terms: terms.trim() || undefined,
+          notes: notes.trim() || undefined,
+          lines: lineBodies,
+        });
+    const problem = formErrorMessage(r.errors, lines);
+    if (problem) return setFormError(problem);
     save.mutate();
   };
 
@@ -116,7 +124,7 @@ export function PurchaseOrderForm({ po, requisition }: { po?: inventory.Purchase
           </div>
           <div>
             <Label htmlFor="po-date">Expected on</Label>
-            <Input id="po-date" type="date" className="mt-2" min={todayIST()} value={expectedDate} onChange={(e) => setExpectedDate(e.target.value)} />
+            <Input id="po-date" type="date" className="mt-2" min={todayIST()} max={po ? undefined : todayIso(366)} value={expectedDate} onChange={(e) => setExpectedDate(e.target.value)} />
           </div>
           <div className="sm:col-span-2">
             <Label htmlFor="po-terms">Terms</Label>

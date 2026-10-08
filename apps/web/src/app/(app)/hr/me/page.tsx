@@ -4,7 +4,9 @@ import * as React from 'react';
 import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Fingerprint, Loader2 } from 'lucide-react';
+import { hr as H } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
 import { PageHeader } from '@/components/page-header';
@@ -113,9 +115,10 @@ function MyLeave() {
   const { data: balances } = useQuery({ queryKey: ['hr', 'me', 'balances'], queryFn: () => api.hr.me.leaveBalances() });
   const { data: leaves } = useQuery({ queryKey: ['hr', 'me', 'leaves'], queryFn: () => api.hr.me.leaves() });
   const [f, setF] = React.useState({ leaveTypeId: '', fromDate: todayIST(), toDate: todayIST(), halfDay: false, reason: '' });
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['hr', 'me'] });
   const apply = useMutation({
-    mutationFn: () => api.hr.me.applyLeave({ ...f, reason: f.reason || undefined }),
+    mutationFn: () => api.hr.me.applyLeave({ ...f, toDate: f.halfDay ? f.fromDate : f.toDate, reason: f.reason || undefined }),
     onSuccess: () => {
       setF({ leaveTypeId: '', fromDate: todayIST(), toDate: todayIST(), halfDay: false, reason: '' });
       refresh();
@@ -142,13 +145,15 @@ function MyLeave() {
           className="grid gap-3 rounded-md border p-3 sm:grid-cols-5"
           onSubmit={(e) => {
             e.preventDefault();
-            apply.mutate();
+            const r = validate(H.applyLeaveSchema, { ...f, toDate: f.halfDay ? f.fromDate : f.toDate, reason: f.reason || undefined });
+            setErrors(r.errors ?? {});
+            if (!r.errors) apply.mutate();
           }}
         >
           <div className="sm:col-span-5">
-            <ErrorBox error={apply.error ? errorMessage(apply.error) : null} />
+            <ErrorBox error={apply.error ? errorMessage(apply.error) : errors.halfDay ?? null} />
           </div>
-          <Field id="lt" label="Type">
+          <Field id="lt" label="Type" error={errors.leaveTypeId}>
             <Select id="lt" value={f.leaveTypeId} onChange={(e) => setF({ ...f, leaveTypeId: e.target.value })} required>
               <option value="">Choose…</option>
               {balances?.map((b) => (
@@ -158,14 +163,14 @@ function MyLeave() {
               ))}
             </Select>
           </Field>
-          <Field id="lf" label="From">
-            <Input id="lf" type="date" value={f.fromDate} onChange={(e) => setF({ ...f, fromDate: e.target.value, toDate: e.target.value > f.toDate || f.halfDay ? e.target.value : f.toDate })} required />
+          <Field id="lf" label="From" error={errors.fromDate}>
+            <Input id="lf" type="date" min={addDays(todayIST(), -30)} max={addDays(todayIST(), 366)} value={f.fromDate} onChange={(e) => setF({ ...f, fromDate: e.target.value, toDate: e.target.value > f.toDate || f.halfDay ? e.target.value : f.toDate })} required />
           </Field>
-          <Field id="lto" label="To">
+          <Field id="lto" label="To" error={errors.toDate}>
             <Input id="lto" type="date" min={f.fromDate} value={f.toDate} disabled={f.halfDay} onChange={(e) => setF({ ...f, toDate: e.target.value })} required />
           </Field>
-          <Field id="lr" label="Reason">
-            <Input id="lr" value={f.reason} onChange={(e) => setF({ ...f, reason: e.target.value })} />
+          <Field id="lr" label="Reason" error={errors.reason}>
+            <Input id="lr" maxLength={500} value={f.reason} onChange={(e) => setF({ ...f, reason: e.target.value })} />
           </Field>
           <div className="flex items-end gap-3">
             <label className="flex items-center gap-1 pb-2 text-xs">

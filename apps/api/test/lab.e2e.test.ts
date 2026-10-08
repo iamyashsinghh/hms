@@ -451,3 +451,66 @@ describe('lab hospital isolation', () => {
     expect(seen).toBe(0);
   });
 });
+
+describe('lab validations', () => {
+  const s = sfx();
+  const msg = (res: { json: () => { error: { message: string } } }) => res.json().error.message;
+  const test = (extra: object) => ({ code: `V${s}${Math.random().toString(36).slice(2, 5)}`.toUpperCase(), name: `Validation ${s}`, ...extra });
+
+  it('checks reference and critical ranges', async () => {
+    const age = await inject('POST', '/lab/tests', admin, test({ ranges: [{ ageMinYears: 18, ageMaxYears: 10 }] }));
+    expect(age.statusCode).toBe(400);
+    expect(msg(age)).toContain('Age to must be more than age from');
+    const high = await inject('POST', '/lab/tests', admin, test({ ranges: [{ low: 10, high: 5 }] }));
+    expect(msg(high)).toContain('High must be at least low');
+    const crit = await inject('POST', '/lab/tests', admin, test({ ranges: [{ low: 10, high: 20, criticalLow: 12 }] }));
+    expect(msg(crit)).toContain('Critical low must be at or below low');
+    const critHigh = await inject('POST', '/lab/tests', admin, test({ ranges: [{ low: 10, high: 20, criticalHigh: 15 }] }));
+    expect(msg(critHigh)).toContain('Critical high must be at or above high');
+    const price = await inject('POST', '/lab/tests', admin, test({ price: -5 }));
+    expect(msg(price)).toContain('Amount cannot be negative');
+    const blank = await inject('POST', '/lab/tests', admin, test({ name: '  ' }));
+    expect(msg(blank)).toContain('Enter the test name');
+  });
+
+  it('needs two different choices for a pick-from-list test', async () => {
+    const one = await inject('POST', '/lab/tests', admin, test({ resultType: 'option', options: ['Negative'] }));
+    expect(one.statusCode).toBe(400);
+    expect(msg(one)).toContain('Give at least 2 choices');
+    const dup = await inject('POST', '/lab/tests', admin, test({ resultType: 'option', options: ['Negative', 'negative'] }));
+    expect(msg(dup)).toContain('Each choice must be different');
+    const ok = await inject('POST', '/lab/tests', admin, test({ resultType: 'option', options: ['Negative', 'Positive'] }));
+    expect(ok.statusCode).toBe(201);
+    const edit = await inject('PATCH', `/lab/tests/${ok.json().id}`, admin, { resultType: 'option', options: [] });
+    expect(edit.statusCode).toBe(400);
+  });
+
+  it('refuses a panel with the same test twice, a short cancel reason and a bad payment', async () => {
+    const t = (await inject('POST', '/lab/tests', admin, test({ price: 50 }))).json();
+    const panel = await inject('POST', '/lab/panels', admin, { code: `VP${s}`, name: `Panel ${s}`, testIds: [t.id, t.id] });
+    expect(panel.statusCode).toBe(400);
+    expect(msg(panel)).toContain('The same test is picked twice');
+    const pay = await inject('POST', '/lab/orders', reception, { patientId: malePatientId, items: [{ testId: t.id }], payNow: { mode: 'cash', amount: -50 } });
+    expect(pay.statusCode).toBe(400);
+    const o = (await inject('POST', '/lab/orders', reception, { patientId: malePatientId, items: [{ testId: t.id }], bill: false })).json() as lab.Order;
+    const cancel = await inject('POST', `/lab/orders/${o.id}/cancel`, tech, { reason: 'no' });
+    expect(cancel.statusCode).toBe(400);
+    expect(msg(cancel)).toContain('A reason needs at least 3 characters');
+
+    // Numeric results: plain numbers and "<0.1" style only.
+    await inject('POST', `/lab/orders/${o.id}/collect`, tech);
+    const resultId = o.results[0]!.id;
+    for (const value of ['0x1A', 'Infinity', '1e3', '12..5']) {
+      const bad = await inject('PUT', `/lab/orders/${o.id}/results`, tech, { results: [{ resultId, value }] });
+      expect(bad.statusCode, value).toBe(400);
+    }
+    const ok = await inject('PUT', `/lab/orders/${o.id}/results`, tech, { results: [{ resultId, value: '<0.1' }] });
+    expect(ok.statusCode).toBe(200);
+  });
+
+  it('refuses an order search whose to date is before the from date', async () => {
+    const res = await inject('GET', '/lab/orders?from=2026-10-10&to=2026-10-01', tech);
+    expect(res.statusCode).toBe(400);
+    expect(msg(res)).toContain('End date is before start date');
+  });
+});

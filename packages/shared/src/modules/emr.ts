@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { END_BEFORE_START, datesInOrder, isoDate, requiredText, todayIso, todayOrFutureDate } from '../validation';
 import { patchSchema } from '../patch';
 
 /**
@@ -82,22 +83,56 @@ export type EncounterNotes = z.infer<typeof encounterNotesSchema>;
 
 // ---------- vitals ----------
 
-export const vitalsInputSchema = z.object({
-  temperatureC: z.number().min(25).max(45).optional(),
-  pulse: z.number().int().min(20).max(250).optional(),
-  respRate: z.number().int().min(4).max(80).optional(),
-  bpSystolic: z.number().int().min(40).max(300).optional(),
-  bpDiastolic: z.number().int().min(20).max(200).optional(),
-  spo2: z.number().int().min(40).max(100).optional(),
-  weightKg: z.number().min(0.3).max(400).optional(),
-  heightCm: z.number().min(20).max(250).optional(),
-  bloodSugar: z.number().int().min(10).max(1000).optional(),
-  painScore: z.number().int().min(0).max(10).optional(),
-  notes: z.string().max(500).optional(),
+/** A vital sign reading with a plain "X must be between a and b" message. */
+const reading = (label: string, min: number, max: number, unit = '', whole = true) => {
+  const range = `${label} must be between ${min} and ${max}${unit}`;
+  const n = z.number({ error: `${label}: enter a number` }).min(min, range).max(max, range);
+  return (whole ? n.int(`${label} must be a whole number`) : n).optional();
+};
+
+/** Readable limits, shared with the form (min/max on the inputs). */
+export const VITAL_LIMITS = {
+  temperatureC: [25, 45],
+  pulse: [20, 250],
+  respRate: [4, 80],
+  bpSystolic: [40, 300],
+  bpDiastolic: [20, 200],
+  spo2: [40, 100],
+  weightKg: [0.3, 400],
+  heightCm: [20, 250],
+  bloodSugar: [10, 1000],
+  painScore: [0, 10],
+} as const satisfies Record<string, readonly [number, number]>;
+const L = VITAL_LIMITS;
+
+const vitalsFields = z.object({
+  temperatureC: reading('Temperature', L.temperatureC[0], L.temperatureC[1], ' °C', false),
+  pulse: reading('Pulse', L.pulse[0], L.pulse[1], ' per minute'),
+  respRate: reading('Respiratory rate', L.respRate[0], L.respRate[1], ' per minute'),
+  bpSystolic: reading('Systolic BP', L.bpSystolic[0], L.bpSystolic[1], ' mmHg'),
+  bpDiastolic: reading('Diastolic BP', L.bpDiastolic[0], L.bpDiastolic[1], ' mmHg'),
+  spo2: reading('SpO2', L.spo2[0], L.spo2[1], '%'),
+  weightKg: reading('Weight', L.weightKg[0], L.weightKg[1], ' kg', false),
+  heightCm: reading('Height', L.heightCm[0], L.heightCm[1], ' cm', false),
+  bloodSugar: reading('Blood sugar', L.bloodSugar[0], L.bloodSugar[1], ' mg/dL'),
+  painScore: reading('Pain score', L.painScore[0], L.painScore[1]),
+  notes: z.string().trim().max(500, 'Vitals note can be at most 500 characters').optional(),
+});
+
+export const vitalsInputSchema = vitalsFields.superRefine((v, ctx) => {
+  if (!Object.entries(v).some(([k, x]) => k !== 'notes' && x !== undefined)) {
+    ctx.addIssue({ code: 'custom', message: 'Enter at least one reading', path: [] });
+  }
+  if ((v.bpSystolic === undefined) !== (v.bpDiastolic === undefined)) {
+    const missing = v.bpSystolic === undefined ? 'bpSystolic' : 'bpDiastolic';
+    ctx.addIssue({ code: 'custom', message: 'Enter both systolic and diastolic BP', path: [missing] });
+  } else if (v.bpSystolic !== undefined && v.bpDiastolic !== undefined && v.bpDiastolic >= v.bpSystolic) {
+    ctx.addIssue({ code: 'custom', message: 'Diastolic BP must be lower than systolic BP', path: ['bpDiastolic'] });
+  }
 });
 export type VitalsInput = z.infer<typeof vitalsInputSchema>;
 
-export const vitalsSchema = vitalsInputSchema.extend({
+export const vitalsSchema = vitalsFields.extend({
   id: z.uuid(),
   encounterId: z.uuid(),
   bmi: z.number().nullable(),
@@ -110,12 +145,12 @@ export type Vitals = z.infer<typeof vitalsSchema>;
 
 export const diagnosisInputSchema = z.object({
   icd10Code: z.string().trim().regex(/^[A-Z][0-9][0-9A-Z](\.[0-9A-Z]{1,4})?$/, 'Enter an ICD-10 code like J06.9').optional(),
-  description: z.string().trim().min(1).max(300),
+  description: requiredText('the diagnosis', 300),
   kind: z.enum(DIAGNOSIS_KINDS).default('provisional'),
   isPrimary: z.boolean().default(false),
 });
 export type DiagnosisInput = z.input<typeof diagnosisInputSchema>;
-export const diagnosesInputSchema = z.object({ diagnoses: z.array(diagnosisInputSchema).max(30) });
+export const diagnosesInputSchema = z.object({ diagnoses: z.array(diagnosisInputSchema).max(30, 'At most 30 diagnoses') });
 export type DiagnosesInput = z.input<typeof diagnosesInputSchema>;
 
 export interface Diagnosis {
@@ -134,27 +169,41 @@ export interface Icd10Code {
 // ---------- prescriptions ----------
 
 export const prescriptionLineInputSchema = z.object({
-  drugName: z.string().trim().min(1).max(200),
+  drugName: requiredText('the medicine name', 200),
   /** Pharmacy item code, when picked from the pharmacy item master. */
   itemCode: z.string().trim().max(50).optional(),
   genericName: z.string().trim().max(200).optional(),
   form: z.string().trim().max(50).optional(),
   strength: z.string().trim().max(50).optional(),
-  dose: z.string().trim().min(1).max(50),
+  dose: requiredText('the dose', 50),
   route: z.enum(DRUG_ROUTES).default('oral'),
-  frequency: z.string().trim().min(1).max(30),
+  frequency: requiredText('how often (frequency)', 30),
   timing: z.enum(DRUG_TIMINGS).optional(),
-  days: z.number().int().min(0).max(365).optional(),
-  qty: z.number().min(0).max(10000).optional(),
-  instructions: z.string().trim().max(500).optional(),
+  days: z
+    .number({ error: 'Days: enter a number' })
+    .int('Days must be a whole number')
+    .min(0, 'Days cannot be negative')
+    .max(365, 'Days can be at most 365')
+    .optional(),
+  qty: z
+    .number({ error: 'Quantity: enter a number' })
+    .min(0, 'Quantity cannot be negative')
+    .max(10000, 'Quantity can be at most 10,000')
+    .optional(),
+  instructions: z.string().trim().max(500, 'Instructions can be at most 500 characters').optional(),
   /** Set when the doctor prescribes despite a recorded allergy. */
-  allergyOverrideReason: z.string().trim().min(3).max(300).optional(),
+  allergyOverrideReason: z
+    .string()
+    .trim()
+    .min(3, 'Give a reason of at least 3 characters for prescribing despite the allergy')
+    .max(300, 'Reason can be at most 300 characters')
+    .optional(),
 });
 export type PrescriptionLineInput = z.input<typeof prescriptionLineInputSchema>;
 
 export const prescriptionInputSchema = z.object({
-  lines: z.array(prescriptionLineInputSchema).max(40),
-  notes: z.string().max(2000).optional(),
+  lines: z.array(prescriptionLineInputSchema).max(40, 'At most 40 medicines on one prescription'),
+  notes: z.string().max(2000, 'Prescription notes can be at most 2000 characters').optional(),
 });
 export type PrescriptionInput = z.input<typeof prescriptionInputSchema>;
 
@@ -196,8 +245,8 @@ export interface AllergyConflict {
 // ---------- favourites ----------
 
 export const favouriteInputSchema = z.object({
-  name: z.string().trim().min(1).max(100),
-  lines: z.array(prescriptionLineInputSchema.omit({ allergyOverrideReason: true })).min(1).max(40),
+  name: requiredText('a name for the favourite', 100),
+  lines: z.array(prescriptionLineInputSchema.omit({ allergyOverrideReason: true })).min(1, 'Add at least one medicine').max(40, 'At most 40 medicines'),
 });
 export type FavouriteInput = z.input<typeof favouriteInputSchema>;
 /** Rename a favourite and/or replace its medicines. */
@@ -216,12 +265,12 @@ export interface Favourite {
 export const orderInputSchema = z.object({
   kind: z.enum(ORDER_KINDS),
   code: z.string().trim().max(50).optional(),
-  name: z.string().trim().min(1).max(200),
+  name: requiredText('the test or procedure name', 200),
   priority: z.enum(ORDER_PRIORITIES).default('routine'),
   notes: z.string().trim().max(500).optional(),
 });
 export type OrderInput = z.input<typeof orderInputSchema>;
-export const ordersInputSchema = z.object({ orders: z.array(orderInputSchema).max(50) });
+export const ordersInputSchema = z.object({ orders: z.array(orderInputSchema).max(50, 'At most 50 orders') });
 export type OrdersInput = z.input<typeof ordersInputSchema>;
 
 export interface Order {
@@ -242,18 +291,19 @@ export const createEncounterSchema = z.object({
   doctorId: z.uuid().optional(),
   visitId: z.uuid().optional(),
   appointmentId: z.uuid().optional(),
-  tokenNo: z.number().int().min(0).optional(),
+  tokenNo: z.number().int('Token number must be a whole number').min(0, 'Token number cannot be negative').optional(),
 });
 export type CreateEncounter = z.infer<typeof createEncounterSchema>;
 
 export const updateEncounterSchema = z.object({
   notes: encounterNotesSchema.optional(),
-  followUpDate: z.iso.date().nullable().optional(),
-  followUpNotes: z.string().max(1000).nullable().optional(),
+  /** Must be today or later when it is set or changed (the API checks against the stored date). */
+  followUpDate: isoDate.nullable().optional(),
+  followUpNotes: z.string().max(1000, 'Follow-up instructions can be at most 1000 characters').nullable().optional(),
 });
 export type UpdateEncounter = z.infer<typeof updateEncounterSchema>;
 
-export const addendumInputSchema = z.object({ text: z.string().trim().min(1).max(4000) });
+export const addendumInputSchema = z.object({ text: requiredText('the addendum', 4000) });
 export type AddendumInput = z.infer<typeof addendumInputSchema>;
 
 export interface Addendum {
@@ -306,7 +356,7 @@ export interface Encounter extends EncounterSummary {
 }
 
 export const queueQuerySchema = z.object({
-  date: z.iso.date().optional(),
+  date: isoDate.optional(),
   doctorId: z.uuid().optional(),
 });
 export type QueueQuery = z.infer<typeof queueQuerySchema>;
@@ -333,10 +383,10 @@ export interface QueueItem {
 export const quickPrescriptionSchema = z.object({
   patientId: z.uuid(),
   encounterId: z.uuid().optional(),
-  lines: z.array(prescriptionLineInputSchema).min(1).max(40),
+  lines: z.array(prescriptionLineInputSchema).min(1, 'Add at least one medicine').max(40, 'At most 40 medicines on one prescription'),
   notes: z.string().max(2000).optional(),
   advice: z.string().max(4000).optional(),
-  followUpDate: z.iso.date().optional(),
+  followUpDate: todayOrFutureDate('Follow-up date').optional(),
   sign: z.boolean().default(false),
 });
 export type QuickPrescription = z.input<typeof quickPrescriptionSchema>;
@@ -376,14 +426,38 @@ export const createCertificateSchema = z
     patientId: z.uuid(),
     encounterId: z.uuid().optional(),
     kind: z.enum(CERTIFICATE_KINDS),
-    fromDate: z.iso.date().optional(),
-    toDate: z.iso.date().optional(),
-    diagnosis: z.string().trim().max(300).optional(),
-    remarks: z.string().trim().max(2000).optional(),
+    fromDate: isoDate.optional(),
+    toDate: isoDate.optional(),
+    diagnosis: z.string().trim().max(300, 'Diagnosis can be at most 300 characters').optional(),
+    remarks: z.string().trim().max(2000, 'Remarks can be at most 2000 characters').optional(),
   })
-  .refine((c) => !c.fromDate || !c.toDate || c.fromDate <= c.toDate, { message: 'From date must be before to date', path: ['toDate'] })
-  .refine((c) => c.kind !== 'sick_leave' || (c.fromDate && c.toDate), { message: 'Sick leave needs from and to dates', path: ['fromDate'] });
+  .superRefine((c, ctx) => {
+    if (c.kind === 'sick_leave') {
+      if (!c.fromDate) ctx.addIssue({ code: 'custom', message: 'Sick leave needs a from date', path: ['fromDate'] });
+      if (!c.toDate) ctx.addIssue({ code: 'custom', message: 'Sick leave needs a to date', path: ['toDate'] });
+    }
+    if (!datesInOrder(c.fromDate, c.toDate)) {
+      ctx.addIssue({ code: 'custom', message: `${END_BEFORE_START}: the to date must be on or after the from date`, path: ['toDate'] });
+    } else if (c.fromDate && c.toDate && daysBetween(c.fromDate, c.toDate) > CERTIFICATE_MAX_DAYS) {
+      ctx.addIssue({ code: 'custom', message: `A certificate can cover at most ${CERTIFICATE_MAX_DAYS} days`, path: ['toDate'] });
+    }
+    // Backdating is normal (the patient was ill before the visit) but not by years.
+    if (c.fromDate && daysBetween(c.fromDate, todayIso()) > CERTIFICATE_MAX_BACKDATE_DAYS) {
+      ctx.addIssue({ code: 'custom', message: `From date can be at most ${CERTIFICATE_MAX_BACKDATE_DAYS} days in the past`, path: ['fromDate'] });
+    }
+    if (c.toDate && daysBetween(todayIso(), c.toDate) > CERTIFICATE_MAX_DAYS) {
+      ctx.addIssue({ code: 'custom', message: `To date can be at most ${CERTIFICATE_MAX_DAYS} days from today`, path: ['toDate'] });
+    }
+  });
 export type CreateCertificate = z.infer<typeof createCertificateSchema>;
+
+export const CERTIFICATE_MAX_DAYS = 365;
+export const CERTIFICATE_MAX_BACKDATE_DAYS = 90;
+
+/** Whole days from `a` to `b` (YYYY-MM-DD). */
+function daysBetween(a: string, b: string): number {
+  return Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86_400_000);
+}
 
 export interface Certificate {
   id: string;

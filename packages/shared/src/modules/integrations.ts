@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
 import { patchSchema } from '../patch';
+import { indianMobile, isoDate, pastOrTodayDate, positiveMoney, requiredText } from '../validation';
 
 /**
  * Integrations: ABDM (ABHA, Scan-and-Share, HIP care contexts, HIU consents, FHIR R4), online payment
@@ -54,15 +55,20 @@ export type AbdmMode = (typeof ABDM_MODES)[number];
 export const PAYMENT_PROVIDERS = ['none', 'mock', 'razorpay'] as const;
 export type PaymentProvider = (typeof PAYMENT_PROVIDERS)[number];
 
-export const settingsInputSchema = z.object({
-  abdmMode: z.enum(ABDM_MODES),
-  /** Health Facility Registry id of this hospital (HIP id). */
-  hfrId: z.string().trim().max(50).optional().nullable(),
-  hipName: z.string().trim().max(200).optional().nullable(),
-  paymentProvider: z.enum(PAYMENT_PROVIDERS),
-  /** Public key id only (e.g. rzp_test_…). Secrets live in server environment variables, never in the database. */
-  paymentKeyId: z.string().trim().max(100).optional().nullable(),
-});
+export const settingsInputSchema = z
+  .object({
+    abdmMode: z.enum(ABDM_MODES),
+    /** Health Facility Registry id of this hospital (HIP id). */
+    hfrId: z.string().trim().max(50, 'HFR id can be at most 50 characters').regex(/^[A-Za-z0-9_-]*$/, 'HFR id can only have letters, digits, - and _').optional().nullable(),
+    hipName: z.string().trim().max(200, 'HIP name can be at most 200 characters').optional().nullable(),
+    paymentProvider: z.enum(PAYMENT_PROVIDERS),
+    /** Public key id only (e.g. rzp_test_…). Secrets live in server environment variables, never in the database. */
+    paymentKeyId: z.string().trim().max(100, 'Key id can be at most 100 characters').optional().nullable(),
+  })
+  .refine((v) => v.paymentProvider !== 'razorpay' || !v.paymentKeyId || /^rzp_(test|live)_[A-Za-z0-9]+$/.test(v.paymentKeyId), {
+    path: ['paymentKeyId'],
+    message: 'Razorpay key id looks like rzp_test_… or rzp_live_… (never paste the secret here)',
+  });
 export type SettingsInput = z.input<typeof settingsInputSchema>;
 
 export interface IntegrationSettings {
@@ -143,7 +149,7 @@ export const abhaLinkSchema = z.object({
 });
 export type AbhaLinkInput = z.input<typeof abhaLinkSchema>;
 
-export const abhaUnlinkSchema = z.object({ reason: z.string().trim().min(3).max(300) });
+export const abhaUnlinkSchema = z.object({ reason: requiredText('the reason', 300, 3) });
 export type AbhaUnlinkInput = z.input<typeof abhaUnlinkSchema>;
 
 export type AbhaLinkStatus = 'linked' | 'unlinked';
@@ -189,10 +195,10 @@ export const profileShareCallbackSchema = z.object({
   profile: z.object({
     abhaNumber,
     abhaAddress: abhaAddress.optional().nullable(),
-    name: z.string().trim().min(1).max(200),
+    name: requiredText('the name', 200),
     gender: z.enum(['male', 'female', 'other', 'unknown']).default('unknown'),
-    yearOfBirth: z.number().int().min(1900).max(2100).optional().nullable(),
-    mobile: z.string().regex(/^[6-9]\d{9}$/).optional().nullable(),
+    yearOfBirth: z.number().int().min(1900, 'Year of birth cannot be before 1900').refine((y) => y <= new Date().getFullYear(), 'Year of birth cannot be in the future').optional().nullable(),
+    mobile: indianMobile.optional().nullable(),
   }),
 });
 export type ProfileShareCallback = z.input<typeof profileShareCallbackSchema>;
@@ -215,8 +221,8 @@ export type ScanShareResolve = z.input<typeof scanShareResolveSchema>;
 export const scanShareSimulateSchema = z.object({
   name: z.string().trim().min(1).max(200).default('Sandbox Patient'),
   gender: z.enum(['male', 'female', 'other', 'unknown']).default('female'),
-  yearOfBirth: z.number().int().min(1900).max(2100).default(1990),
-  mobile: z.string().regex(/^[6-9]\d{9}$/).optional(),
+  yearOfBirth: z.number().int().min(1900, 'Year of birth cannot be before 1900').refine((y) => y <= new Date().getFullYear(), 'Year of birth cannot be in the future').default(1990),
+  mobile: indianMobile.optional(),
 });
 export type ScanShareSimulate = z.input<typeof scanShareSimulateSchema>;
 
@@ -268,11 +274,12 @@ export const consentRequestSchema = z
   .object({
     patientId: z.uuid(),
     purpose: z.enum(CONSENT_PURPOSES).default('CAREMGT'),
-    hiTypes: z.array(z.enum(HEALTH_INFO_TYPES)).min(1).max(HEALTH_INFO_TYPES.length),
-    dateFrom: z.iso.date(),
-    dateTo: z.iso.date(),
+    hiTypes: z.array(z.enum(HEALTH_INFO_TYPES)).min(1, 'Pick at least one record type').max(HEALTH_INFO_TYPES.length),
+    /** Records from this date. Health records cannot start in the future. */
+    dateFrom: pastOrTodayDate('Start date'),
+    dateTo: isoDate,
     /** Days the consent stays valid once granted. */
-    validDays: z.number().int().min(1).max(365).default(30),
+    validDays: z.number().int('Days must be a whole number').min(1, 'Valid for at least 1 day').max(365, 'Valid for at most 365 days').default(30),
   })
   .refine((v) => v.dateTo >= v.dateFrom, { path: ['dateTo'], message: 'End date must be on or after the start date' });
 export type ConsentRequestInput = z.input<typeof consentRequestSchema>;
@@ -341,7 +348,7 @@ export interface PaymentIntent {
 export const createPaymentIntentSchema = z.object({
   invoiceId: z.uuid(),
   /** Defaults to the bill's balance. */
-  amount: z.number().positive().multipleOf(0.01).optional(),
+  amount: positiveMoney().optional(),
 });
 export type CreatePaymentIntent = z.input<typeof createPaymentIntentSchema>;
 
@@ -366,9 +373,14 @@ export const API_SCOPE_LABELS: Record<ApiScope, string> = {
 };
 
 export const createApiKeySchema = z.object({
-  name: z.string().trim().min(2).max(100),
-  scopes: z.array(z.enum(API_SCOPES)).min(1),
-  expiresAt: z.iso.datetime({ offset: true }).optional(),
+  name: requiredText('a name for the key', 100, 2),
+  scopes: z.array(z.enum(API_SCOPES)).min(1, 'Pick at least one permission'),
+  /** Optional expiry: must be in the future and within 5 years. */
+  expiresAt: z.iso
+    .datetime({ offset: true, error: 'Enter a valid expiry date' })
+    .refine((v) => Date.parse(v) > Date.now(), 'Expiry date must be in the future')
+    .refine((v) => Date.parse(v) <= Date.now() + 5 * 366 * 86_400_000, 'Expiry can be at most 5 years from today')
+    .optional(),
 });
 export type CreateApiKey = z.input<typeof createApiKeySchema>;
 
@@ -405,14 +417,14 @@ export const WEBHOOK_EVENTS = [
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
 
 const webhookUrl = z
-  .url({ protocol: /^https?$/ })
-  .max(500)
+  .url({ protocol: /^https?$/, error: 'Enter a full URL starting with https://' })
+  .max(500, 'URL can be at most 500 characters')
   .refine((u) => u.startsWith('https://') || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(u + '/'), 'Webhook URLs must use https');
 
 export const webhookEndpointInputSchema = z.object({
   url: webhookUrl,
   description: optionalText(200),
-  events: z.array(z.enum(WEBHOOK_EVENTS)).min(1),
+  events: z.array(z.enum(WEBHOOK_EVENTS)).min(1, 'Pick at least one event'),
   isActive: z.boolean().default(true),
 });
 export type WebhookEndpointInput = z.input<typeof webhookEndpointInputSchema>;
@@ -461,7 +473,7 @@ export type DeviceProtocol = (typeof DEVICE_PROTOCOLS)[number];
 
 export const deviceInputSchema = z.object({
   code: z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9_-]{1,29}$/, 'Use letters, digits, - or _'),
-  name: z.string().trim().min(2).max(100),
+  name: requiredText('the device name', 100, 2),
   model: optionalText(100),
   protocol: z.enum(DEVICE_PROTOCOLS).default('hl7v2'),
   facilityId: z.uuid().optional().nullable(),

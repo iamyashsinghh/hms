@@ -167,12 +167,18 @@ function MoneyCell({ value, editable, onSave }: { value: number; editable: boole
     <Input
       type="number"
       min={0}
+      max={99999999.99}
       step="0.01"
       defaultValue={value || ''}
       placeholder="0"
       className="ml-auto h-8 w-24 text-right text-xs"
       onBlur={(e) => {
         const v = Number(e.target.value || 0);
+        // Amounts are rupees with up to 2 decimals and never negative; the API gives the message otherwise.
+        if (!Number.isFinite(v) || v < 0) {
+          e.target.value = value ? String(value) : '';
+          return;
+        }
         if (v !== value) onSave(v);
       }}
     />

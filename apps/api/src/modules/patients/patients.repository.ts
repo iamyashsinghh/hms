@@ -30,9 +30,9 @@ export class PatientsRepository {
   }
 
   /** Another active patient already holding this ABHA number, if any. */
-  async findActiveByAbha(tx: Tx, abhaNumber: string, exceptId?: string): Promise<PatientRow | undefined> {
+  async findActiveByAbha(tx: Tx, abhaNumber: string, exceptId?: string): Promise<Pick<PatientRow, 'id' | 'uhid'> | undefined> {
     const [row] = await tx
-      .select()
+      .select({ id: patients.id, uhid: patients.uhid })
       .from(patients)
       .where(and(eq(patients.abhaNumber, abhaNumber), eq(patients.isActive, true), exceptId ? sql`${patients.id} <> ${exceptId}` : undefined))
       .limit(1);

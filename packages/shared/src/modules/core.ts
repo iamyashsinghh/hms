@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { abhaNumber, blankToUndefined, dateOfBirth, emailAddress, indianMobile, personName, pincode } from '../validation';
 
 /** Owned by the foundation: identity, tenants, facilities and the patient master. */
 export const coreModule = defineModule({
@@ -39,13 +40,28 @@ export const coreModule = defineModule({
 
 export const loginRequestSchema = z.object({
   /** Hospital code (also its subdomain), e.g. `demo`. */
-  tenantCode: z.string().trim().toLowerCase().min(2).max(63),
+  tenantCode: z
+    .string({ error: 'Enter your hospital code' })
+    .trim()
+    .toLowerCase()
+    .min(1, { message: 'Enter your hospital code', abort: true })
+    .min(2, { message: 'Hospital code has at least 2 characters', abort: true })
+    .max(63, 'Hospital code is too long')
+    .regex(/^[a-z0-9][a-z0-9-]*$/, 'Hospital code has only letters, digits and -'),
   /** Email or 10-digit mobile number. */
-  identifier: z.string().trim().min(3).max(254),
-  password: z.string().min(8).max(200),
+  identifier: z
+    .string({ error: 'Enter your email or mobile number' })
+    .trim()
+    .min(1, { message: 'Enter your email or mobile number', abort: true })
+    .min(3, 'Enter a valid email or mobile number')
+    .max(254, 'Email or mobile is too long')
+    // A mobile typed as +91 98100 00001 or 098100 00001 matches the stored 10 digits.
+    .transform((v) => (/^\+?[\d\s-]+$/.test(v) ? v.replace(/[\s-]/g, '').replace(/^(\+91|91(?=\d{10}$)|0(?=\d{10}$))/, '') : v)),
+  /** Only checked for presence here; the password rules apply when a password is set. */
+  password: z.string({ error: 'Enter your password' }).min(1, 'Enter your password').max(200, 'Password is too long'),
   /** Web gets the refresh token as an httpOnly cookie; mobile gets it in the body. */
   client: z.enum(['web', 'mobile']).default('web'),
-  deviceName: z.string().max(100).optional(),
+  deviceName: z.string().trim().max(100, 'Device name is too long').optional(),
 });
 export type LoginRequest = z.input<typeof loginRequestSchema>;
 
@@ -103,48 +119,67 @@ export interface AccessTokenClaims {
 export const GENDERS = ['male', 'female', 'other', 'unknown'] as const;
 export const BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'] as const;
 
-/** Latest calendar date anywhere on Earth (UTC+14), so a birth "today" in any time zone is accepted. */
-const latestToday = () => new Date(Date.now() + 14 * 3_600_000).toISOString().slice(0, 10);
+/** Optional text field: '' counts as not given. */
+const optionalText = (label: string, max: number) => blankToUndefined(z.string().trim().max(max, `${label} can be at most ${max} characters`).optional());
 
-export const createPatientSchema = z.object({
-  firstName: z.string().trim().min(1).max(100),
-  lastName: z.string().trim().max(100).optional(),
-  gender: z.enum(GENDERS),
-  dateOfBirth: z.iso
-    .date()
-    .refine((d) => d <= latestToday(), 'Date of birth cannot be in the future')
-    .refine((d) => d >= '1870-01-01', 'Enter a real date of birth')
-    .optional(),
-  /** Used when date of birth is unknown. */
-  ageYears: z.number().int().min(0).max(150).optional(),
-  mobile: z.string().regex(/^[6-9]\d{9}$/, 'Enter a 10-digit Indian mobile number').optional(),
-  email: z.email().optional(),
-  bloodGroup: z.enum(BLOOD_GROUPS).optional(),
-  abhaNumber: z.string().regex(/^\d{14}$/).optional(),
-  address: z
-    .object({
-      line1: z.string().max(200).optional(),
-      city: z.string().max(100).optional(),
-      state: z.string().max(100).optional(),
-      pincode: z.string().regex(/^\d{6}$/).optional(),
-    })
-    .optional(),
-  allergies: z.array(z.string().max(100)).max(50).optional(),
+/** Last names may carry a digit (e.g. "Singh 2nd"), but must start with a letter and have no other symbols. */
+const lastName = z
+  .string()
+  .trim()
+  .max(100, 'Last name can be at most 100 characters')
+  .regex(/^[\p{L}\p{M}][\p{L}\p{M}\d .'-]*$/u, "Last name can only have letters, spaces and . ' -");
+
+const addressFields = z.object({
+  line1: optionalText('Address', 200),
+  city: optionalText('City', 100),
+  state: optionalText('State', 100),
+  pincode: blankToUndefined(pincode.optional()),
 });
+
+const patientFields = z.object({
+  firstName: personName('first name'),
+  lastName: blankToUndefined(lastName.optional()),
+  gender: z.enum(GENDERS, { error: 'Pick a gender' }),
+  dateOfBirth: blankToUndefined(dateOfBirth.optional()),
+  /** Used when date of birth is unknown. */
+  ageYears: blankToUndefined(
+    z.number({ error: 'Enter age in years' }).int('Age must be in whole years').min(0, 'Age cannot be negative').max(150, 'Age cannot be more than 150 years').optional(),
+  ),
+  mobile: blankToUndefined(indianMobile.optional()),
+  email: blankToUndefined(emailAddress.optional()),
+  bloodGroup: blankToUndefined(z.enum(BLOOD_GROUPS, { error: 'Pick a blood group from the list' }).optional()),
+  abhaNumber: blankToUndefined(abhaNumber.optional()),
+  address: addressFields.optional(),
+  allergies: z
+    .array(z.string().trim().min(1, 'Allergy cannot be empty').max(100, 'Each allergy can be at most 100 characters'))
+    .max(50, 'At most 50 allergies')
+    .optional(),
+});
+
+/**
+ * The date of birth wins when both DOB and age are given (age is only for an unknown DOB),
+ * so they are not compared; the web forms disable age once a DOB is entered.
+ */
+export const createPatientSchema = patientFields;
 export type CreatePatient = z.infer<typeof createPatientSchema>;
 
-/** Partial update. Optional fields also take `null` to clear them. */
-export const updatePatientSchema = createPatientSchema.partial().extend({
-  lastName: createPatientSchema.shape.lastName.nullable(),
-  dateOfBirth: createPatientSchema.shape.dateOfBirth.nullable(),
-  mobile: createPatientSchema.shape.mobile.nullable(),
-  email: createPatientSchema.shape.email.nullable(),
-  bloodGroup: createPatientSchema.shape.bloodGroup.nullable(),
-  abhaNumber: createPatientSchema.shape.abhaNumber.nullable(),
-});
+/** For edits (partial update), '' or null clears an optional field. */
+const clearable = <T extends z.ZodType>(schema: T) =>
+  z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? null : v), schema.nullable().optional());
+
+export const updatePatientSchema = patientFields
+  .partial()
+  .extend({
+    lastName: clearable(lastName),
+    dateOfBirth: clearable(dateOfBirth),
+    mobile: clearable(indianMobile),
+    email: clearable(emailAddress),
+    bloodGroup: clearable(z.enum(BLOOD_GROUPS, { error: 'Pick a blood group from the list' })),
+    abhaNumber: clearable(abhaNumber),
+  });
 export type UpdatePatient = z.infer<typeof updatePatientSchema>;
 
-export const patientSchema = createPatientSchema.extend({
+export const patientSchema = patientFields.extend({
   id: z.uuid(),
   uhid: z.string(),
   lastName: z.string().nullable(),

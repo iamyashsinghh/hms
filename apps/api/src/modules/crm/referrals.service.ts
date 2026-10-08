@@ -523,6 +523,9 @@ export class ReferralsService {
     return this.db.tx(async (tx) => {
       const s = await this.statementRow(tx, id);
       if (s.status !== 'approved') throw conflict('statement_not_approved', 'Approve the statement before paying it');
+      if (d.mode !== 'cash' && !d.reference) {
+        throw badRequest('payment_reference_required', `Enter the ${d.mode === 'cheque' ? 'cheque number' : 'UTR / transaction reference'} for a ${d.mode.toUpperCase()} payment`);
+      }
       await tx
         .update(crmCommissionStatements)
         .set({

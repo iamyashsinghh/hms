@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
 import type { Doctor as SetupDoctor } from './setup';
+import { abhaNumber as abhaNumberField, blankToUndefined, datesInOrder, END_BEFORE_START } from '../validation';
 
 /**
  * Front Office: permissions and API contracts (Zod schemas + types).
@@ -40,6 +41,8 @@ export const frontofficeModule = defineModule({
 // ---------- shared bits ----------
 
 const isoDate = z.iso.date();
+/** '' counts as not given. Typed as the inner schema so the request types stay `string | undefined`. */
+const blank = <T extends z.ZodType>(schema: T): T => blankToUndefined(schema) as unknown as T;
 const dateTime = z.iso.datetime({ offset: true });
 
 export const APPOINTMENT_TYPES = ['new', 'follow_up', 'review', 'procedure'] as const;
@@ -143,26 +146,28 @@ export const rescheduleAppointmentSchema = z.object({
 export type RescheduleAppointment = z.input<typeof rescheduleAppointmentSchema>;
 
 export const cancelAppointmentSchema = z.object({
-  reason: z.string().trim().min(1).max(500),
+  reason: z.string({ error: 'Give a reason for cancelling' }).trim().min(1, 'Give a reason for cancelling').max(500, 'Reason can be at most 500 characters'),
 });
 export type CancelAppointment = z.input<typeof cancelAppointmentSchema>;
 
 export const checkInSchema = z.object({
-  priority: z.enum(VISIT_PRIORITIES).default('normal'),
-  notes: z.string().trim().max(500).optional(),
+  priority: z.enum(VISIT_PRIORITIES, { error: 'Pick a priority: normal, senior or urgent' }).default('normal'),
+  notes: z.string().trim().max(500, 'Notes can be at most 500 characters').optional(),
 });
 export type CheckIn = z.input<typeof checkInSchema>;
 
-export const appointmentListQuerySchema = z.object({
-  date: isoDate.optional(),
-  from: isoDate.optional(),
-  to: isoDate.optional(),
-  doctorId: z.uuid().optional(),
-  patientId: z.uuid().optional(),
-  status: z.enum(APPOINTMENT_STATUSES).optional(),
-  page: z.coerce.number().int().min(1).default(1),
-  pageSize: z.coerce.number().int().min(1).max(200).default(50),
-});
+export const appointmentListQuerySchema = z
+  .object({
+    date: isoDate.optional(),
+    from: isoDate.optional(),
+    to: isoDate.optional(),
+    doctorId: z.uuid().optional(),
+    patientId: z.uuid().optional(),
+    status: z.enum(APPOINTMENT_STATUSES).optional(),
+    page: z.coerce.number().int().min(1).default(1),
+    pageSize: z.coerce.number().int().min(1).max(200).default(50),
+  })
+  .refine((q) => datesInOrder(q.from, q.to), { message: END_BEFORE_START, path: ['to'] });
 export type AppointmentListQuery = {
   date?: string;
   from?: string;
@@ -223,18 +228,18 @@ export type AppointmentDetail = Appointment & { history: AppointmentHistory[] };
 // ---------- visits / queue ----------
 
 export const walkInSchema = z.object({
-  patientId: z.uuid(),
-  doctorId: z.uuid(),
-  facilityId: z.uuid().optional(),
-  priority: z.enum(VISIT_PRIORITIES).default('normal'),
-  notes: z.string().trim().max(500).optional(),
+  patientId: z.uuid({ error: 'Pick a patient' }),
+  doctorId: z.uuid({ error: 'Pick a doctor' }),
+  facilityId: z.uuid({ error: 'Pick a valid facility' }).optional(),
+  priority: z.enum(VISIT_PRIORITIES, { error: 'Pick a priority: normal, senior or urgent' }).default('normal'),
+  notes: z.string().trim().max(500, 'Notes can be at most 500 characters').optional(),
 });
 export type WalkIn = z.input<typeof walkInSchema>;
 
 export const visitTransitionSchema = z.object({
-  action: z.enum(VISIT_ACTIONS),
+  action: z.enum(VISIT_ACTIONS, { error: 'Unknown token action' }),
   /** Consultation room / cabin shown on the TV display when calling. */
-  room: z.string().trim().max(40).optional(),
+  room: blank(z.string().trim().max(40, 'Room can be at most 40 characters').optional()),
 });
 export type VisitTransition = z.input<typeof visitTransitionSchema>;
 
@@ -337,7 +342,12 @@ export const mergePatientsSchema = z
     sourcePatientId: z.uuid(),
     /** The record that is kept. */
     targetPatientId: z.uuid(),
-    reason: z.string().trim().min(3).max(500),
+    reason: z
+      .string({ error: 'Give a reason for the merge' })
+      .trim()
+      .min(1, 'Give a reason for the merge')
+      .min(3, 'Reason needs at least 3 characters')
+      .max(500, 'Reason can be at most 500 characters'),
   })
   .refine((v) => v.sourcePatientId !== v.targetPatientId, { message: 'Pick two different patients', path: ['targetPatientId'] });
 export type MergePatients = z.input<typeof mergePatientsSchema>;
@@ -354,13 +364,17 @@ export interface PatientMerge {
 }
 
 export const abhaCaptureSchema = z.object({
-  abhaNumber: z
-    .string()
-    .trim()
-    .transform((s) => s.replace(/[-\s]/g, ''))
-    .pipe(z.string().regex(/^\d{14}$/, 'ABHA number has 14 digits')),
+  abhaNumber: abhaNumberField,
   /** ABHA address like name@abdm; kept in clinical.patient_abha until the integrations module verifies it. */
-  abhaAddress: z.string().trim().max(100).optional(),
+  abhaAddress: blank(
+    z
+      .string()
+      .trim()
+      .toLowerCase()
+      .max(100, 'ABHA address can be at most 100 characters')
+      .regex(/^[a-z0-9][a-z0-9._-]{2,63}@[a-z]{2,20}$/, 'Enter an ABHA address like name@abdm')
+      .optional(),
+  ),
 });
 export type AbhaCapture = z.input<typeof abhaCaptureSchema>;
 

@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Loader2, Pencil, Plus } from 'lucide-react';
 import { quality as Q } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -91,17 +92,9 @@ function Editor({ checklist, onDone }: { checklist: Q.Checklist | null; onDone: 
   const [category, setCategory] = React.useState<Q.ChecklistCategory | ''>(checklist?.category ?? 'hand_hygiene');
   const [items, setItems] = React.useState(checklist ? checklist.items.map((i) => i.text).join('\n') : HAND_HYGIENE_TEMPLATE);
   const [isActive, setIsActive] = React.useState(checklist?.isActive ?? true);
+  const [errors, setErrors] = React.useState<FieldErrors>({});
   const save = useMutation({
-    mutationFn: () => {
-      const body = {
-        name,
-        category: category as Q.ChecklistCategory,
-        items: items
-          .split('\n')
-          .map((s) => s.trim())
-          .filter(Boolean),
-        isActive,
-      };
+    mutationFn: (body: Q.ChecklistInput) => {
       return checklist ? api.quality.checklists.update(checklist.id, body) : api.quality.checklists.create(body);
     },
     onSuccess: () => {
@@ -119,19 +112,38 @@ function Editor({ checklist, onDone }: { checklist: Q.Checklist | null; onDone: 
           className="grid gap-4 sm:grid-cols-2"
           onSubmit={(e) => {
             e.preventDefault();
-            save.mutate();
+            const body: Q.ChecklistInput = {
+              name,
+              category: category as Q.ChecklistCategory,
+              items: items
+                .split('\n')
+                .map((s) => s.trim())
+                .filter(Boolean),
+              isActive,
+            };
+            const { errors: found } = validate(Q.checklistInputSchema, body);
+            const lines = body.items as string[];
+            const all: FieldErrors = { ...(found ?? {}) };
+            if (new Set(lines.map((l) => l.toLowerCase())).size !== lines.length) all.items = 'Each checklist item must be different';
+            setErrors(all);
+            if (!Object.keys(all).length) save.mutate(body);
           }}
         >
           <div className="sm:col-span-2">
-            <ErrorBox error={save.error} />
+            <ErrorBox error={Object.keys(errors).length ? 'Please correct the highlighted fields' : save.error} />
           </div>
-          <Field id="cl-name" label="Name *">
-            <Input id="cl-name" required value={name} onChange={(e) => setName(e.target.value)} />
+          <Field id="cl-name" label="Name *" error={errors.name}>
+            <Input id="cl-name" required maxLength={160} value={name} onChange={(e) => setName(e.target.value)} />
           </Field>
           <Field id="cl-category" label="Category *">
             <EnumSelect id="cl-category" value={category} onChange={setCategory} options={Q.CHECKLIST_CATEGORIES} />
           </Field>
-          <Field id="cl-items" label="Items * (one per line)" className="sm:col-span-2">
+          <Field
+            id="cl-items"
+            label="Items * (one per line)"
+            className="sm:col-span-2"
+            error={errors.items ?? Object.entries(errors).find(([k]) => k.startsWith('items.'))?.[1]}
+          >
             <Textarea id="cl-items" rows={9} required value={items} onChange={(e) => setItems(e.target.value)} />
           </Field>
           <label className="flex items-center gap-2 text-sm">

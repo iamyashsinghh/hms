@@ -62,6 +62,7 @@ const IST = 330 * 60_000;
 const today = () => new Date(Date.now() + IST).toISOString().slice(0, 10);
 const period = () => today().slice(0, 7);
 const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
+const daysFromToday = (n: number) => new Date(Date.now() + IST + n * 86_400_000).toISOString().slice(0, 10);
 const indicator = async (code: string) =>
   ((await ok(admin, 'GET', `/quality/indicators?period=${period()}`)) as { code: string; numerator: number | null; denominator: number | null; value: number | null }[]).find(
     (i) => i.code === code,
@@ -257,7 +258,9 @@ describe('quality: infection control and indicators', () => {
     expect(after.ssi.denominator! - (before.ssi.denominator ?? 0)).toBe(50);
 
     const bad = await call(nurse, 'POST', '/quality/hai', { patientId, infectionType: 'clabsi', onsetDate: today(), deviceInsertedOn: '2099-01-01' });
-    expect(bad.json().error.code).toBe('invalid_dates');
+    expect(bad.json().error.message).toContain('Device insertion date cannot be in the future');
+    const order = await call(nurse, 'POST', '/quality/hai', { patientId, infectionType: 'clabsi', onsetDate: daysFromToday(-3), deviceInsertedOn: daysFromToday(-1) });
+    expect(order.json().error.message).toContain('Device insertion date must be on or before the onset date');
     expect((await call(reception, 'POST', '/quality/hai', { patientId, infectionType: 'vap', onsetDate: today() })).statusCode).toBe(403);
     expect((await call(doctor, 'GET', '/quality/hai')).statusCode).toBe(200);
   });
@@ -457,7 +460,54 @@ describe('quality: hospital isolation', () => {
   });
 });
 
+describe('quality: validation', () => {
+  const msg = (res: { json: () => { error: { message: string } } }) => res.json().error.message;
+
+  it('checks incident and complaint forms', async () => {
+    const future = await call(nurse, 'POST', '/quality/incidents', incident({ occurredAt: new Date(Date.now() + 86_400_000).toISOString() }));
+    expect(msg(future)).toContain('Time of the incident cannot be in the future');
+    expect(msg(await call(nurse, 'POST', '/quality/incidents', incident({ description: '   ' })))).toContain('Enter what happened');
+    expect((await call(admin, 'GET', `/quality/incidents?from=${today()}&to=${daysFromToday(-5)}`)).statusCode).toBe(400);
+
+    const base = { source: 'walk_in', category: 'food', complainantName: `Val ${tag}`, description: 'Cold food' };
+    expect(msg(await call(reception, 'POST', '/quality/complaints', { ...base, complainantMobile: '12345' }))).toContain('10-digit');
+    expect(msg(await call(reception, 'POST', '/quality/complaints', { ...base, complainantName: ' ' }))).toContain("Enter the complainant's name");
+    const okc = await ok(reception, 'POST', '/quality/complaints', { ...base, complainantMobile: '+91 98765 43210' });
+    expect(okc.complainantMobile).toBe('9876543210');
+    expect((await ok(reception, 'POST', '/quality/complaints', { ...base, complainantMobile: '' })).complainantMobile).toBeNull();
+  });
+
+  it('checks HAI, census, audits, CAPA, documents and indicators', async () => {
+    expect(msg(await call(nurse, 'POST', '/quality/hai', { patientId, infectionType: 'cauti', onsetDate: daysFromToday(1) }))).toContain('Onset date cannot be in the future');
+    expect(msg(await call(nurse, 'PUT', '/quality/census', { day: daysFromToday(1), patientDays: 1 }))).toContain('Census cannot be entered for a future date');
+    expect(msg(await call(nurse, 'PUT', '/quality/census', { day: today(), patientDays: -1 }))).toContain('Patient days cannot be negative');
+
+    const cl = await ok(admin, 'POST', '/quality/checklists', { name: `Val list ${tag}`, category: 'other', items: ['One'] });
+    expect(msg(await call(nurse, 'POST', '/quality/audits', { checklistId: cl.id, scheduledOn: daysFromToday(-1) }))).toContain('Audit date cannot be in the past');
+    expect(msg(await call(admin, 'POST', '/quality/checklists', { name: `Empty ${tag}`, category: 'other', items: [] }))).toContain('Add at least one item');
+
+    const capaBase = { sourceType: 'other', title: `Val CAPA ${tag}`, problem: 'Problem' };
+    expect(msg(await call(admin, 'POST', '/quality/capas', { ...capaBase, dueDate: daysFromToday(-1) }))).toContain('Due date cannot be in the past');
+    const capa = await ok(admin, 'POST', '/quality/capas', { ...capaBase, dueDate: daysFromToday(7) });
+    expect(msg(await call(admin, 'PATCH', `/quality/capas/${capa.id}`, { dueDate: daysFromToday(-2) }))).toContain('Due date cannot be in the past');
+    // Saving the same date again is fine.
+    expect((await call(admin, 'PATCH', `/quality/capas/${capa.id}`, { dueDate: capa.dueDate, title: 'Renamed' })).statusCode).toBe(200);
+
+    const doc = { code: `VAL-${tag}`.slice(0, 40), title: 'Validation doc', chapter: 'PSQ', docType: 'sop' };
+    expect(msg(await call(admin, 'POST', '/quality/documents', { ...doc, effectiveFrom: today(), reviewDue: daysFromToday(-1) }))).toContain(
+      'Review date must be on or after the effective date',
+    );
+    expect(msg(await call(admin, 'POST', '/quality/documents', { ...doc, fileUrl: 'not a link' }))).toContain('http');
+    const d = await ok(admin, 'POST', '/quality/documents', { ...doc, effectiveFrom: today(), fileUrl: '' });
+    expect(msg(await call(admin, 'PATCH', `/quality/documents/${d.id}`, { reviewDue: daysFromToday(-1) }))).toContain('Review date must be on or after the effective date');
+
+    expect(msg(await call(admin, 'PUT', '/quality/indicators/PRE-SAT/values', { period: period(), numerator: 120, denominator: 100 }))).toContain('cannot be more than');
+    expect(msg(await call(admin, 'PUT', '/quality/indicators/PRE-SAT/values', { period: period(), numerator: 10, denominator: 0 }))).toContain('Denominator must be more than 0');
+  });
+});
+
 describe('quality: editing records', () => {
+  const msg = (res: { json: () => { error: { message: string } } }) => res.json().error.message;
   it('edits an infection case: fields, clearing the device date, date rules and permissions', async () => {
     const h = await ok(nurse, 'POST', '/quality/hai', { patientId, infectionType: 'clabsi', ward: 'ICU', onsetDate: today(), deviceInsertedOn: today() });
     const edited = await ok(nurse, 'PATCH', `/quality/hai/${h.id}`, { infectionType: 'vap', ward: `MICU ${tag}`, organism: 'Klebsiella', cultureRef: 'CX-1', notes: 'Updated after culture' });
@@ -465,8 +515,10 @@ describe('quality: editing records', () => {
     const cleared = await ok(nurse, 'PATCH', `/quality/hai/${h.id}`, { deviceInsertedOn: null, ward: '' });
     expect(cleared).toMatchObject({ deviceInsertedOn: null, ward: null });
 
-    expect((await call(nurse, 'PATCH', `/quality/hai/${h.id}`, { onsetDate: '2099-01-01' })).json().error.code).toBe('future_date');
-    expect((await call(nurse, 'PATCH', `/quality/hai/${h.id}`, { deviceInsertedOn: '2099-01-01' })).json().error.code).toBe('invalid_dates');
+    expect(msg(await call(nurse, 'PATCH', `/quality/hai/${h.id}`, { onsetDate: '2099-01-01' }))).toContain('Onset date cannot be in the future');
+    expect(msg(await call(nurse, 'PATCH', `/quality/hai/${h.id}`, { deviceInsertedOn: '2099-01-01' }))).toContain('Device insertion date cannot be in the future');
+    // A device date after the saved onset date is refused by the API.
+    expect((await call(nurse, 'PATCH', `/quality/hai/${h.id}`, { onsetDate: daysFromToday(-3), deviceInsertedOn: daysFromToday(-1) })).statusCode).toBe(400);
     expect((await call(nurse, 'PATCH', `/quality/hai/${h.id}`, { onsetDate: 'yesterday' })).statusCode).toBe(400);
     expect((await call(nurse, 'PATCH', `/quality/hai/${h.id}`, { infectionType: 'flu' })).statusCode).toBe(400);
     expect((await call(doctor, 'PATCH', `/quality/hai/${h.id}`, { organism: 'x' })).statusCode).toBe(403);

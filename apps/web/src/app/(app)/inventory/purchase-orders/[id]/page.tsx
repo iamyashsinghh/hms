@@ -5,7 +5,9 @@ import { use } from 'react';
 import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Loader2, PackageCheck, Pencil, Printer } from 'lucide-react';
+import { inventory, todayIso } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
 import { NoAccess } from '@/components/no-access';
@@ -14,7 +16,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { inr, Notice, StatusBadge } from '@/modules/inventory/ui';
+import { formErrorMessage, inr, Notice, StatusBadge } from '@/modules/inventory/ui';
 
 interface Receipt {
   qty: string;
@@ -35,6 +37,7 @@ export default function PurchaseOrderPage({ params }: { params: Promise<{ id: st
   const [invoice, setInvoice] = React.useState({ invoiceNo: '', invoiceDate: '' });
   const [receipt, setReceipt] = React.useState<Record<string, Receipt>>({});
   const [notice, setNotice] = React.useState<string | null>(null);
+  const [receiveError, setReceiveError] = React.useState<string | null>(null);
 
   const po = useQuery({ queryKey: ['inventory', 'purchase-orders', id], queryFn: () => api.inventory.purchaseOrders.get(id), enabled: canRead });
   const grns = useQuery({ queryKey: ['inventory', 'grns', 'po', id], queryFn: () => api.inventory.grns.list({ purchaseOrderId: id, pageSize: 100 }), enabled: canRead });
@@ -50,23 +53,38 @@ export default function PurchaseOrderPage({ params }: { params: Promise<{ id: st
     onSuccess: refresh,
   });
 
+  const receiptEntries = () => Object.entries(receipt).filter(([, r]) => Number(r.qty) > 0);
+  const grnBody = () => ({
+    purchaseOrderId: id,
+    invoiceNo: invoice.invoiceNo.trim() || undefined,
+    invoiceDate: invoice.invoiceDate || undefined,
+    lines: receiptEntries().map(([poLineId, r]) => ({
+      poLineId,
+      qty: Number(r.qty),
+      freeQty: Number(r.freeQty || 0),
+      batchNo: r.batchNo.trim() || undefined,
+      expiryDate: r.expiryDate || undefined,
+      mrp: r.mrp ? Number(r.mrp) : undefined,
+    })),
+  });
+  /** Same checks as the server, plus pending quantity and MRP against the PO rate. */
+  const checkReceipt = (): string | null => {
+    const body = grnBody();
+    const poLines = po.data?.lines ?? [];
+    const names = body.lines.map((l) => ({ name: poLines.find((x) => x.id === l.poLineId)?.itemName }));
+    const r = validate(inventory.createGrnSchema, body);
+    if (r.errors) return formErrorMessage(r.errors, names);
+    for (const l of body.lines) {
+      const line = poLines.find((x) => x.id === l.poLineId);
+      if (!line) continue;
+      if (l.qty > line.pendingQty) return `${line.itemName}: only ${line.pendingQty} ${line.unit} pending`;
+      if (l.mrp !== undefined && l.mrp < line.rate) return `${line.itemName}: MRP is below the purchase rate ${inr(line.rate)}`;
+    }
+    return null;
+  };
+
   const receive = useMutation({
-    mutationFn: () =>
-      api.inventory.grns.create({
-        purchaseOrderId: id,
-        invoiceNo: invoice.invoiceNo || undefined,
-        invoiceDate: invoice.invoiceDate || undefined,
-        lines: Object.entries(receipt)
-          .filter(([, r]) => Number(r.qty) > 0)
-          .map(([poLineId, r]) => ({
-            poLineId,
-            qty: Number(r.qty),
-            freeQty: Number(r.freeQty || 0),
-            batchNo: r.batchNo.trim() || undefined,
-            expiryDate: r.expiryDate || undefined,
-            mrp: r.mrp ? Number(r.mrp) : undefined,
-          })),
-      }),
+    mutationFn: () => api.inventory.grns.create(grnBody()),
     onSuccess: (g) => {
       refresh();
       setReceiving(false);
@@ -210,11 +228,11 @@ export default function PurchaseOrderPage({ params }: { params: Promise<{ id: st
             <div className="grid gap-4 sm:grid-cols-4">
               <div>
                 <Label htmlFor="grn-inv">Vendor invoice no.</Label>
-                <Input id="grn-inv" className="mt-2" value={invoice.invoiceNo} onChange={(e) => setInvoice({ ...invoice, invoiceNo: e.target.value })} />
+                <Input id="grn-inv" className="mt-2" maxLength={60} value={invoice.invoiceNo} onChange={(e) => setInvoice({ ...invoice, invoiceNo: e.target.value })} />
               </div>
               <div>
                 <Label htmlFor="grn-date">Invoice date</Label>
-                <Input id="grn-date" type="date" className="mt-2" value={invoice.invoiceDate} onChange={(e) => setInvoice({ ...invoice, invoiceDate: e.target.value })} />
+                <Input id="grn-date" type="date" className="mt-2" min={todayIso(-730)} max={todayIso()} value={invoice.invoiceDate} onChange={(e) => setInvoice({ ...invoice, invoiceDate: e.target.value })} />
               </div>
             </div>
             <Table>
@@ -239,19 +257,19 @@ export default function PurchaseOrderPage({ params }: { params: Promise<{ id: st
                         <TableCell className="font-medium">{l.itemName}</TableCell>
                         <TableCell className="tabular-nums">{l.pendingQty}</TableCell>
                         <TableCell>
-                          <Input className="w-20" type="number" min={0} max={l.pendingQty} aria-label={`Qty of ${l.itemName}`} value={r.qty} onChange={(e) => setR(l.id, { qty: e.target.value })} />
+                          <Input className="w-20" type="number" min={0} max={l.pendingQty} step={1} aria-label={`Qty of ${l.itemName}`} value={r.qty} onChange={(e) => setR(l.id, { qty: e.target.value })} />
                         </TableCell>
                         <TableCell>
-                          <Input className="w-16" type="number" min={0} aria-label={`Free qty of ${l.itemName}`} value={r.freeQty} onChange={(e) => setR(l.id, { freeQty: e.target.value })} />
+                          <Input className="w-16" type="number" min={0} step={1} aria-label={`Free qty of ${l.itemName}`} value={r.freeQty} onChange={(e) => setR(l.id, { freeQty: e.target.value })} />
                         </TableCell>
                         <TableCell>
-                          <Input className="w-28" placeholder="NA" aria-label={`Batch of ${l.itemName}`} value={r.batchNo} onChange={(e) => setR(l.id, { batchNo: e.target.value })} />
+                          <Input className="w-28" placeholder="NA" maxLength={40} aria-label={`Batch of ${l.itemName}`} value={r.batchNo} onChange={(e) => setR(l.id, { batchNo: e.target.value })} />
                         </TableCell>
                         <TableCell>
-                          <Input className="w-36" type="date" aria-label={`Expiry of ${l.itemName}`} value={r.expiryDate} onChange={(e) => setR(l.id, { expiryDate: e.target.value })} />
+                          <Input className="w-36" type="date" min={todayIso(1)} aria-label={`Expiry of ${l.itemName}`} value={r.expiryDate} onChange={(e) => setR(l.id, { expiryDate: e.target.value })} />
                         </TableCell>
                         <TableCell>
-                          <Input className="w-24" type="number" min={0} step="0.01" placeholder="auto" aria-label={`MRP of ${l.itemName}`} value={r.mrp} onChange={(e) => setR(l.id, { mrp: e.target.value })} />
+                          <Input className="w-24" type="number" min={l.rate} step="0.01" placeholder="auto" aria-label={`MRP of ${l.itemName}`} value={r.mrp} onChange={(e) => setR(l.id, { mrp: e.target.value })} />
                         </TableCell>
                       </TableRow>
                     );
@@ -259,12 +277,16 @@ export default function PurchaseOrderPage({ params }: { params: Promise<{ id: st
               </TableBody>
             </Table>
             <p className="text-xs text-muted-foreground">Leave batch and expiry empty for consumables without batches. MRP defaults to rate plus GST.</p>
-            {receive.error && <p className="text-sm text-destructive">{errorMessage(receive.error)}</p>}
+            {(receiveError || receive.error) && <p className="text-sm text-destructive">{receiveError ?? errorMessage(receive.error)}</p>}
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setReceiving(false)}>
                 Cancel
               </Button>
-              <Button disabled={receive.isPending || !Object.values(receipt).some((r) => Number(r.qty) > 0)} onClick={() => receive.mutate()}>
+              <Button disabled={receive.isPending || !Object.values(receipt).some((r) => Number(r.qty) > 0)} onClick={() => {
+                  const problem = checkReceipt();
+                  setReceiveError(problem);
+                  if (!problem) receive.mutate();
+                }}>
                 {receive.isPending && <Loader2 className="animate-spin" />}
                 Post GRN
               </Button>

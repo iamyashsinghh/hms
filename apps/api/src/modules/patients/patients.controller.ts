@@ -32,12 +32,12 @@ export class PatientsController {
   @Post()
   @RequirePermissions('core.patient.create')
   create(@Body(new ZodPipe(createPatientSchema)) body: CreatePatient): Promise<Patient> {
-    return this.patients.create(body);
+    return this.patients.create(body, { uniqueAbha: true });
   }
 
   @Patch(':id')
   @RequirePermissions('core.patient.update')
   update(@Param('id', ParseUUIDPipe) id: string, @Body(new ZodPipe(updatePatientSchema)) body: UpdatePatient): Promise<Patient> {
-    return this.patients.update(id, body);
+    return this.patients.update(id, body, { uniqueAbha: true });
   }
 }

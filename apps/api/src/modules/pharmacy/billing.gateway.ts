@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Tx } from '@hms/db';
 import type { billing as contracts } from '@hms/shared';
+import { AppError, badRequest } from '../../common/errors/errors';
 import { BillingService } from '../billing/billing.service';
 
 /** What pharmacy sends to billing. Prices are per unit including GST (MRP), discounts are rupees per line. */
@@ -52,8 +53,16 @@ export class PharmacyBillingGateway {
   }
 
   /** Credits returned goods on the sale's invoice; the already-paid part is refunded first. Idempotent on reference. */
-  returnOnInvoice(tx: Tx, invoiceId: string, input: { amount: number; reason: string; refundMode?: string; reference: string }) {
+  async returnOnInvoice(tx: Tx, invoiceId: string, input: { amount: number; reason: string; refundMode?: string; reference: string }) {
     const refundMode = (['cash', 'upi', 'card'] as const).find((m) => m === input.refundMode);
-    return this.billing.returnOnInvoice(tx, invoiceId, { ...input, refundMode });
+    try {
+      return await this.billing.returnOnInvoice(tx, invoiceId, { ...input, refundMode });
+    } catch (e) {
+      // Billing asks for a "refundMode"; say it in counter terms.
+      if (e instanceof AppError && (e.getResponse() as { code?: string }).code === 'refund_mode_required') {
+        throw badRequest('refund_mode_required', 'This bill was already paid, so the money must go back: choose Cash, UPI or Card as the refund mode (not Credit)');
+      }
+      throw e;
+    }
   }
 }

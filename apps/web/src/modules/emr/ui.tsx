@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import type { emr } from '@hms/shared';
+import { todayIso as sharedTodayIso, type emr } from '@hms/shared';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 
@@ -38,7 +38,8 @@ export function ageFromDob(dob: string | null | undefined): string {
   return `${age}y`;
 }
 
-export const todayIso = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+/** Today in hospital time; `offsetDays` shifts it. */
+export const todayIso = (offsetDays = 0) => sharedTodayIso(offsetDays);
 
 export const formatTime = (iso: string | null | undefined) =>
   iso ? new Date(iso).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '—';

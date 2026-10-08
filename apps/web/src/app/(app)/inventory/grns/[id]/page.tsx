@@ -24,6 +24,7 @@ export default function GrnPage({ params }: { params: Promise<{ id: string }> })
   const [returning, setReturning] = React.useState(false);
   const [qty, setQty] = React.useState<Record<string, string>>({});
   const [reason, setReason] = React.useState('');
+  const [returnError, setReturnError] = React.useState<string | null>(null);
 
   const grn = useQuery({ queryKey: ['inventory', 'grns', id], queryFn: () => api.inventory.grns.get(id), enabled: canRead });
   const doReturn = useMutation({
@@ -105,6 +106,7 @@ export default function GrnPage({ params }: { params: Promise<{ id: string }> })
                         className="w-20"
                         type="number"
                         min={0}
+                        step={1}
                         max={returnable(l)}
                         disabled={returnable(l) === 0}
                         aria-label={`Return qty of ${l.itemName}`}
@@ -125,17 +127,28 @@ export default function GrnPage({ params }: { params: Promise<{ id: string }> })
           </Table>
           {returning && (
             <div className="flex flex-wrap items-center justify-end gap-2">
-              <Input className="max-w-sm" placeholder="Reason (damaged, wrong item, near expiry…) *" value={reason} onChange={(e) => setReason(e.target.value)} />
+              <Input className="max-w-sm" maxLength={300} placeholder="Reason (damaged, wrong item, near expiry…) *" value={reason} onChange={(e) => setReason(e.target.value)} />
               <Button variant="outline" onClick={() => setReturning(false)}>
                 Cancel
               </Button>
-              <Button disabled={!reason.trim() || !Object.values(qty).some((q) => Number(q) > 0) || doReturn.isPending} onClick={() => doReturn.mutate()}>
+              <Button disabled={!reason.trim() || !Object.values(qty).some((q) => Number(q) > 0) || doReturn.isPending} onClick={() => {
+                  // Whole units, no more than received + free - already returned.
+                  let problem: string | null = null;
+                  for (const l of lines) {
+                    const n = Number(qty[l.id] || 0);
+                    if (!Number.isInteger(n) || n < 0) problem = `${l.itemName}: enter a whole number`;
+                    else if (n > returnable(l)) problem = `${l.itemName}: only ${returnable(l)} can still be returned`;
+                    if (problem) break;
+                  }
+                  setReturnError(problem);
+                  if (!problem) doReturn.mutate();
+                }}>
                 {doReturn.isPending && <Loader2 className="animate-spin" />}
                 Record return
               </Button>
             </div>
           )}
-          {doReturn.error && <p className="text-right text-sm text-destructive">{errorMessage(doReturn.error)}</p>}
+          {(returnError || doReturn.error) && <p className="text-right text-sm text-destructive">{returnError ?? errorMessage(doReturn.error)}</p>}
         </CardContent>
       </Card>
 

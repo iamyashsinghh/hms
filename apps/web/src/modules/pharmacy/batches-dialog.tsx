@@ -3,7 +3,9 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, X } from 'lucide-react';
+import { pharmacy } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { firstError, validate } from '@/lib/validate';
 import { Can } from '@/lib/auth';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -23,9 +25,10 @@ export function BatchesDialog({ storeId, item, onClose }: { storeId: string; ite
   const [qty, setQty] = React.useState('');
   const [type, setType] = React.useState<'adjustment' | 'expiry_writeoff'>('adjustment');
   const [reason, setReason] = React.useState('');
+  const [formError, setFormError] = React.useState<string | null>(null);
 
   const adjust = useMutation({
-    mutationFn: () => api.pharmacy.stock.adjust({ storeId, batchId: adjusting!, qtyChange: Number(qty), type, reason }),
+    mutationFn: (body: pharmacy.StockAdjustment) => api.pharmacy.stock.adjust(body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pharmacy'] });
       setAdjusting(null);
@@ -88,6 +91,7 @@ export function BatchesDialog({ storeId, item, onClose }: { storeId: string; ite
                             setAdjusting(b.batchId);
                             setType(b.isExpired ? 'expiry_writeoff' : 'adjustment');
                             setQty(b.isExpired ? String(-b.qty) : '');
+                            setFormError(null);
                           }}
                         >
                           Adjust
@@ -104,18 +108,23 @@ export function BatchesDialog({ storeId, item, onClose }: { storeId: string; ite
               className="grid gap-3 rounded-lg border p-4 sm:grid-cols-4"
               onSubmit={(e) => {
                 e.preventDefault();
-                adjust.mutate();
+                const r = validate(pharmacy.stockAdjustmentSchema, { storeId, batchId: adjusting, qtyChange: qty, type, reason });
+                const inBatch = data?.find((b) => b.batchId === adjusting)?.qty ?? 0;
+                const err = firstError(r.errors) ?? (r.data && r.data.qtyChange < 0 && -r.data.qtyChange > inBatch ? `Only ${inBatch} in this batch; you cannot remove more` : null);
+                setFormError(err);
+                if (!err && r.data) adjust.mutate(r.data);
               }}
             >
               <Select aria-label="Type" value={type} onChange={(e) => setType(e.target.value as typeof type)}>
                 <option value="adjustment">Adjustment</option>
                 <option value="expiry_writeoff">Expiry write-off</option>
               </Select>
-              <Input type="number" placeholder="Qty (+ add / − remove)" value={qty} onChange={(e) => setQty(e.target.value)} required />
-              <Input placeholder="Reason" value={reason} onChange={(e) => setReason(e.target.value)} required />
+              <Input type="number" step={1} placeholder="Qty (+ add / − remove)" value={qty} onChange={(e) => setQty(e.target.value)} required />
+              <Input placeholder="Reason" maxLength={300} value={reason} onChange={(e) => setReason(e.target.value)} required />
               <Button type="submit" disabled={adjust.isPending || !qty || Number(qty) === 0 || !reason.trim()}>
                 {adjust.isPending && <Loader2 className="animate-spin" />} Save
               </Button>
+              {formError && <p className="text-sm text-destructive sm:col-span-4">{formError}</p>}
               {adjust.error && <p className="text-sm text-destructive sm:col-span-4">{errorMessage(adjust.error)}</p>}
             </form>
           )}

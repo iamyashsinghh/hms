@@ -14,7 +14,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
-import { BackLink, ErrorBox, SuccessBox, WEEKDAY_LABELS, timeIST } from '@/modules/setup/ui';
+import { BackLink, ErrorBox, S, SuccessBox, WEEKDAY_LABELS, timeIST } from '@/modules/setup/ui';
 
 type Block = { facilityId: string; weekday: number; startTime: string; endTime: string; slotMinutes: number; maxPatients?: number };
 
@@ -44,7 +44,8 @@ export default function DoctorSchedulePage({ params }: { params: Promise<{ userI
     queryClient.invalidateQueries({ queryKey: ['setup', 'slots', userId] });
   };
   const save = useMutation({
-    mutationFn: () => api.setup.saveSchedule(userId, { blocks }),
+    // Checked with the shared schema first, so a bad timing shows its message without a round trip.
+    mutationFn: () => api.setup.saveSchedule(userId, S.replaceScheduleSchema.parse({ blocks })),
     onSuccess: (s) => {
       queryClient.setQueryData(['setup', 'schedule', userId], s);
       setEdited(null);
@@ -52,7 +53,7 @@ export default function DoctorSchedulePage({ params }: { params: Promise<{ userI
     },
   });
   const addLeave = useMutation({
-    mutationFn: (body: setup.CreateLeave) => api.setup.addLeave(userId, { ...body, reason: body.reason || undefined }),
+    mutationFn: (body: setup.CreateLeave) => api.setup.addLeave(userId, S.createLeaveSchema.parse({ ...body, reason: body.reason || undefined })),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['setup', 'leaves', userId] });
       refresh();
@@ -189,9 +190,9 @@ export default function DoctorSchedulePage({ params }: { params: Promise<{ userI
                   addLeave.mutate(leave);
                 }}
               >
-                <Input type="date" aria-label="From date" value={leave.fromDate} onChange={(e) => setLeave({ ...leave, fromDate: e.target.value })} />
-                <Input type="date" aria-label="To date" value={leave.toDate} onChange={(e) => setLeave({ ...leave, toDate: e.target.value })} />
-                <Input placeholder="Reason (optional)" aria-label="Reason" value={leave.reason} onChange={(e) => setLeave({ ...leave, reason: e.target.value })} />
+                <Input type="date" aria-label="From date" min={today()} value={leave.fromDate} onChange={(e) => setLeave({ ...leave, fromDate: e.target.value })} />
+                <Input type="date" aria-label="To date" min={leave.fromDate || today()} value={leave.toDate} onChange={(e) => setLeave({ ...leave, toDate: e.target.value })} />
+                <Input placeholder="Reason (optional)" aria-label="Reason" maxLength={200} value={leave.reason} onChange={(e) => setLeave({ ...leave, reason: e.target.value })} />
                 <Button type="submit" variant="outline" disabled={addLeave.isPending}>
                   <Plus /> Add leave
                 </Button>

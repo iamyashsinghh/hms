@@ -4,7 +4,7 @@ import * as React from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Loader2 } from 'lucide-react';
-import { pharmacy } from '@hms/shared';
+import { billing, pharmacy } from '@hms/shared';
 import { errorMessage } from '@/lib/api';
 import { FieldError } from '@/components/field-error';
 import { Button } from '@/components/ui/button';
@@ -63,6 +63,8 @@ export function ItemForm({
       : { code: '', name: '', form: 'tablet' as const, gstRate: 5, unit: 'tablet', packSize: 10, schedule: 'otc' as const, reorderLevel: 0 },
   });
   const { errors } = formState;
+  /** An item saved before slabs were enforced keeps its old rate visible so the user can see and fix it. */
+  const legacyRate = initial && !pharmacy.isGstSlab(initial.gstRate) ? initial.gstRate : undefined;
 
   return (
     <form onSubmit={handleSubmit((v) => onSubmit(v))} noValidate className="space-y-6">
@@ -77,10 +79,10 @@ export function ItemForm({
         </CardHeader>
         <CardContent className="grid gap-5 sm:grid-cols-2">
           <Field id="code" label="Code *" error={errors.code} hint="Short unique code, e.g. PCM500">
-            <Input id="code" disabled={!!initial} aria-invalid={!!errors.code} {...register('code')} />
+            <Input id="code" disabled={!!initial} maxLength={40} aria-invalid={!!errors.code} {...register('code')} />
           </Field>
           <Field id="name" label="Brand / item name *" error={errors.name}>
-            <Input id="name" aria-invalid={!!errors.name} {...register('name')} />
+            <Input id="name" maxLength={200} aria-invalid={!!errors.name} {...register('name')} />
           </Field>
           <Field id="genericName" label="Generic name" error={errors.genericName}>
             <Input id="genericName" {...register('genericName', opt)} />
@@ -110,7 +112,7 @@ export function ItemForm({
             </Select>
           </Field>
           <Field id="reorderLevel" label="Reorder level" error={errors.reorderLevel} hint="Alert when stock falls to this many units">
-            <Input id="reorderLevel" type="number" min={0} {...register('reorderLevel', n)} />
+            <Input id="reorderLevel" type="number" min={0} step={1} {...register('reorderLevel', n)} />
           </Field>
         </CardContent>
       </Card>
@@ -120,16 +122,23 @@ export function ItemForm({
         </CardHeader>
         <CardContent className="grid gap-5 sm:grid-cols-2">
           <Field id="unit" label="Sale unit *" error={errors.unit} hint="Stock and prices are per this unit">
-            <Input id="unit" placeholder="tablet, strip, bottle…" {...register('unit')} />
+            <Input id="unit" maxLength={20} placeholder="tablet, strip, bottle…" {...register('unit')} />
           </Field>
           <Field id="packSize" label="Units per pack" error={errors.packSize}>
-            <Input id="packSize" type="number" min={1} {...register('packSize', n)} />
+            <Input id="packSize" type="number" min={1} max={10000} step={1} {...register('packSize', n)} />
           </Field>
           <Field id="hsnCode" label="HSN code" error={errors.hsnCode}>
-            <Input id="hsnCode" inputMode="numeric" placeholder="e.g. 30049099" {...register('hsnCode', opt)} />
+            <Input id="hsnCode" inputMode="numeric" maxLength={8} placeholder="e.g. 30049099" {...register('hsnCode', opt)} />
           </Field>
-          <Field id="gstRate" label="GST %" error={errors.gstRate}>
-            <Input id="gstRate" type="number" step="0.01" min={0} max={40} {...register('gstRate', n)} />
+          <Field id="gstRate" label="GST %" error={errors.gstRate} hint="Only GST slabs can be billed">
+            <Select id="gstRate" aria-invalid={!!errors.gstRate} {...register('gstRate', n)}>
+              {legacyRate !== undefined && <option value={legacyRate}>{legacyRate}% (not a GST slab, pick another)</option>}
+              {billing.GST_RATES.map((r) => (
+                <option key={r} value={r}>
+                  {r}%
+                </option>
+              ))}
+            </Select>
           </Field>
         </CardContent>
       </Card>

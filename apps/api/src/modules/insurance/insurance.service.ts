@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { formatSeries, iso, nextCounter, type Tx } from '@hms/db';
-import { insurance as contracts, type Paginated } from '@hms/shared';
+import { insurance as contracts, todayIso, type Paginated } from '@hms/shared';
 import type { insurance as I } from '@hms/shared';
 import type { z } from 'zod';
 import { DbService } from '../../common/db/db.service';
@@ -786,6 +786,12 @@ export class InsuranceService {
     await this.db.tx(async (tx) => {
       const claim = await this.mustClaim(tx, claimId, true);
       if (!OPEN.includes(claim.status)) throw conflict('invalid_status', `A claim that is ${claim.status} cannot take a settlement`);
+      if (claim.submittedAt) {
+        const submittedOn = todayIso(0, new Date(iso(claim.submittedAt)));
+        if (d.settledOn < submittedOn) {
+          throw badRequest('settled_before_submit', `Settlement date cannot be before the claim was submitted (${submittedOn})`);
+        }
+      }
       const paid = paise(d.amountPaid);
       const tds = paise(d.tdsAmount);
       const writeOff = d.deductions.filter((x) => !x.recoverFromPatient).reduce((a, x) => a + paise(x.amount), 0);

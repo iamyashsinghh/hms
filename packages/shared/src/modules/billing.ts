@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { blankToUndefined, datesInOrder, END_BEFORE_START, gstin as strictGstin, hsnCode, isoDate, phoneNumber, requiredText } from '../validation';
 import { patchSchema } from '../patch';
 import type { ImportColumn } from '../imports';
 
@@ -51,13 +52,17 @@ export const billingModule = defineModule({
 // ---------- shared bits ----------
 
 const money = z.coerce
-  .number()
-  .min(0)
+  .number({ error: 'Enter an amount' })
+  .refine(Number.isFinite, 'Enter an amount')
+  .min(0, 'Amount cannot be negative')
   .max(99_999_999_999.99)
   .refine((v) => Math.abs(Math.round(v * 100) - v * 100) < 1e-6, 'At most 2 decimal places');
 const positiveMoney = money.refine((v) => v > 0, 'Must be more than 0');
-const optionalText = (max: number) => z.string().trim().max(max).optional();
-const gstin = z.string().trim().toUpperCase().regex(/^[0-9]{2}[A-Z0-9]{10}[0-9A-Z]{3}$/, 'Enter a valid 15-character GSTIN');
+const optionalText = (max: number) => z.string().trim().max(max, `Can be at most ${max} characters`).optional();
+const gstin = strictGstin;
+/** A reason someone must type (refunds, cancellations, credit notes). */
+const reasonText = (what = 'a reason') => z.string({ error: `Enter ${what}` }).trim().min(3, `Enter ${what} (at least 3 characters)`).max(500, 'Reason can be at most 500 characters');
+const dateRange = <T extends { from?: string; to?: string }>(v: T) => datesInOrder(v.from, v.to);
 
 export const GST_RATES = [0, 0.1, 0.25, 3, 5, 12, 18, 28, 40] as const;
 export const SERVICE_CATEGORIES = ['consultation', 'procedure', 'lab', 'radiology', 'room', 'nursing', 'pharmacy', 'package', 'other'] as const;
@@ -87,11 +92,14 @@ export const billingSettingsInputSchema = z.object({
   gstin: z.union([gstin, z.literal('')]).optional(),
   stateCode: z.union([z.string().regex(/^\d{2}$/, 'Two-digit GST state code'), z.literal('')]).optional(),
   address: optionalText(500),
-  phone: optionalText(30),
+  phone: z.union([phoneNumber, z.literal('')]).optional(),
   upiVpa: z.union([z.string().trim().regex(/^[\w.-]{2,256}@[a-zA-Z][a-zA-Z0-9.-]{1,64}$/, 'Enter a UPI ID like hospital@okbank'), z.literal('')]).optional(),
   upiPayeeName: optionalText(100),
   invoiceFooter: optionalText(1000),
   roundOff: z.boolean().optional(),
+}).refine((v) => !v.gstin || !v.stateCode || v.gstin.slice(0, 2) === v.stateCode, {
+  message: 'State code must match the first two digits of the GSTIN',
+  path: ['stateCode'],
 });
 export type BillingSettingsInput = z.input<typeof billingSettingsInputSchema>;
 
@@ -111,19 +119,22 @@ export interface BillingSettings {
 
 export const createServiceSchema = z.object({
   code: z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9_.-]{0,39}$/, 'Letters, digits, - _ . (max 40)'),
-  name: z.string().trim().min(1).max(200),
+  name: requiredText('the service name', 200),
   category: z.enum(SERVICE_CATEGORIES).default('other'),
   departmentId: z.uuid().optional(),
-  hsnSac: z.string().trim().regex(/^\d{4,8}$/, '4–8 digit HSN/SAC').optional(),
+  hsnSac: blankToUndefined(z.string().trim().regex(/^\d{4,8}$/, '4–8 digit HSN/SAC').optional()),
   basePrice: money,
   taxRate: taxRate.default(0),
   isActive: z.boolean().default(true),
   /** Only for category 'package': services included. */
-  packageItems: z.array(z.object({ serviceId: z.uuid(), qty: z.coerce.number().positive().default(1) })).max(100).optional(),
+  packageItems: z
+    .array(z.object({ serviceId: z.uuid(), qty: z.coerce.number().positive('Quantity must be more than 0').max(1000, 'Quantity cannot be more than 1000').default(1) }))
+    .max(100)
+    .optional(),
 });
 export type CreateService = z.input<typeof createServiceSchema>;
 
-// patchSchema, not .partial(): Zod 4 keeps defaults inside .partial(), so a PATCH would reset omitted fields.
+/** No defaults (patchSchema, not .partial()): Zod 4 keeps defaults inside .partial(), so a PATCH would reset the category, GST or active flag it did not send. */
 export const updateServiceSchema = patchSchema(createServiceSchema.omit({ code: true }));
 export type UpdateService = z.input<typeof updateServiceSchema>;
 
@@ -170,14 +181,14 @@ export type ServiceQuery = { q?: string; category?: ServiceCategory; active?: 't
 
 export const priceListInputSchema = z
   .object({
-    name: z.string().trim().min(1).max(200),
+    name: requiredText('a name', 200),
     payerId: z.uuid().nullable().optional(),
-    effectiveFrom: z.iso.date(),
-    effectiveTo: z.iso.date().nullable().optional(),
+    effectiveFrom: isoDate,
+    effectiveTo: isoDate.nullable().optional(),
     isActive: z.boolean().default(true),
     items: z.array(z.object({ serviceId: z.uuid(), price: money })).max(5000).default([]),
   })
-  .refine((v) => !v.effectiveTo || v.effectiveTo >= v.effectiveFrom, { message: 'End date is before start date', path: ['effectiveTo'] });
+  .refine((v) => datesInOrder(v.effectiveFrom, v.effectiveTo), { message: END_BEFORE_START, path: ['effectiveTo'] });
 export type PriceListInput = z.input<typeof priceListInputSchema>;
 
 export interface PriceList {
@@ -209,9 +220,9 @@ export const invoiceLineInputSchema = z
     serviceCode: z.string().trim().toUpperCase().max(40).optional(),
     /** Pharmacy item id (inventory module). */
     itemId: z.uuid().optional(),
-    description: z.string().trim().min(1).max(300).optional(),
-    hsnSac: z.string().trim().max(8).optional(),
-    qty: z.coerce.number().positive().max(100000).default(1),
+    description: z.string().trim().min(1).max(300, 'Description can be at most 300 characters').optional(),
+    hsnSac: blankToUndefined(hsnCode.optional()),
+    qty: z.coerce.number({ error: 'Enter a quantity' }).positive('Quantity must be more than 0').max(100000, 'Quantity cannot be more than 1,00,000').default(1),
     unitPrice: money.optional(),
     taxRate: taxRate.optional(),
     /** Discount amount in rupees for the whole line. */
@@ -221,6 +232,10 @@ export const invoiceLineInputSchema = z
   })
   .refine((l) => l.serviceCode || (l.description && l.unitPrice !== undefined), {
     message: 'Give a service code, or a description and a price',
+  })
+  .refine((l) => l.discount === undefined || l.unitPrice === undefined || l.discount <= Math.round(l.qty * l.unitPrice * 100) / 100 + 1e-9, {
+    message: 'Discount is more than the line amount',
+    path: ['discount'],
   });
 export type InvoiceLineInput = z.input<typeof invoiceLineInputSchema>;
 
@@ -256,7 +271,7 @@ export const updateInvoiceSchema = patchSchema(
 );
 export type UpdateInvoice = z.input<typeof updateInvoiceSchema>;
 
-export const cancelInvoiceSchema = z.object({ reason: z.string().trim().min(3).max(500) });
+export const cancelInvoiceSchema = z.object({ reason: reasonText('the reason for cancelling') });
 export type CancelInvoice = z.input<typeof cancelInvoiceSchema>;
 
 export const invoiceQuerySchema = z.object({
@@ -264,11 +279,11 @@ export const invoiceQuerySchema = z.object({
   patientId: z.uuid().optional(),
   status: z.enum(INVOICE_STATUSES).optional(),
   paymentStatus: z.enum(['unpaid', 'partial', 'paid']).optional(),
-  from: z.iso.date().optional(),
-  to: z.iso.date().optional(),
+  from: isoDate.optional(),
+  to: isoDate.optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(25),
-});
+}).refine(dateRange, { message: END_BEFORE_START, path: ['to'] });
 export type InvoiceQuery = {
   q?: string;
   patientId?: string;
@@ -381,7 +396,7 @@ export const refundSchema = z
     mode: z.enum(PAYMENT_MODES),
     amount: positiveMoney,
     reference: optionalText(100),
-    notes: z.string().trim().min(3).max(500),
+    notes: reasonText('the reason for the refund'),
   })
   .refine((r) => !!r.invoiceId !== !!r.patientId, { message: 'Give either an invoice or a patient (for deposit refunds)' });
 export type RefundInput = z.input<typeof refundSchema>;
@@ -405,11 +420,11 @@ export interface Payment {
 export const paymentQuerySchema = z.object({
   patientId: z.uuid().optional(),
   kind: z.enum(PAYMENT_KINDS).optional(),
-  from: z.iso.date().optional(),
-  to: z.iso.date().optional(),
+  from: isoDate.optional(),
+  to: isoDate.optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(25),
-});
+}).refine(dateRange, { message: END_BEFORE_START, path: ['to'] });
 export type PaymentQuery = { patientId?: string; kind?: PaymentKind; from?: string; to?: string; page?: number; pageSize?: number };
 
 export interface PatientAccount {
@@ -424,7 +439,7 @@ export interface PatientAccount {
 
 export const creditNoteSchema = z.object({
   amount: positiveMoney,
-  reason: z.string().trim().min(3).max(500),
+  reason: reasonText(),
 });
 export type CreditNoteInput = z.input<typeof creditNoteSchema>;
 

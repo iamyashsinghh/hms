@@ -4,6 +4,7 @@ import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { platform } from '@hms/shared';
 import { formatDate } from '@/lib/format';
+import { firstError, validate } from '@/lib/validate';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
 import { Button } from '@/components/ui/button';
@@ -19,6 +20,7 @@ export default function ConsoleUsersPage() {
   const isSuper = admin?.role === 'super_admin';
   const list = useQuery({ queryKey: ['console', 'admins'], queryFn: () => consoleApi.admins(), enabled: isSuper });
   const [f, setF] = React.useState({ name: '', email: '', password: '', role: 'support' as platform.PlatformAdminRole });
+  const [formError, setFormError] = React.useState<string | null>(null);
   const refresh = () => qc.invalidateQueries({ queryKey: ['console', 'admins'] });
   const create = useMutation({
     mutationFn: () => consoleApi.createAdmin(f),
@@ -37,9 +39,9 @@ export default function ConsoleUsersPage() {
           <CardTitle>Add user</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-3 sm:grid-cols-5">
-          <Input placeholder="Name" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
-          <Input placeholder="Email" type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} />
-          <Input placeholder="Temporary password" type="password" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} />
+          <Input placeholder="Name" aria-label="Name" maxLength={100} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
+          <Input placeholder="Email" aria-label="Email" type="email" maxLength={254} value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} />
+          <Input placeholder="Temporary password" aria-label="Temporary password" type="password" maxLength={200} value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} />
           <Select value={f.role} onChange={(e) => setF({ ...f, role: e.target.value as platform.PlatformAdminRole })}>
             {platform.PLATFORM_ADMIN_ROLES.map((r) => (
               <option key={r} value={r}>
@@ -47,11 +49,18 @@ export default function ConsoleUsersPage() {
               </option>
             ))}
           </Select>
-          <Button disabled={create.isPending} onClick={() => create.mutate()}>
+          <Button
+            disabled={create.isPending}
+            onClick={() => {
+              const message = firstError(validate(platform.createPlatformAdminSchema, f).errors);
+              setFormError(message);
+              if (!message) create.mutate();
+            }}
+          >
             Add
           </Button>
           <div className="sm:col-span-5">
-            <ErrorBox error={create.error} />
+            <ErrorBox error={formError ? new Error(formError) : create.error} />
           </div>
         </CardContent>
       </Card>

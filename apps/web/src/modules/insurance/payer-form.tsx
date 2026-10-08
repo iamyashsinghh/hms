@@ -3,6 +3,7 @@
 import * as React from 'react';
 import { Loader2 } from 'lucide-react';
 import { insurance as I } from '@hms/shared';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { Button } from '@/components/ui/button';
 import { Input, Select } from '@/components/ui/input';
 import { ErrorBox, Field, PAYER_TYPE_LABELS, SCHEME_LABELS, opt, optNum } from './ui';
@@ -34,13 +35,14 @@ export function PayerForm({ payer, onSubmit, pending, error }: { payer?: I.Payer
   const [v, setV] = React.useState<Values>(() => fromPayer(payer));
   const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setV((s) => ({ ...s, [k]: e.target.value }));
   const s = (k: string) => String(v[k] ?? '');
+  const [errors, setErrors] = React.useState<FieldErrors>({});
 
   return (
     <form
       className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"
       onSubmit={(e) => {
         e.preventDefault();
-        onSubmit({
+        const body: I.PayerInput = {
           code: s('code'),
           name: s('name'),
           type: s('type') as I.PayerType,
@@ -51,20 +53,24 @@ export function PayerForm({ payer, onSubmit, pending, error }: { payer?: I.Payer
           address: opt(s('address')) ?? null,
           gstin: s('gstin').trim(),
           portalUrl: s('portalUrl').trim(),
-          creditDays: Number(s('creditDays') || 30),
-          tdsPercent: Number(s('tdsPercent') || 0),
-          copayPercent: Number(s('copayPercent') || 0),
+          creditDays: s('creditDays').trim() === '' ? 30 : Number(s('creditDays')),
+          tdsPercent: s('tdsPercent').trim() === '' ? 0 : Number(s('tdsPercent')),
+          copayPercent: s('copayPercent').trim() === '' ? 0 : Number(s('copayPercent')),
           creditLimit: optNum(s('creditLimit')) ?? null,
           preauthRequired: !!v.preauthRequired,
           notes: opt(s('notes')) ?? null,
           isActive: !!v.isActive,
-        });
+        };
+        // Same rules as the server (code is fixed on edit), shown on the fields.
+        const r = validate(I.payerInputSchema, payer ? { ...body, code: payer.code } : body);
+        setErrors(r.errors ?? {});
+        if (r.data) onSubmit(body);
       }}
     >
-      <Field id="code" label="Code">
+      <Field id="code" error={errors.code} label="Code">
         <Input id="code" required value={s('code')} onChange={set('code')} disabled={!!payer} placeholder="STAR" />
       </Field>
-      <Field id="name" label="Name" className="sm:col-span-2">
+      <Field id="name" error={errors.name} label="Name" className="sm:col-span-2">
         <Input id="name" required value={s('name')} onChange={set('name')} placeholder="Star Health and Allied Insurance" />
       </Field>
       <Field id="type" label="Type">
@@ -77,7 +83,7 @@ export function PayerForm({ payer, onSubmit, pending, error }: { payer?: I.Payer
         </Select>
       </Field>
       {s('type') === 'government' && (
-        <Field id="scheme" label="Scheme">
+        <Field id="scheme" error={errors.scheme} label="Scheme">
           <Select id="scheme" required value={s('scheme')} onChange={set('scheme')}>
             <option value="">Choose…</option>
             {I.SCHEMES.map((t) => (
@@ -88,37 +94,37 @@ export function PayerForm({ payer, onSubmit, pending, error }: { payer?: I.Payer
           </Select>
         </Field>
       )}
-      <Field id="creditDays" label="Credit period (days)">
+      <Field id="creditDays" error={errors.creditDays} label="Credit period (days)">
         <Input id="creditDays" type="number" min={0} max={365} value={s('creditDays')} onChange={set('creditDays')} />
       </Field>
-      <Field id="tds" label="TDS %">
+      <Field id="tds" error={errors.tdsPercent} label="TDS %">
         <Input id="tds" type="number" step="0.01" min={0} max={100} value={s('tdsPercent')} onChange={set('tdsPercent')} />
       </Field>
-      <Field id="copay" label="Default co-pay %">
+      <Field id="copay" error={errors.copayPercent} label="Default co-pay %">
         <Input id="copay" type="number" step="0.01" min={0} max={100} value={s('copayPercent')} onChange={set('copayPercent')} />
       </Field>
-      <Field id="creditLimit" label="Credit limit (₹, corporates)">
+      <Field id="creditLimit" error={errors.creditLimit} label="Credit limit (₹, corporates)">
         <Input id="creditLimit" type="number" step="0.01" min={0} value={s('creditLimit')} onChange={set('creditLimit')} />
       </Field>
-      <Field id="contact" label="Contact person">
+      <Field id="contact" error={errors.contactName} label="Contact person">
         <Input id="contact" value={s('contactName')} onChange={set('contactName')} />
       </Field>
-      <Field id="phone" label="Phone">
+      <Field id="phone" error={errors.phone} label="Phone">
         <Input id="phone" value={s('phone')} onChange={set('phone')} />
       </Field>
-      <Field id="email" label="Email">
+      <Field id="email" error={errors.email} label="Email">
         <Input id="email" type="email" value={s('email')} onChange={set('email')} />
       </Field>
-      <Field id="gstin" label="GSTIN">
+      <Field id="gstin" error={errors.gstin} label="GSTIN">
         <Input id="gstin" value={s('gstin')} onChange={set('gstin')} />
       </Field>
-      <Field id="portal" label="Claims portal URL" className="sm:col-span-2">
+      <Field id="portal" error={errors.portalUrl} label="Claims portal URL" className="sm:col-span-2">
         <Input id="portal" type="url" value={s('portalUrl')} onChange={set('portalUrl')} placeholder="https://" />
       </Field>
-      <Field id="address" label="Address" className="sm:col-span-2">
+      <Field id="address" error={errors.address} label="Address" className="sm:col-span-2">
         <Input id="address" value={s('address')} onChange={set('address')} />
       </Field>
-      <Field id="notes" label="Notes" className="sm:col-span-2 lg:col-span-4">
+      <Field id="notes" error={errors.notes} label="Notes" className="sm:col-span-2 lg:col-span-4">
         <Input id="notes" value={s('notes')} onChange={set('notes')} />
       </Field>
       <label className="flex items-center gap-2 text-sm">

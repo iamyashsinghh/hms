@@ -53,6 +53,14 @@ import { matchAllergies } from './allergy';
 const num = (v: string | null): number | null => (v === null ? null : Number(v));
 const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
+/** Follow-up dates: today or later, and not absurdly far ahead. */
+function checkFollowUpDate(date: string): void {
+  if (date < today()) throw badRequest('invalid_follow_up', 'Follow-up date cannot be in the past');
+  const limit = new Date(`${today()}T00:00:00Z`);
+  limit.setUTCFullYear(limit.getUTCFullYear() + 2);
+  if (date > limit.toISOString().slice(0, 10)) throw badRequest('follow_up_too_far', 'Follow-up date can be at most 2 years ahead');
+}
+
 /** Payload of frontoffice.visit.checked_in (owned by frontoffice; see PARALLEL_PLAN.md section 4). */
 export interface VisitCheckedIn {
   visitId: string;
@@ -187,10 +195,9 @@ export class EmrService {
       const values: Partial<EncounterRow> = { ...startIfWaiting(enc), updatedBy: currentContext()!.userId };
       if (input.notes !== undefined) values.notes = clean({ ...(enc.notes as EncounterNotes), ...input.notes });
       if (input.followUpDate !== undefined) {
-        // A follow-up is after the visit, never before the day of the consultation (IST).
-        if (input.followUpDate && input.followUpDate < istDay(enc.createdAt)) {
-          throw badRequest('invalid_follow_up', 'Follow-up date cannot be before the consultation date');
-        }
+        // Only a new or changed date is checked, so re-saving notes on an older consultation still works.
+        // Today or later also means never before the day of the consultation (IST).
+        if (input.followUpDate && input.followUpDate !== enc.followUpDate) checkFollowUpDate(input.followUpDate);
         values.followUpDate = input.followUpDate;
       }
       if (input.followUpNotes !== undefined) values.followUpNotes = input.followUpNotes || null;
@@ -852,9 +859,4 @@ function toCertificate(c: CertificateRow, names: Map<string, string>): Certifica
     remarks: c.remarks,
     issuedAt: iso(c.issuedAt),
   };
-}
-
-/** Calendar date (YYYY-MM-DD) in India time. */
-function istDay(at: string | Date): string {
-  return new Date(new Date(at).getTime() + 330 * 60_000).toISOString().slice(0, 10);
 }

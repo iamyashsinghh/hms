@@ -5,7 +5,7 @@ import { use } from 'react';
 import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, CalendarCheck, Gauge, Loader2, Pencil, TriangleAlert } from 'lucide-react';
-import type { ops as O } from '@hms/shared';
+import { ops as O } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { usePermission } from '@/lib/auth';
 import { NoAccess } from '@/components/no-access';
@@ -13,7 +13,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
-import { ASSET_CATEGORY_LABELS, ASSET_STATUS, DueDate, ErrorBox, Field, StatusBadge, formatDay, formatINR, humanize } from '@/modules/ops/ui';
+import { ASSET_CATEGORY_LABELS, ASSET_STATUS, DueDate, ErrorBox, Field, StatusBadge, formatDay, formatINR, humanize, checked } from '@/modules/ops/ui';
 import { AssetForm, BreakdownForm, assetToForm } from '@/modules/ops/assets';
 import { WorkOrderTable } from '@/modules/ops/work-orders';
 
@@ -22,7 +22,7 @@ function ScheduleForm({ asset, type, onDone }: { asset: O.Asset; type: 'preventi
   const [problem, setProblem] = React.useState(type === 'preventive' ? 'Scheduled preventive maintenance' : 'Scheduled calibration');
   const [priority, setPriority] = React.useState<'low' | 'normal' | 'urgent'>('normal');
   const create = useMutation({
-    mutationFn: () => api.ops.workOrders.create({ assetId: asset.id, type, problem: problem.trim(), priority }),
+    mutationFn: () => api.ops.workOrders.create(checked(O.createWorkOrderSchema, { assetId: asset.id, type, problem: problem.trim(), priority })),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['ops'] });
       onDone();

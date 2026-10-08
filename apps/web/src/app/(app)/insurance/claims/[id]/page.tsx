@@ -5,8 +5,9 @@ import Link from 'next/link';
 import { use } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Check, ExternalLink, Loader2, Pencil, Plus, RotateCw, Trash2 } from 'lucide-react';
-import { insurance as I } from '@hms/shared';
+import { insurance as I, todayIso } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { firstError, validate } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
 import { NoAccess } from '@/components/no-access';
@@ -103,7 +104,7 @@ export default function ClaimPage({ params }: { params: Promise<{ id: string }> 
             <ActionForm
               label="Record approval"
               fields={[
-                { name: 'approvedAmount', label: 'Approved ₹', type: 'number', required: true, defaultValue: String(c.claimedAmount) },
+                { name: 'approvedAmount', label: 'Approved ₹', type: 'number', required: true, max: c.claimedAmount, defaultValue: String(c.claimedAmount) },
                 { name: 'payerClaimNo', label: 'Payer claim no.' },
               ]}
               pending={act.isPending}
@@ -111,13 +112,13 @@ export default function ClaimPage({ params }: { params: Promise<{ id: string }> 
             />
           )}
           {(c.status === 'submitted' || c.status === 'approved') && (
-            <ActionForm label="Payer query" fields={[{ name: 'note', label: 'What the payer asked', required: true }]} pending={act.isPending} onSubmit={(f) => run(() => cl.query(id, { note: f.note! }))} />
+            <ActionForm label="Payer query" fields={[{ name: 'note', label: 'What the payer asked', required: true, minLength: 3 }]} pending={act.isPending} onSubmit={(f) => run(() => cl.query(id, { note: f.note! }))} />
           )}
           {['submitted', 'query', 'approved'].includes(c.status) && c.settledAmount + c.tdsAmount + c.deductionAmount === 0 && (
-            <ActionForm label="Rejected" variant="destructive" fields={[{ name: 'note', label: 'Reason', required: true }]} pending={act.isPending} onSubmit={(f) => run(() => cl.reject(id, { note: f.note! }))} />
+            <ActionForm label="Rejected" variant="destructive" fields={[{ name: 'note', label: 'Reason', required: true, minLength: 3 }]} pending={act.isPending} onSubmit={(f) => run(() => cl.reject(id, { note: f.note! }))} />
           )}
           {['draft', 'submitted', 'query'].includes(c.status) && c.settledAmount + c.tdsAmount + c.deductionAmount === 0 && (
-            <ActionForm label="Cancel claim" variant="destructive" fields={[{ name: 'note', label: 'Reason', required: true }]} pending={act.isPending} onSubmit={(f) => run(() => cl.cancel(id, { note: f.note! }))} />
+            <ActionForm label="Cancel claim" variant="destructive" fields={[{ name: 'note', label: 'Reason', required: true, minLength: 3 }]} pending={act.isPending} onSubmit={(f) => run(() => cl.cancel(id, { note: f.note! }))} />
           )}
         </div>
       </Can>
@@ -311,16 +312,10 @@ function SettlementForm({ claim, onDone }: { claim: I.Claim; onDone: (c: I.Claim
   const [rows, setRows] = React.useState<DeductionRow[]>([]);
   const deductions = rows.filter((r) => r.amount.trim() !== '').reduce((a, r) => a + Number(r.amount), 0);
   const total = Number(v.amountPaid || 0) + Number(v.tdsAmount || 0) + deductions;
+  const [formError, setFormError] = React.useState<string | null>(null);
+  const submittedOn = claim.submittedAt ? todayIso(0, new Date(claim.submittedAt)) : undefined;
   const save = useMutation({
-    mutationFn: () =>
-      api.insurance.claims.settle(claim.id, {
-        settledOn: v.settledOn,
-        reference: v.reference,
-        amountPaid: Number(v.amountPaid || 0),
-        tdsAmount: Number(v.tdsAmount || 0),
-        deductions: rows.filter((r) => r.amount.trim() !== '').map((r) => ({ ...r, amount: Number(r.amount) })),
-        note: opt(v.note),
-      }),
+    mutationFn: (body: I.SettlementInput) => api.insurance.claims.settle(claim.id, body),
     onSuccess: (next) => {
       setV({ settledOn: todayIST(), reference: '', amountPaid: '', tdsAmount: '', note: '' });
       setRows([]);
@@ -342,15 +337,29 @@ function SettlementForm({ claim, onDone }: { claim: I.Claim; onDone: (c: I.Claim
           className="space-y-4"
           onSubmit={(e) => {
             e.preventDefault();
-            save.mutate();
+            const body: I.SettlementInput = {
+              settledOn: v.settledOn,
+              reference: v.reference,
+              amountPaid: Number(v.amountPaid || 0),
+              tdsAmount: Number(v.tdsAmount || 0),
+              deductions: rows.filter((r) => r.amount.trim() !== '').map((r) => ({ ...r, amount: Number(r.amount) })),
+              note: opt(v.note),
+            };
+            const r = validate(I.settlementInputSchema, body);
+            const err =
+              firstError(r.errors) ??
+              (submittedOn && v.settledOn < submittedOn ? `Settlement date cannot be before the claim was submitted (${formatDate(submittedOn)})` : null) ??
+              (Math.round(total * 100) > Math.round(claim.outstanding * 100) ? `Paid + TDS + deductions is more than the ${formatINR(claim.outstanding)} the payer owes` : null);
+            setFormError(err);
+            if (!err && r.data) save.mutate(body);
           }}
         >
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Field id="on" label="Settled on">
-              <Input id="on" type="date" required value={v.settledOn} onChange={(e) => setV({ ...v, settledOn: e.target.value })} />
+              <Input id="on" type="date" required min={submittedOn} max={todayIso()} value={v.settledOn} onChange={(e) => setV({ ...v, settledOn: e.target.value })} />
             </Field>
             <Field id="utr" label="UTR / cheque no.">
-              <Input id="utr" required value={v.reference} onChange={(e) => setV({ ...v, reference: e.target.value })} />
+              <Input id="utr" required minLength={2} maxLength={100} value={v.reference} onChange={(e) => setV({ ...v, reference: e.target.value })} />
             </Field>
             <Field id="paid" label="Amount received ₹">
               <Input id="paid" type="number" step="0.01" min={0} value={v.amountPaid} onChange={(e) => setV({ ...v, amountPaid: e.target.value })} />
@@ -369,7 +378,7 @@ function SettlementForm({ claim, onDone }: { claim: I.Claim; onDone: (c: I.Claim
                     </option>
                   ))}
                 </Select>
-                <Input className="min-w-48 flex-1" required placeholder="Reason given by payer" value={r.reason} onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, reason: e.target.value } : x)))} />
+                <Input className="min-w-48 flex-1" required minLength={2} maxLength={300} placeholder="Reason given by payer" value={r.reason} onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, reason: e.target.value } : x)))} />
                 <Input className="w-32" type="number" step="0.01" min={0} required placeholder="₹" value={r.amount} onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, amount: e.target.value } : x)))} />
                 <label className="flex items-center gap-1 text-sm">
                   <input type="checkbox" checked={r.recoverFromPatient} onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, recoverFromPatient: e.target.checked } : x)))} /> Patient pays
@@ -386,7 +395,7 @@ function SettlementForm({ claim, onDone }: { claim: I.Claim; onDone: (c: I.Claim
           <Field id="snote" label="Note">
             <Input id="snote" value={v.note} onChange={(e) => setV({ ...v, note: e.target.value })} />
           </Field>
-          <ErrorBox error={save.error ? errorMessage(save.error) : null} />
+          <ErrorBox error={formError ?? (save.error ? errorMessage(save.error) : null)} />
           <div className="flex items-center justify-end gap-4">
             <span className={`text-sm tabular-nums ${total > claim.outstanding ? 'text-destructive' : 'text-muted-foreground'}`}>
               Accounts for {formatINR(total)} of {formatINR(claim.outstanding)}

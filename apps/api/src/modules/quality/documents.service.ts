@@ -71,6 +71,11 @@ export class DocumentsService {
     return this.db.tx(async (tx) => {
       const row = await this.find(tx, id, true);
       if (row.status !== 'draft') throw conflict('document_locked', 'Only drafts can be edited; create a new version instead');
+      const effectiveFrom = input.effectiveFrom ?? row.effectiveFrom;
+      const reviewDue = input.reviewDue ?? row.reviewDue;
+      if (effectiveFrom && reviewDue && reviewDue < effectiveFrom) {
+        throw badRequest('invalid_dates', 'Review date must be on or after the effective date');
+      }
       const [updated] = await tx
         .update(qualityDocuments)
         .set({ ...columns(input), updatedBy: ctx.userId })

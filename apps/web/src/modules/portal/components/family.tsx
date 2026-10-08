@@ -4,7 +4,7 @@ import * as React from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Loader2, UserPlus } from 'lucide-react';
-import { GENDERS, portal } from '@hms/shared';
+import { GENDERS, portal, todayIso } from '@hms/shared';
 import { errorMessage } from '@/lib/api';
 import { FieldError } from '@/components/field-error';
 import { Badge } from '@/components/ui/badge';
@@ -101,12 +101,13 @@ function AddMember({ first, onDone }: { first: boolean; onDone: () => Promise<vo
         <form onSubmit={onSubmit} className="grid gap-4 sm:grid-cols-2" noValidate>
           <div className="space-y-2">
             <Label htmlFor="fm-first">First name</Label>
-            <Input id="fm-first" {...register('firstName')} aria-invalid={!!errors.firstName} />
+            <Input id="fm-first" maxLength={100} {...register('firstName')} aria-invalid={!!errors.firstName} />
             <FieldError error={errors.firstName} />
           </div>
           <div className="space-y-2">
             <Label htmlFor="fm-last">Last name</Label>
-            <Input id="fm-last" {...register('lastName', { setValueAs: emptyToUndefined })} />
+            <Input id="fm-last" maxLength={100} {...register('lastName', { setValueAs: emptyToUndefined })} aria-invalid={!!errors.lastName} />
+            <FieldError error={errors.lastName} />
           </div>
           <div className="space-y-2">
             <Label htmlFor="fm-gender">Gender</Label>
@@ -133,6 +134,8 @@ function AddMember({ first, onDone }: { first: boolean; onDone: () => Promise<vo
             <Input
               id="fm-dob"
               type="date"
+              max={todayIso()}
+              min={todayIso(-150 * 366)}
               {...register('dateOfBirth', { setValueAs: emptyToUndefined })}
             />
             <FieldError error={errors.dateOfBirth} />
@@ -147,7 +150,9 @@ function AddMember({ first, onDone }: { first: boolean; onDone: () => Promise<vo
               {...register('ageYears', {
                 setValueAs: (v) => (v === '' || v == null ? undefined : Number(v)),
               })}
+              aria-invalid={!!errors.ageYears}
             />
+            <FieldError error={errors.ageYears} />
           </div>
           {error && <p className="text-sm text-destructive sm:col-span-2">{error}</p>}
           <div className="sm:col-span-2">

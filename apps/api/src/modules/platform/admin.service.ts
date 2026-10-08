@@ -375,7 +375,7 @@ export class AdminService {
   private async checkAnnouncement(a: UpdateAnnouncement, startsAt: string) {
     const start = a.startsAt ?? startsAt;
     if (a.endsAt && new Date(a.endsAt).getTime() <= new Date(start).getTime()) {
-      throw badRequest('invalid_dates', 'The end date must be after the start date');
+      throw badRequest('invalid_dates', 'End time must be after the start time');
     }
     if (a.planCodes?.length) {
       const known = new Set((await this.db.global.select({ code: platformPlans.code }).from(platformPlans)).map((r) => r.code));

@@ -94,7 +94,7 @@ export default function NewLabOrderPage() {
                 </Select>
               </Field>
               <Field id="referred" label="Outside doctor / B2B client">
-                <Input id="referred" value={referredBy} onChange={(e) => setReferredBy(e.target.value)} placeholder="e.g. Dr. Sharma Clinic" />
+                <Input id="referred" maxLength={200} value={referredBy} onChange={(e) => setReferredBy(e.target.value)} placeholder="e.g. Dr. Sharma Clinic" />
               </Field>
               <Field id="source" label="Order type">
                 <Select id="source" value={source} onChange={(e) => setSource(e.target.value as 'walkin' | 'b2b')}>
@@ -110,7 +110,7 @@ export default function NewLabOrderPage() {
                 </Select>
               </Field>
               <Field id="notes" label="Clinical notes" className="sm:col-span-2">
-                <Input id="notes" value={clinicalNotes} onChange={(e) => setClinicalNotes(e.target.value)} placeholder="Provisional diagnosis, fasting status, medication…" />
+                <Input id="notes" maxLength={1000} value={clinicalNotes} onChange={(e) => setClinicalNotes(e.target.value)} placeholder="Provisional diagnosis, fasting status, medication…" />
               </Field>
             </CardContent>
           </Card>
