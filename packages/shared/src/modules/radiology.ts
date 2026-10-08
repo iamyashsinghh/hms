@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
 import { patchSchema } from '../patch';
-import { GST_RATES, payNowSchema } from './billing';
+import { GST_RATES, payNowSchema, type SourcePaymentState } from './billing';
 import { isoDate, isoDateTime, money as moneyField, requiredText } from '../validation';
 import type { ImportColumn } from '../imports';
 
@@ -269,6 +269,7 @@ export type CompleteScan = z.input<typeof completeScanSchema>;
 export const cancelOrderSchema = z.object({ reason: requiredText('a reason', 500, 3) });
 export type CancelOrder = z.input<typeof cancelOrderSchema>;
 
+/** Bill now ("Collect now"): posts the order's charge if the rules have not yet, then bills it (optionally paid). */
 export const billOrderSchema = z.object({ payNow: payNowSchema.optional() });
 export type BillOrder = z.input<typeof billOrderSchema>;
 
@@ -324,8 +325,16 @@ export interface RadiologyOrder {
   studyUid: string | null;
   imagesUrl: string | null;
   techNotes: string | null;
+  /** Bill the order's charge ended up on (set when billed here or at the billing desk). */
   invoiceId: string | null;
   invoiceNo: string | null;
+  /** State of the charge this order posted to the patient's account ('none' = nothing posted yet). */
+  paymentState: SourcePaymentState;
+  /**
+   * The hospital asks OPD patients to pay before the scan (billing rule diagnosticsPayment 'before') and
+   * this order is not on an IPD bill: show "Unpaid" with Collect now while paymentState is pending/unpaid.
+   */
+  payFirst: boolean;
   cancelReason: string | null;
   finalReportId: string | null;
   createdAt: string;

@@ -152,6 +152,8 @@ export const emrOrders = pg.table(
     kind: text('kind').notNull(),
     code: text('code'),
     name: text('name').notNull(),
+    /** Procedures: billing service code, posted as a charge when the consultation is signed. */
+    serviceCode: text('service_code'),
     priority: text('priority').notNull().default('routine'),
     notes: text('notes'),
     status: text('status').notNull().default('ordered'),

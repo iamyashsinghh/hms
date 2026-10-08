@@ -1,14 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { formatSeries, iso, nextCounter, type Tx } from '@hms/db';
-import { radiology, type ImportRequest, type ImportResult, type Paginated } from '@hms/shared';
+import { radiology, type billing as B, type ImportRequest, type ImportResult, type Paginated } from '@hms/shared';
 import { runImport } from '../../common/imports/bulk-import';
 import type { z } from 'zod';
 import { DbService } from '../../common/db/db.service';
 import { AuditService } from '../../common/db/audit.service';
 import { OutboxService } from '../../common/events/outbox.service';
 import { currentContext } from '../../common/context/request-context';
-import { badRequest, conflict, forbidden, notFound } from '../../common/errors/errors';
+import { AppError, badRequest, conflict, forbidden, notFound } from '../../common/errors/errors';
 import { BillingService } from '../billing/billing.service';
+import { ChargesService } from '../billing/charges.service';
 import { EmrService } from '../emr/emr.service';
 import { PatientsService } from '../patients/patients.service';
 import {
@@ -29,6 +30,7 @@ type RadiologyTest = radiology.RadiologyTest;
 type ReportTemplate = radiology.ReportTemplate;
 
 const num = (v: string | null): number | null => (v === null ? null : Number(v));
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const blank = <T>(v: T | undefined | null): T | null => (v === undefined || v === '' ? null : v);
 
 /** Where an order may go next. Cancel is allowed from anything before a report is finalized. */
@@ -46,7 +48,8 @@ export interface EncounterSigned {
 
 /**
  * Radiology (RIS): modality and test masters, report templates, orders from EMR or the desk,
- * machine scheduling, scan workflow, versioned reports with sign-off, billing through BillingService.
+ * machine scheduling, scan workflow, versioned reports with sign-off. Each order posts its charge to the
+ * patient's account (ChargesService) when the hospital's billing rules say: on order or when the scan is done.
  */
 @Injectable()
 export class RadiologyService {
@@ -60,6 +63,7 @@ export class RadiologyService {
     private readonly patients: PatientsService,
     private readonly billing: BillingService,
     private readonly emr: EmrService,
+    private readonly charges: ChargesService,
   ) {}
 
   /** Runs a transaction and turns database rule violations into clean 409s. */
@@ -378,6 +382,7 @@ export class RadiologyService {
         createdBy: ctx.userId ?? null,
         updatedBy: ctx.userId ?? null,
       });
+      if ((await this.charges.rules(tx, facilityId)).radiologyChargeAt === 'order') await this.postOrderCharge(tx, row);
       await this.publishStatus(tx, row);
       return (await this.orderDtos(tx, [row]))[0]!;
     });
@@ -391,12 +396,21 @@ export class RadiologyService {
       if (d.clinicalNotes !== undefined) values.clinicalNotes = blank(d.clinicalNotes);
       if (d.referringDoctorName !== undefined && !o.referringDoctorId) values.referringDoctorName = blank(d.referringDoctorName);
       if (d.testId !== undefined && d.testId !== o.testId) {
-        if (o.invoiceId) throw conflict('order_billed', 'This order is already billed. Cancel it and create a new one to change the test.');
+        const state = (await this.charges.paymentStates(tx, { module: 'radiology', refIds: [o.id] })).get(o.id);
+        if (o.invoiceId || state === 'unpaid' || state === 'paid') {
+          throw conflict('order_billed', 'This order is already billed. Cancel it and create a new one to change the test.');
+        }
         const t = await this.repo.test(tx, d.testId);
         if (!t || !t.test.isActive) throw badRequest('invalid_test', 'Pick an active radiology test');
         Object.assign(values, testSnapshot(t.test));
         // A different study needs a different slot length (and maybe a different machine): book again.
         if (o.status === 'scheduled') Object.assign(values, { status: 'ordered', scheduledAt: null, scheduledEnd: null });
+        // The old study's charge goes; the new one is charged if the hospital charges on order (or the old one was).
+        const reposted = state === 'pending';
+        if (o.testId) await this.charges.cancelBySource(tx, { module: 'radiology', refId: o.id, line: o.testId }, `Study changed to ${t.test.name}`);
+        if (reposted || (await this.charges.rules(tx, o.facilityId)).radiologyChargeAt === 'order') {
+          await this.postOrderCharge(tx, { ...o, ...testSnapshot(t.test) }, { force: true });
+        }
       }
       return values;
     });
@@ -430,8 +444,9 @@ export class RadiologyService {
 
   completeScan(id: string, input: radiology.CompleteScan): Promise<RadiologyOrder> {
     const d = radiology.completeScanSchema.parse(input);
-    return this.mutateOrder(id, COMPLETABLE, 'This study is not waiting for a scan', async (_tx, o) => {
+    return this.mutateOrder(id, COMPLETABLE, 'This study is not waiting for a scan', async (tx, o) => {
       if (!o.testId) throw badRequest('test_required', 'Pick the radiology test first');
+      if ((await this.charges.rules(tx, o.facilityId)).radiologyChargeAt === 'scan_done') await this.postOrderCharge(tx, o);
       const now = new Date().toISOString();
       return {
         status: 'acquired',
@@ -451,11 +466,18 @@ export class RadiologyService {
       id,
       ['ordered', 'scheduled', 'in_progress', 'acquired', 'reported'],
       'A study with a finalized report cannot be cancelled',
-      async () => ({ status: 'cancelled', cancelReason: d.reason, cancelledAt: new Date().toISOString() }),
+      async (tx, o) => {
+        // Pending charge goes; a billed one is flagged for a credit note on the billing desk.
+        await this.charges.cancelBySource(tx, { module: 'radiology', refId: o.id }, `Radiology order ${o.orderNo} cancelled: ${d.reason}`);
+        return { status: 'cancelled', cancelReason: d.reason, cancelledAt: new Date().toISOString() };
+      },
     );
   }
 
-  /** Raises the bill through BillingService (finalized, optionally paid). One bill per order. */
+  /**
+   * Bill the order now ("Collect now"): posts its charge if the rules have not yet, then bills it on its
+   * own bill (finalized, optionally paid). The bill number is stored on the order.
+   */
   bill(id: string, input: radiology.BillOrder): Promise<RadiologyOrder> {
     const d = radiology.billOrderSchema.parse(input);
     const ctx = currentContext()!;
@@ -467,21 +489,26 @@ export class RadiologyService {
       if (o.invoiceId) throw conflict('order_billed', `Already billed on ${o.invoiceNo ?? 'a bill'}`);
       if (!o.testId) throw badRequest('test_required', 'Pick the radiology test before billing');
       const t = (await this.repo.test(tx, o.testId))!.test;
-      const line = t.serviceCode
-        ? { serviceCode: t.serviceCode, qty: 1, description: o.studyName }
-        : { description: o.studyName, unitPrice: Number(t.price ?? 0), taxRate: Number(t.taxRate), qty: 1 };
       if (!t.serviceCode && t.price === null) throw badRequest('price_required', 'This test has no price. Set one in the test master.');
-      const created = await this.billing.createInvoice(tx, {
-        patientId: o.patientId,
-        facilityId: o.facilityId,
+      await this.postOrderCharge(tx, o, { force: true });
+      const invoice = await this.charges.billSource(tx, { module: 'radiology', refId: o.id }, {
         source: { module: 'radiology', refId: o.id },
-        doctorId: o.referringDoctorId ?? undefined,
-        lines: [line],
-        payNow: d.payNow,
+        ...(o.referringDoctorId ? { doctorId: o.referringDoctorId } : {}),
+        ...(d.payNow ? { payNow: d.payNow } : {}),
       });
-      const row = await this.repo.updateOrder(tx, o.id, { invoiceId: created.invoiceId, invoiceNo: created.number, updatedBy: ctx.userId ?? null });
+      const row = await this.repo.updateOrder(tx, o.id, { invoiceId: invoice.id, invoiceNo: invoice.number, updatedBy: ctx.userId ?? null });
       return (await this.orderDtos(tx, [row]))[0]!;
     });
+  }
+
+  /**
+   * Handler for `billing.charges.billed`: radiology charges billed at the billing desk (or by Collect
+   * now); keep the bill number on those orders. Idempotent.
+   */
+  recordBilled(e: B.ChargesBilledEvent): Promise<number> {
+    const ids = [...new Set(e.charges.filter((c) => c.module === 'radiology').map((c) => c.refId))].filter((x) => UUID.test(x));
+    if (!ids.length) return Promise.resolve(0);
+    return this.tx((tx) => this.repo.setInvoice(tx, ids, e.invoiceId, e.number));
   }
 
   scheduleFor(query: radiology.ScheduleQuery): Promise<radiology.ScheduleEntry[]> {
@@ -538,6 +565,7 @@ export class RadiologyService {
         });
         if (row) {
           created++;
+          if (row.testId && (await this.charges.rules(tx, row.facilityId)).radiologyChargeAt === 'order') await this.postOrderCharge(tx, row, { visitId: enc.visitId });
           await this.publishStatus(tx, row);
         }
       }
@@ -682,6 +710,57 @@ export class RadiologyService {
 
   // ---------- helpers ----------
 
+  /**
+   * Posts the order's charge to the patient's account (source radiology / order / test). Priced from the
+   * test's billing service when it has one, else the test's own price and GST. A study without a price
+   * is not charged. Without `force`, a test already charged (even if the billing desk cancelled it) is
+   * left alone. Admitted patients' charges go on the IPD bill.
+   */
+  private async postOrderCharge(
+    tx: Tx,
+    o: Pick<OrderRow, 'id' | 'orderNo' | 'patientId' | 'facilityId' | 'testId' | 'studyName' | 'encounterId' | 'referringDoctorId'>,
+    opts: { force?: boolean; visitId?: string | null } = {},
+  ): Promise<void> {
+    if (!o.testId) return;
+    if (!opts.force && (await this.repo.chargeLines(tx, [o.id])).some((c) => c.line === o.testId)) return;
+    const t = (await this.repo.test(tx, o.testId))?.test;
+    if (!t) return;
+    const priced = t.serviceCode && (await this.serviceExists(tx, t.serviceCode));
+    if (!priced && t.price === null) return;
+    const visitId = opts.visitId !== undefined ? opts.visitId : o.encounterId ? await this.repo.encounterVisit(tx, o.encounterId) : null;
+    await this.charges.postCharge(tx, {
+      patientId: o.patientId,
+      facilityId: o.facilityId,
+      ...(visitId ? { visitId } : {}),
+      source: { module: 'radiology', refId: o.id, line: o.testId },
+      ...(priced
+        ? { serviceCode: t.serviceCode!, description: o.studyName }
+        : { description: o.studyName, unitPrice: Number(t.price), taxRate: Number(t.taxRate) }),
+      ...(o.referringDoctorId ? { doctorId: o.referringDoctorId } : {}),
+      notes: `Radiology order ${o.orderNo}`,
+    });
+  }
+
+  private serviceExists(tx: Tx, code: string): Promise<boolean> {
+    return this.billing.getServicePrice(code, null, tx).then(
+      () => true,
+      (e: unknown) => {
+        if (e instanceof AppError && e.getStatus() === 404) return false;
+        throw e;
+      },
+    );
+  }
+
+  /** Payment state of each order's charge and whether the hospital wants it paid before the scan. */
+  private async payment(tx: Tx, rows: OrderRow[]): Promise<Map<string, Pick<RadiologyOrder, 'paymentState' | 'payFirst'>>> {
+    const ids = rows.map((r) => r.id);
+    const [states, lines] = await Promise.all([this.charges.paymentStates(tx, { module: 'radiology', refIds: ids }), this.repo.chargeLines(tx, ids)]);
+    const payFirst = new Map<string, boolean>();
+    for (const fid of new Set(rows.map((r) => r.facilityId))) payFirst.set(fid, (await this.charges.rules(tx, fid)).diagnosticsPayment === 'before');
+    const ipd = new Set(lines.filter((l) => l.admissionId && l.status !== 'cancelled').map((l) => l.orderId));
+    return new Map(rows.map((r) => [r.id, { paymentState: states.get(r.id) ?? 'none', payFirst: !!payFirst.get(r.facilityId) && !ipd.has(r.id) }]));
+  }
+
   private withOrder(orderId: string, fn: (tx: Tx, o: OrderRow) => Promise<void>): Promise<radiology.OrderWithReports> {
     return this.tx(async (tx) => {
       const o = await this.repo.order(tx, orderId, true);
@@ -723,9 +802,13 @@ export class RadiologyService {
   }
 
   private async orderDtos(tx: Tx, rows: OrderRow[]): Promise<RadiologyOrder[]> {
-    const [modalities, finals] = await Promise.all([this.repo.modalities(tx, true), this.repo.finalReportIds(tx, rows.map((r) => r.id))]);
+    const [modalities, finals, payment] = await Promise.all([
+      this.repo.modalities(tx, true),
+      this.repo.finalReportIds(tx, rows.map((r) => r.id)),
+      this.payment(tx, rows),
+    ]);
     const modalityName = new Map(modalities.map((m) => [m.id, m.name]));
-    return rows.map((r) => toOrder(r, r.modalityId ? (modalityName.get(r.modalityId) ?? null) : null, finals.get(r.id) ?? null));
+    return rows.map((r) => toOrder(r, r.modalityId ? (modalityName.get(r.modalityId) ?? null) : null, finals.get(r.id) ?? null, payment.get(r.id)!));
   }
 }
 
@@ -800,7 +883,12 @@ function toTemplate(r: TemplateRow): ReportTemplate {
   };
 }
 
-function toOrder(r: OrderRow, modalityName: string | null, finalReportId: string | null): RadiologyOrder {
+function toOrder(
+  r: OrderRow,
+  modalityName: string | null,
+  finalReportId: string | null,
+  payment: Pick<RadiologyOrder, 'paymentState' | 'payFirst'>,
+): RadiologyOrder {
   return {
     id: r.id,
     orderNo: r.orderNo,
@@ -835,6 +923,7 @@ function toOrder(r: OrderRow, modalityName: string | null, finalReportId: string
     techNotes: r.techNotes,
     invoiceId: r.invoiceId,
     invoiceNo: r.invoiceNo,
+    ...payment,
     cancelReason: r.cancelReason,
     finalReportId,
     createdAt: iso(r.createdAt),

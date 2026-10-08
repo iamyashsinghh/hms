@@ -260,12 +260,17 @@ export interface Favourite {
   createdAt: string;
 }
 
-// ---------- orders (stored only; lab/radiology modules pick them up later) ----------
+// ---------- orders (lab/radiology modules pick them up on sign; procedures post charges) ----------
 
 export const orderInputSchema = z.object({
   kind: z.enum(ORDER_KINDS),
   code: z.string().trim().max(50).optional(),
   name: requiredText('the test or procedure name', 200),
+  /**
+   * Procedures only: the billing service (category 'procedure') it was picked from. When the consultation
+   * is signed it is posted as a charge on the patient's account. Free-text procedures have none.
+   */
+  serviceCode: z.string().trim().toUpperCase().max(40).optional(),
   priority: z.enum(ORDER_PRIORITIES).default('routine'),
   notes: z.string().trim().max(500).optional(),
 });
@@ -273,11 +278,17 @@ export type OrderInput = z.input<typeof orderInputSchema>;
 export const ordersInputSchema = z.object({ orders: z.array(orderInputSchema).max(50, 'At most 50 orders') });
 export type OrdersInput = z.input<typeof ordersInputSchema>;
 
+/** POST /emr/encounters/:id/orders/:orderId/cancel: a procedure of a signed consultation that will not be done. */
+export const cancelOrderSchema = z.object({ reason: requiredText('a reason', 300, 3) });
+export type CancelOrder = z.input<typeof cancelOrderSchema>;
+
 export interface Order {
   id: string;
   kind: (typeof ORDER_KINDS)[number];
   code: string | null;
   name: string;
+  /** Billing service of a procedure order (charged when the consultation is signed). */
+  serviceCode: string | null;
   priority: (typeof ORDER_PRIORITIES)[number];
   notes: string | null;
   status: string;

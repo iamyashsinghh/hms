@@ -1,4 +1,5 @@
 import { Module, OnModuleInit } from '@nestjs/common';
+import type { billing as B } from '@hms/shared';
 import { EventBus } from '../../common/events/event-bus';
 import { requestContext } from '../../common/context/request-context';
 import { BillingModule } from '../billing/billing.module';
@@ -10,7 +11,8 @@ import { RadiologyService, type EncounterSigned } from './radiology.service';
 
 /**
  * Radiology (RIS): modality / test / template masters, orders (from EMR or the desk), machine schedule,
- * scan workflow, versioned reports with sign-off and print, billing through BillingService.
+ * scan workflow, versioned reports with sign-off and print. Posts each order's charge to the patient's
+ * account (ChargesService) and keeps the bill number when it is billed (billing.charges.billed).
  * Publishes radiology.order.status_changed, radiology.report.finalized and radiology.report.critical.
  */
 @Module({
@@ -31,6 +33,14 @@ export class RadiologyModule implements OnModuleInit {
       requestContext.run(
         { requestId: `event:${e.id}`, tenantId: e.tenantId, roles: [], permissions: new Set(), facilityIds: 'all' },
         () => this.radiology.importFromEncounter(e.payload).then(() => undefined),
+      ),
+    );
+
+    // Radiology charges billed at the billing desk (or by Collect now): keep the bill number on the order.
+    this.bus.on<B.ChargesBilledEvent>('billing.charges.billed', (e) =>
+      requestContext.run(
+        { requestId: `event:${e.id}`, tenantId: e.tenantId, roles: [], permissions: new Set(), facilityIds: 'all' },
+        () => this.radiology.recordBilled(e.payload).then(() => undefined),
       ),
     );
   }

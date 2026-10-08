@@ -3,6 +3,7 @@ import { defineModule } from '../manifest';
 import { END_BEFORE_START, datesInOrder, isoDate, money as moneyField, positiveMoney, requiredText } from '../validation';
 import { patchSchema } from '../patch';
 import type { ImportColumn } from '../imports';
+import type { SourcePaymentState } from './billing';
 
 /**
  * Laboratory (LIS): permissions and API contracts (Zod schemas + types).
@@ -284,7 +285,11 @@ export const createOrderSchema = z.object({
   referredBy: optText(200),
   clinicalNotes: optText(1000),
   items: z.array(orderItemInputSchema).min(1, 'Add at least one test').max(60, 'At most 60 tests on one order'),
-  /** Raise the bill now (through billing). */
+  /**
+   * Bill now: the order's charges are posted to the patient's account and billed at once (with payNow).
+   * false: the charges are posted when the hospital's billing rules say (order or sample collection)
+   * and billed later at the billing desk.
+   */
   bill: z.boolean().default(true),
   payNow: z.object({ mode: z.enum(['cash', 'upi', 'card']), amount: positiveMoney(10_000_000), ref: optText(100) }).optional(),
 });
@@ -335,6 +340,13 @@ export interface OrderSummary {
   referredBy: string | null;
   itemNames: string[];
   invoiceNo: string | null;
+  /** State of the charges this order posted to the patient's account ('none' = nothing posted yet). */
+  paymentState: SourcePaymentState;
+  /**
+   * The hospital asks OPD patients to pay before the sample (billing rule diagnosticsPayment 'before')
+   * and this order is not on an IPD bill: show "Unpaid" with Collect now while paymentState is pending/unpaid.
+   */
+  payFirst: boolean;
   hasCritical: boolean;
   createdAt: string;
 }
@@ -417,6 +429,9 @@ export interface WorklistSample extends Sample {
   orderNo: string;
   priority: OrderPriority;
   patient: OrderPatient;
+  /** Payment state of the order's charges (see OrderSummary.paymentState). */
+  paymentState: SourcePaymentState;
+  payFirst: boolean;
 }
 
 // ---------- results ----------
