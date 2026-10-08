@@ -21,6 +21,7 @@ export const labApi = (http: Http) => ({
     list: (q: L.OrderQuery = {}) => http.get<Paginated<L.OrderSummary>>('/lab/orders', q),
     get: (id: string) => http.get<L.Order>(`/lab/orders/${id}`),
     create: (body: L.CreateOrder) => http.post<L.Order>('/lab/orders', body),
+    update: (id: string, body: L.UpdateOrder) => http.patch<L.Order>(`/lab/orders/${id}`, body),
     report: (id: string) => http.get<L.Report>(`/lab/orders/${id}/report`),
     bill: (id: string, body: { payNow?: L.CreateOrder['payNow'] } = {}) => http.post<L.Order>(`/lab/orders/${id}/bill`, body),
     cancel: (id: string, body: L.CancelOrder) => http.post<L.Order>(`/lab/orders/${id}/cancel`, body),

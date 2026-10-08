@@ -15,7 +15,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { LinesEditor, linesValid, Notice, StatusBadge, statusLabel, StoreSelect, useStores, type QtyLine } from '@/modules/inventory/ui';
+import { LinesEditor, linesValid, newLine, Notice, StatusBadge, statusLabel, StoreSelect, useStores, type QtyLine } from '@/modules/inventory/ui';
 
 export default function RequisitionsPage() {
   const canRead = usePermission('inventory.purchase.read');
@@ -26,6 +26,10 @@ export default function RequisitionsPage() {
   const { stores } = useStores();
   const [status, setStatus] = React.useState<inventory.RequisitionStatus | ''>('');
   const [creating, setCreating] = React.useState(false);
+  /** Requisition being edited (only while submitted, i.e. not yet decided). */
+  const [editing, setEditing] = React.useState<inventory.Requisition | null>(null);
+  const [notes, setNotes] = React.useState('');
+  const [formError, setFormError] = React.useState<string | null>(null);
   const [storeId, setStoreId] = React.useState('');
   const [neededBy, setNeededBy] = React.useState('');
   const [lines, setLines] = React.useState<QtyLine[]>([]);
@@ -44,18 +48,47 @@ export default function RequisitionsPage() {
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['inventory', 'requisitions'] });
 
   const create = useMutation({
-    mutationFn: () =>
-      api.inventory.requisitions.create({
-        storeId,
-        neededBy: neededBy || undefined,
-        lines: lines.map((l) => ({ itemId: l.itemId, qty: Number(l.qty) })),
-      }),
+    mutationFn: () => {
+      const reqLines = lines.map((l) => ({ itemId: l.itemId, qty: Number(l.qty) }));
+      return editing
+        ? api.inventory.requisitions.update(editing.id, { neededBy: neededBy || null, notes: notes.trim(), lines: reqLines })
+        : api.inventory.requisitions.create({ storeId, neededBy: neededBy || undefined, notes: notes.trim() || undefined, lines: reqLines });
+    },
     onSuccess: () => {
       refresh();
-      setCreating(false);
-      setLines([]);
+      closeForm();
     },
   });
+  const closeForm = () => {
+    setCreating(false);
+    setEditing(null);
+    setLines([]);
+    setNeededBy('');
+    setNotes('');
+    setFormError(null);
+  };
+  const startEdit = async (r: inventory.Requisition) => {
+    create.reset();
+    setFormError(null);
+    const full = await api.inventory.requisitions.get(r.id);
+    setEditing(full);
+    setCreating(true);
+    setStoreId(full.storeId);
+    setNeededBy(full.neededBy ?? '');
+    setNotes(full.notes ?? '');
+    setLines((full.lines ?? []).map((l) => newLine({ id: l.itemId, name: l.itemName, unit: l.unit, gstRate: 0 }, String(l.qty))));
+  };
+  const submitForm = () => {
+    setFormError(null);
+    if (!storeId) return setFormError('Choose the store');
+    if (!lines.length) return setFormError('Add at least one item');
+    if (!linesValid(lines)) return setFormError('Each quantity must be a whole number of 1 or more');
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    if (neededBy && neededBy < today && neededBy !== editing?.neededBy) return setFormError('Needed-by date cannot be in the past');
+    const parsed = inventory.updateRequisitionSchema.safeParse({ neededBy: neededBy || null, notes, lines: lines.map((l) => ({ itemId: l.itemId, qty: Number(l.qty) })) });
+    if (!parsed.success) return setFormError(parsed.error.issues[0]?.message ?? 'Check the requisition');
+    create.mutate();
+  };
   const act = useMutation({
     mutationFn: ({ id, action }: { id: string; action: 'approve' | 'reject' | 'cancel' }) =>
       action === 'cancel' ? api.inventory.requisitions.cancel(id) : api.inventory.requisitions.decide(id, { approve: action === 'approve' }),
@@ -71,7 +104,12 @@ export default function RequisitionsPage() {
         description="Stores ask for goods; an approver says yes or no; purchase turns approved ones into orders."
         actions={
           canRequest && (
-            <Button onClick={() => setCreating(true)}>
+            <Button
+              onClick={() => {
+                closeForm();
+                setCreating(true);
+              }}
+            >
               <Plus /> New requisition
             </Button>
           )
@@ -82,30 +120,34 @@ export default function RequisitionsPage() {
       {creating && (
         <Card className="mb-6">
           <CardHeader>
-            <CardTitle>New requisition</CardTitle>
+            <CardTitle>{editing ? `Edit requisition ${editing.number}` : 'New requisition'}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-4 sm:grid-cols-3">
               <div>
                 <Label htmlFor="req-store">For store *</Label>
                 <div className="mt-2">
-                  <StoreSelect id="req-store" value={storeId} onChange={setStoreId} stores={stores} />
+                  {editing ? <Input id="req-store" value={editing.storeName} disabled /> : <StoreSelect id="req-store" value={storeId} onChange={setStoreId} stores={stores} />}
                 </div>
               </div>
               <div>
                 <Label htmlFor="req-needed">Needed by</Label>
                 <Input id="req-needed" type="date" className="mt-2" value={neededBy} onChange={(e) => setNeededBy(e.target.value)} />
               </div>
+              <div>
+                <Label htmlFor="req-notes">Notes</Label>
+                <Input id="req-notes" className="mt-2" maxLength={500} value={notes} onChange={(e) => setNotes(e.target.value)} />
+              </div>
             </div>
             <LinesEditor lines={lines} setLines={setLines} />
-            {create.error && <p className="text-sm text-destructive">{errorMessage(create.error)}</p>}
+            {(formError || create.error) && <p className="text-sm text-destructive">{formError ?? errorMessage(create.error)}</p>}
             <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setCreating(false)}>
+              <Button variant="outline" onClick={closeForm}>
                 Cancel
               </Button>
-              <Button disabled={!storeId || !linesValid(lines) || create.isPending} onClick={() => create.mutate()}>
+              <Button disabled={create.isPending} onClick={submitForm}>
                 {create.isPending && <Loader2 className="animate-spin" />}
-                Submit
+                {editing ? 'Save changes' : 'Submit'}
               </Button>
             </div>
           </CardContent>
@@ -164,6 +206,11 @@ export default function RequisitionsPage() {
                               Reject
                             </Button>
                           </>
+                        )}
+                        {canRequest && r.status === 'submitted' && (
+                          <Button size="sm" variant="outline" onClick={() => startEdit(r).catch(() => setFormError('Could not load the requisition'))}>
+                            Edit
+                          </Button>
                         )}
                         {canOrder && r.status === 'approved' && (
                           <Link className={buttonVariants({ size: 'sm' })} href={`/inventory/purchase-orders/new?requisitionId=${r.id}`}>

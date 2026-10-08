@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { patchSchema } from '../patch';
 
 /**
  * Laboratory (LIS): permissions and API contracts (Zod schemas + types).
@@ -126,7 +127,7 @@ export const testInputSchema = z.object({
   ranges: z.array(rangeInputSchema).max(20).default([]),
 });
 export type TestInput = z.input<typeof testInputSchema>;
-export const updateTestSchema = testInputSchema.omit({ code: true }).partial();
+export const updateTestSchema = patchSchema(testInputSchema.omit({ code: true }));
 export type UpdateTest = z.input<typeof updateTestSchema>;
 
 export interface LabTest {
@@ -157,7 +158,7 @@ export const panelInputSchema = z.object({
   testIds: z.array(z.uuid()).min(1).max(60),
 });
 export type PanelInput = z.input<typeof panelInputSchema>;
-export const updatePanelSchema = panelInputSchema.omit({ code: true }).partial();
+export const updatePanelSchema = patchSchema(panelInputSchema.omit({ code: true }));
 export type UpdatePanel = z.input<typeof updatePanelSchema>;
 
 export interface LabPanel {
@@ -207,6 +208,16 @@ export const createOrderSchema = z.object({
   payNow: z.object({ mode: z.enum(['cash', 'upi', 'card']), amount: z.number().positive(), ref: optText(100) }).optional(),
 });
 export type CreateOrder = z.input<typeof createOrderSchema>;
+
+/** Correct an order's details before the report is complete. Blank ('' or null) clears a field. */
+export const updateOrderSchema = z.object({
+  priority: z.enum(ORDER_PRIORITIES).optional(),
+  /** Referring doctor on staff; null removes them. */
+  doctorId: z.uuid().nullable().optional(),
+  referredBy: z.string().trim().max(200).nullable().optional(),
+  clinicalNotes: z.string().trim().max(1000).nullable().optional(),
+});
+export type UpdateOrder = z.input<typeof updateOrderSchema>;
 
 export const cancelOrderSchema = z.object({ reason: z.string().trim().min(3).max(500) });
 export type CancelOrder = z.input<typeof cancelOrderSchema>;

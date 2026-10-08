@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { patchSchema } from '../patch';
 
 /**
  * Billing: permissions and API contracts (Zod schemas + types).
@@ -121,7 +122,8 @@ export const createServiceSchema = z.object({
 });
 export type CreateService = z.input<typeof createServiceSchema>;
 
-export const updateServiceSchema = createServiceSchema.omit({ code: true }).partial();
+// patchSchema, not .partial(): Zod 4 keeps defaults inside .partial(), so a PATCH would reset omitted fields.
+export const updateServiceSchema = patchSchema(createServiceSchema.omit({ code: true }));
 export type UpdateService = z.input<typeof updateServiceSchema>;
 
 export interface Service {
@@ -231,10 +233,11 @@ export const createInvoiceSchema = z.object({
 });
 export type CreateInvoice = z.input<typeof createInvoiceSchema>;
 
-export const updateInvoiceSchema = createInvoiceSchema
-  .pick({ supplyType: true, buyerGstin: true, notes: true, payerId: true, doctorId: true })
-  .extend({ lines: z.array(invoiceLineInputSchema).min(1).max(500) })
-  .partial();
+export const updateInvoiceSchema = patchSchema(
+  createInvoiceSchema
+    .pick({ supplyType: true, buyerGstin: true, notes: true, payerId: true, doctorId: true })
+    .extend({ lines: z.array(invoiceLineInputSchema).min(1).max(500) }),
+);
 export type UpdateInvoice = z.input<typeof updateInvoiceSchema>;
 
 export const cancelInvoiceSchema = z.object({ reason: z.string().trim().min(3).max(500) });

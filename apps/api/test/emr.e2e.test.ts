@@ -21,6 +21,11 @@ let allergicPatientId: string;
 const inject = (method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', url: string, token: string, payload?: object) =>
   app.inject({ method, url: `/api/v1${url}`, headers: bearer(token), payload });
 
+/** An IST date `days` from today, so date rules (follow-up not before the visit) never go stale. */
+const istDaysFromNow = (days: number) => new Date(Date.now() + 330 * 60_000 + days * 86_400_000).toISOString().slice(0, 10);
+const FOLLOW_UP = istDaysFromNow(54);
+const QUICK_FOLLOW_UP = istDaysFromNow(24);
+
 async function newPatient(extra: object = {}) {
   const res = await inject('POST', '/patients', reception, { firstName: 'Emr', lastName: `Test${Date.now()}${Math.random().toString(36).slice(2, 6)}`, gender: 'male', ageYears: 40, ...extra });
   expect(res.statusCode).toBe(201);
@@ -78,10 +83,14 @@ describe('emr consultation flow', () => {
   it('saves notes, ICD-10 diagnoses, orders and starts the consultation', async () => {
     let res = await inject('PATCH', `/emr/encounters/${encounterId}`, doctor, {
       notes: { chiefComplaints: 'Fever and sore throat for 3 days', examination: 'Throat congested' },
-      followUpDate: '2026-12-01',
+      followUpDate: FOLLOW_UP,
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().status).toBe('in_progress');
+    const past = await inject('PATCH', `/emr/encounters/${encounterId}`, doctor, { followUpDate: istDaysFromNow(-1) });
+    expect(past.statusCode).toBe(400);
+    expect(past.json().error.code).toBe('invalid_follow_up');
+    expect((await inject('PATCH', `/emr/encounters/${encounterId}`, doctor, { followUpDate: '2026-13-01' })).statusCode).toBe(400);
     expect(res.json().notes.chiefComplaints).toContain('Fever');
 
     res = await inject('PUT', `/emr/encounters/${encounterId}/diagnoses`, doctor, {
@@ -154,7 +163,7 @@ describe('emr consultation flow', () => {
     expect(rxEvent).toMatchObject({ doctorId, doctorName: 'Dr. Asha Rao' });
     expect(new Date(rxEvent.createdAt).toISOString()).toBe(rxEvent.createdAt);
     const signedEvent = topics.find((t) => t.topic === 'emr.encounter.signed')!.payload;
-    expect(signedEvent).toMatchObject({ followUpDate: '2026-12-01', followUpNotes: null });
+    expect(signedEvent).toMatchObject({ followUpDate: FOLLOW_UP, followUpNotes: null });
   });
 
   it('blocks direct database changes to a signed consultation (trigger)', async () => {
@@ -227,14 +236,14 @@ describe('emr quick prescription, favourites, certificates', () => {
       patientId,
       lines: [{ drugName: 'Cetirizine 10', dose: '1 tab', frequency: '0-0-1', days: 5 }],
       advice: 'Steam inhalation',
-      followUpDate: '2026-11-01',
+      followUpDate: QUICK_FOLLOW_UP,
       sign: true,
     });
     expect(res.statusCode).toBe(201);
     const { encounterId, prescriptionId, rxNo } = res.json();
     expect(rxNo).toMatch(/^RX/);
     const enc = (await inject('GET', `/emr/encounters/${encounterId}`, doctor)).json();
-    expect(enc).toMatchObject({ status: 'completed', followUpDate: '2026-11-01', notes: { advice: 'Steam inhalation' } });
+    expect(enc).toMatchObject({ status: 'completed', followUpDate: QUICK_FOLLOW_UP, notes: { advice: 'Steam inhalation' } });
     expect(enc.prescription.id).toBe(prescriptionId);
     expect(enc.prescription.lines[0].qty).toBe(5);
   });
@@ -249,6 +258,34 @@ describe('emr quick prescription, favourites, certificates', () => {
     expect(dup.statusCode).toBe(409);
     const del = await inject('DELETE', `/emr/favourites/${created.json().id}`, doctor);
     expect(del.statusCode).toBe(204);
+  });
+
+  it('edits a favourite: rename and replace its medicines', async () => {
+    const name = `Gastritis ${Date.now()}`;
+    const fav = (await inject('POST', '/emr/favourites', doctor, { name, lines: [{ drugName: 'Pantoprazole 40', dose: '1 tab', frequency: 'OD', days: 14, timing: 'empty_stomach' }] })).json();
+    const other = (await inject('POST', '/emr/favourites', doctor, { name: `${name} B`, lines: [{ drugName: 'X', dose: '1', frequency: 'OD' }] })).json();
+
+    let res = await inject('PATCH', `/emr/favourites/${fav.id}`, doctor, { name: `${name} (adult)` });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ name: `${name} (adult)`, lines: [{ drugName: 'Pantoprazole 40', days: 14 }] });
+    res = await inject('PATCH', `/emr/favourites/${fav.id}`, doctor, {
+      lines: [
+        { drugName: 'Pantoprazole 40', dose: '1 tab', frequency: 'OD', days: 30 },
+        { drugName: 'Sucralfate syrup', dose: '10 ml', frequency: 'TDS', days: 7, route: 'oral' },
+      ],
+    });
+    expect(res.json().name).toBe(`${name} (adult)`);
+    expect(res.json().lines.map((l: { drugName: string }) => l.drugName)).toEqual(['Pantoprazole 40', 'Sucralfate syrup']);
+
+    for (const bad of [{ name: '' }, { lines: [] }, { lines: [{ drugName: 'X', dose: '', frequency: 'OD' }] }, { lines: [{ drugName: 'X', dose: '1', frequency: 'OD', days: 400 }] }]) {
+      expect((await inject('PATCH', `/emr/favourites/${fav.id}`, doctor, bad)).statusCode, JSON.stringify(bad)).toBe(400);
+    }
+    expect((await inject('PATCH', `/emr/favourites/${fav.id}`, doctor, { name: `${name} B` })).statusCode).toBe(409);
+    // Only the doctor's own favourites, and only for prescribers.
+    expect((await inject('PATCH', `/emr/favourites/${fav.id}`, nurse, { name: 'Nope' })).statusCode).toBe(403);
+    expect((await inject('PATCH', `/emr/favourites/00000000-0000-4000-8000-000000000000`, doctor, { name: 'Ghost' })).statusCode).toBe(404);
+    await inject('DELETE', `/emr/favourites/${fav.id}`, doctor);
+    await inject('DELETE', `/emr/favourites/${other.id}`, doctor);
   });
 
   it('issues a sick-leave certificate', async () => {

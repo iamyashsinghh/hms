@@ -136,6 +136,15 @@ describe('facilities, departments, specializations', () => {
     expect((res.body as { error: { code: string } }).error.code).toBe('last_facility');
   });
 
+  it('renames a department and keeps fields a partial edit leaves out', async () => {
+    const d = (await call(admin, 'POST', '/setup/departments', { code: `RN${run}`, name: 'Radio', type: 'diagnostic' })).body as { id: string };
+    const off = await call(admin, 'PATCH', `/setup/departments/${d.id}`, { isActive: false });
+    expect(off.body).toMatchObject({ isActive: false, type: 'diagnostic', name: 'Radio' });
+    const renamed = await call(admin, 'PATCH', `/setup/departments/${d.id}`, { name: 'Radiology' });
+    expect(renamed.body).toMatchObject({ isActive: false, type: 'diagnostic', name: 'Radiology' });
+    expect((await call(reception, 'PATCH', `/setup/departments/${d.id}`, { name: 'Nope' })).status).toBe(403);
+  });
+
   it('creates departments and specializations', async () => {
     const dept = await call(admin, 'POST', '/setup/departments', { code: `GM${run}`, name: 'General Medicine' });
     expect(dept.status).toBe(201);

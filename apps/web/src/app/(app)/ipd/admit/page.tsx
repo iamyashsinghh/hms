@@ -12,7 +12,7 @@ import { NoAccess } from '@/components/no-access';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
-import { ADMISSION_TYPE_LABELS, ErrorBox, Field, PatientPicker, Textarea, formatINR } from '@/modules/ipd/ui';
+import { ADMISSION_TYPE_LABELS, ErrorBox, Field, PatientPicker, Textarea, formatINR, todayIST } from '@/modules/ipd/ui';
 
 export default function AdmitPageWrapper() {
   return (
@@ -92,6 +92,7 @@ function AdmitPage() {
     const parsed = I.admitSchema.safeParse(body);
     if (!patient) return setFormError('Pick the patient to admit');
     if (!parsed.success) return setFormError(parsed.error.issues[0]?.message ?? 'Check the form');
+    if (expected && expected < todayIST()) return setFormError('Expected discharge cannot be before today');
     admit.mutate(body);
   }
 
@@ -160,7 +161,7 @@ function AdmitPage() {
                 <Input id="att-mob" inputMode="numeric" value={attendant.mobile} onChange={(e) => setAttendant({ ...attendant, mobile: e.target.value })} maxLength={10} />
               </Field>
               <Field id="edd" label="Expected discharge (optional)">
-                <Input id="edd" type="date" value={expected} onChange={(e) => setExpected(e.target.value)} />
+                <Input id="edd" type="date" min={todayIST()} value={expected} onChange={(e) => setExpected(e.target.value)} />
               </Field>
             </CardContent>
           </Card>

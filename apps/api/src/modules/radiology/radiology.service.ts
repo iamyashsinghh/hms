@@ -379,6 +379,8 @@ export class RadiologyService {
       const modality = await this.repo.modality(tx, modalityId, true);
       if (!modality || !modality.isActive) throw badRequest('invalid_modality', 'Pick an active machine');
       const start = new Date(d.scheduledAt);
+      // A little grace for "book it now" at the desk; anything earlier is a typo in the date.
+      if (start.getTime() < Date.now() - 15 * 60_000) throw badRequest('slot_in_past', 'Pick a slot that is not in the past');
       const end = new Date(start.getTime() + t!.test.durationMinutes * 60_000);
       const [clash] = await this.repo.overlapping(tx, modalityId, start.toISOString(), end.toISOString(), o.id);
       if (clash) throw conflict('slot_taken', `${modality.name} is already booked then (${clash.orderNo})`);

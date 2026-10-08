@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { patchSchema } from '../patch';
 
 /**
  * Insurance & Schemes: payers (insurers, TPAs, corporates, PM-JAY/CGHS-style schemes), scheme packages,
@@ -109,7 +110,8 @@ const payerBase = z.object({
   });
 export const payerInputSchema = payerBase.refine((p) => p.type !== 'government' || !!p.scheme, { message: 'Pick the scheme', path: ['scheme'] });
 export type PayerInput = z.input<typeof payerInputSchema>;
-export const updatePayerSchema = payerBase.omit({ code: true }).partial();
+// patchSchema, not .partial(): Zod 4 keeps defaults inside .partial(), so a PATCH would reset omitted fields.
+export const updatePayerSchema = patchSchema(payerBase.omit({ code: true }));
 export type UpdatePayer = z.input<typeof updatePayerSchema>;
 
 export interface Payer {
@@ -158,7 +160,7 @@ export const packageInputSchema = z.object({
   isActive: z.boolean().default(true),
 });
 export type PackageInput = z.input<typeof packageInputSchema>;
-export const updatePackageSchema = packageInputSchema.omit({ code: true }).partial();
+export const updatePackageSchema = patchSchema(packageInputSchema.omit({ code: true }));
 export type UpdatePackage = z.input<typeof updatePackageSchema>;
 
 export interface SchemePackage {
@@ -200,7 +202,7 @@ const policyBase = z.object({
 const datesInOrder = (v: { validFrom?: string | null; validTo?: string | null }) => !v.validFrom || !v.validTo || v.validTo >= v.validFrom;
 export const policyInputSchema = policyBase.refine(datesInOrder, { message: 'End date is before start date', path: ['validTo'] });
 export type PolicyInput = z.input<typeof policyInputSchema>;
-export const updatePolicySchema = policyBase.omit({ patientId: true }).partial().refine(datesInOrder, { message: 'End date is before start date', path: ['validTo'] });
+export const updatePolicySchema = patchSchema(policyBase.omit({ patientId: true })).refine(datesInOrder, { message: 'End date is before start date', path: ['validTo'] });
 export type UpdatePolicy = z.input<typeof updatePolicySchema>;
 
 export interface Policy {
@@ -285,7 +287,7 @@ export const preauthInputSchema = z.object({
   notes: nullableText(1000),
 });
 export type PreauthInput = z.input<typeof preauthInputSchema>;
-export const updatePreauthSchema = preauthInputSchema.omit({ policyId: true, facilityId: true }).partial();
+export const updatePreauthSchema = patchSchema(preauthInputSchema.omit({ policyId: true, facilityId: true }));
 export type UpdatePreauth = z.input<typeof updatePreauthSchema>;
 
 export const preauthApproveSchema = z.object({
@@ -439,7 +441,7 @@ export const documentInputSchema = z.object({
   received: z.boolean().default(false),
 });
 export type DocumentInput = z.input<typeof documentInputSchema>;
-export const updateDocumentSchema = documentInputSchema.partial();
+export const updateDocumentSchema = patchSchema(documentInputSchema);
 export type UpdateDocument = z.input<typeof updateDocumentSchema>;
 
 export interface SettlementPosting {

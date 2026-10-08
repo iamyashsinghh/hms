@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { patchSchema } from '../patch';
 
 /**
  * Hospital Setup: permissions and API contracts (Zod schemas + types).
@@ -130,7 +131,7 @@ export const createFacilitySchema = z.object({
   address: addressSchema.optional(),
 });
 export type CreateFacility = z.input<typeof createFacilitySchema>;
-export const updateFacilitySchema = createFacilitySchema.partial().extend({ isActive: z.boolean().optional() });
+export const updateFacilitySchema = patchSchema(createFacilitySchema).extend({ isActive: z.boolean().optional() });
 export type UpdateFacility = z.input<typeof updateFacilitySchema>;
 export interface FacilityDetail {
   id: string;
@@ -157,9 +158,7 @@ export const createDepartmentSchema = z.object({
   description: z.string().max(500).optional(),
 });
 export type CreateDepartment = z.input<typeof createDepartmentSchema>;
-export const updateDepartmentSchema = createDepartmentSchema
-  .partial()
-  .extend({ facilityId: z.uuid().nullable().optional(), isActive: z.boolean().optional() });
+export const updateDepartmentSchema = patchSchema(createDepartmentSchema).extend({ facilityId: z.uuid().nullable().optional(), isActive: z.boolean().optional() });
 export type UpdateDepartment = z.input<typeof updateDepartmentSchema>;
 export interface Department {
   id: string;
@@ -179,7 +178,7 @@ export const createSpecializationSchema = z.object({
   name: z.string().trim().min(2).max(120),
 });
 export type CreateSpecialization = z.input<typeof createSpecializationSchema>;
-export const updateSpecializationSchema = createSpecializationSchema.partial().extend({ isActive: z.boolean().optional() });
+export const updateSpecializationSchema = patchSchema(createSpecializationSchema).extend({ isActive: z.boolean().optional() });
 export type UpdateSpecialization = z.input<typeof updateSpecializationSchema>;
 export interface Specialization {
   id: string;

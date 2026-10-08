@@ -64,6 +64,12 @@ export class InventoryRequisitionsController {
     return this.purchase.createRequisition(body);
   }
 
+  @Patch(':id')
+  @RequirePermissions('inventory.purchase.request')
+  update(@Param('id', id) reqId: string, @Body(new ZodPipe(inventory.updateRequisitionSchema)) body: Out<typeof inventory.updateRequisitionSchema>): Promise<inventory.Requisition> {
+    return this.purchase.updateRequisition(reqId, body);
+  }
+
   @Post(':id/decision')
   @HttpCode(200)
   @RequirePermissions('inventory.purchase.approve')
@@ -181,6 +187,12 @@ export class InventoryIndentsController {
   @RequirePermissions('inventory.indent.create')
   create(@Body(new ZodPipe(inventory.createIndentSchema)) body: Out<typeof inventory.createIndentSchema>): Promise<inventory.Indent> {
     return this.indents.create(body);
+  }
+
+  @Patch(':id')
+  @RequirePermissions('inventory.indent.create')
+  update(@Param('id', id) indentId: string, @Body(new ZodPipe(inventory.updateIndentSchema)) body: Out<typeof inventory.updateIndentSchema>): Promise<inventory.Indent> {
+    return this.indents.update(indentId, body);
   }
 
   @Post(':id/decision')

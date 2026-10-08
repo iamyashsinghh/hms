@@ -4,7 +4,7 @@ import * as React from 'react';
 import { use } from 'react';
 import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, ArrowLeft, Ban, CheckCheck, FileText, Loader2, Printer, ReceiptIndianRupee, Save, TestTube } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Ban, CheckCheck, FileText, Loader2, Pencil, Printer, ReceiptIndianRupee, Save, TestTube } from 'lucide-react';
 import { lab as L } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { Can, usePermission } from '@/lib/auth';
@@ -14,7 +14,7 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ErrorBox } from '@/modules/billing/ui';
+import { ErrorBox, Field } from '@/modules/billing/ui';
 import {
   FlagMark,
   OrderStatusBadge,
@@ -40,6 +40,7 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
   const { data: order, error } = useQuery({ queryKey: key, queryFn: () => api.lab.orders.get(id), enabled: canRead });
   const [draft, setDraft] = React.useState<Draft>({});
   const [draftOf, setDraftOf] = React.useState<L.Order | undefined>(undefined);
+  const [editing, setEditing] = React.useState(false);
 
   // Reset the editable values whenever the server copy changes.
   if (order && order !== draftOf) {
@@ -60,13 +61,19 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
   if (!order) return <p className="text-sm text-muted-foreground">Loading…</p>;
 
   const open = order.status !== 'cancelled';
-  const changed = order.results.filter((r) => r.status !== 'verified' && ((draft[r.id]?.value ?? '') !== (r.value ?? '') || (draft[r.id]?.remarks ?? '') !== (r.remarks ?? '')));
+  const changed = order.results.filter(
+    (r) => r.status !== 'verified' && ((draft[r.id]?.value ?? '') !== (r.value ?? '') || (draft[r.id]?.remarks ?? '') !== (r.remarks ?? '')),
+  );
   const entered = order.results.filter((r) => r.status === 'entered');
   const unmatched = order.items.filter((i) => i.kind === 'unmatched');
   const sampleOf = (r: L.Result) => order.samples.find((s) => s.id === r.sampleId);
 
   const saveResults = () =>
-    act.mutate(() => api.lab.orders.enterResults(id, { results: changed.map((r) => ({ resultId: r.id, value: draft[r.id]!.value, remarks: draft[r.id]!.remarks || undefined })) }));
+    act.mutate(() =>
+      api.lab.orders.enterResults(id, {
+        results: changed.map((r) => ({ resultId: r.id, value: draft[r.id]!.value, remarks: draft[r.id]!.remarks || undefined })),
+      }),
+    );
 
   return (
     <>
@@ -87,8 +94,8 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
             )}
           </div>
           <p className="mt-1 text-sm">
-            <span className="font-medium">{order.patient.name}</span> · <span className="font-mono">{order.patient.uhid}</span> · {ageFromDob(order.patient.dateOfBirth)}{' '}
-            {order.patient.gender}
+            <span className="font-medium">{order.patient.name}</span> · <span className="font-mono">{order.patient.uhid}</span> ·{' '}
+            {ageFromDob(order.patient.dateOfBirth)} {order.patient.gender}
             {order.patient.mobile && ` · ${order.patient.mobile}`}
           </p>
           <p className="text-sm text-muted-foreground">
@@ -114,11 +121,22 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
           ) : (
             open && (
               <Can permission="lab.order.create">
-                <Button variant="outline" disabled={act.isPending || unmatched.length === order.items.length} onClick={() => act.mutate(() => api.lab.orders.bill(id))}>
+                <Button
+                  variant="outline"
+                  disabled={act.isPending || unmatched.length === order.items.length}
+                  onClick={() => act.mutate(() => api.lab.orders.bill(id))}
+                >
                   <ReceiptIndianRupee /> Create bill
                 </Button>
               </Can>
             )
+          )}
+          {open && order.status !== 'completed' && !editing && (
+            <Can permission="lab.order.create">
+              <Button variant="outline" onClick={() => setEditing(true)}>
+                <Pencil /> Edit
+              </Button>
+            </Can>
           )}
           {open && order.status !== 'completed' && (
             <Can permission="lab.order.cancel">
@@ -136,13 +154,28 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
         </div>
       </div>
 
+      {editing && open && order.status !== 'completed' && (
+        <Can permission="lab.order.create">
+          <EditOrderCard
+            order={order}
+            onSaved={(o) => {
+              queryClient.setQueryData(key, o);
+              queryClient.invalidateQueries({ queryKey: ['lab', 'orders'], exact: false, refetchType: 'none' });
+              setEditing(false);
+            }}
+            onCancel={() => setEditing(false)}
+          />
+        </Can>
+      )}
+
       <div className="mb-4">
         <ErrorBox error={act.error ? errorMessage(act.error) : null} />
       </div>
 
       {unmatched.length > 0 && (
         <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-          Not in the test catalogue, so not billed or reported here: {unmatched.map((u) => u.name).join(', ')}. Add the test to the catalogue and book it as a new order if needed.
+          Not in the test catalogue, so not billed or reported here: {unmatched.map((u) => u.name).join(', ')}. Add the test to the catalogue and book it as a
+          new order if needed.
         </div>
       )}
 
@@ -177,7 +210,9 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
                   <span className="line-clamp-2">{s.testNames.join(', ') || '—'}</span>
                 </TableCell>
                 <TableCell>
-                  <Badge variant={s.status === 'rejected' ? 'destructive' : s.status === 'pending' ? 'outline' : 'default'}>{SAMPLE_STATUS_LABELS[s.status]}</Badge>
+                  <Badge variant={s.status === 'rejected' ? 'destructive' : s.status === 'pending' ? 'outline' : 'default'}>
+                    {SAMPLE_STATUS_LABELS[s.status]}
+                  </Badge>
                   {s.rejectedReason && <div className="text-xs text-destructive">{s.rejectedReason}</div>}
                   {s.collectedAt && <div className="text-xs text-muted-foreground">Collected {formatDateTime(s.collectedAt)}</div>}
                 </TableCell>
@@ -338,5 +373,78 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
         </CardContent>
       </Card>
     </>
+  );
+}
+
+/** Correct priority, referrer and clinical notes until the report is complete. */
+function EditOrderCard({ order, onSaved, onCancel }: { order: L.Order; onSaved: (o: L.Order) => void; onCancel: () => void }) {
+  const { data: doctors } = useQuery({ queryKey: ['setup', 'doctors'], queryFn: () => api.setup.listDoctors(), retry: false });
+  const [f, setF] = React.useState({
+    priority: order.priority,
+    doctorId: order.doctorId ?? '',
+    referredBy: order.referredBy ?? '',
+    clinicalNotes: order.clinicalNotes ?? '',
+  });
+  const [formError, setFormError] = React.useState<string | null>(null);
+  const save = useMutation({ mutationFn: (body: L.UpdateOrder) => api.lab.orders.update(order.id, body), onSuccess: onSaved });
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const body: L.UpdateOrder = {
+      priority: f.priority,
+      doctorId: f.doctorId || null,
+      referredBy: f.referredBy.trim() || null,
+      clinicalNotes: f.clinicalNotes.trim() || null,
+    };
+    const parsed = L.updateOrderSchema.safeParse(body);
+    setFormError(parsed.success ? null : (parsed.error.issues[0]?.message ?? 'Check the form'));
+    if (parsed.success) save.mutate(body);
+  };
+  return (
+    <Card className="mb-6">
+      <CardHeader>
+        <CardTitle>Edit order</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <form className="grid gap-4 sm:grid-cols-2" noValidate onSubmit={submit}>
+          <Field id="eo-doctor" label="Referring doctor (staff)">
+            <Select id="eo-doctor" value={f.doctorId} onChange={(e) => setF({ ...f, doctorId: e.target.value })}>
+              <option value="">None / outside doctor</option>
+              {order.doctorId && !doctors?.some((d) => d.userId === order.doctorId) && (
+                <option value={order.doctorId}>{order.doctorName ?? 'Current doctor'}</option>
+              )}
+              {doctors?.map((d) => (
+                <option key={d.userId} value={d.userId}>
+                  {d.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field id="eo-ref" label="Outside doctor / B2B client">
+            <Input id="eo-ref" maxLength={200} value={f.referredBy} onChange={(e) => setF({ ...f, referredBy: e.target.value })} />
+          </Field>
+          <Field id="eo-priority" label="Priority">
+            <Select id="eo-priority" value={f.priority} onChange={(e) => setF({ ...f, priority: e.target.value as L.OrderPriority })}>
+              <option value="routine">Routine</option>
+              <option value="urgent">Urgent</option>
+              <option value="stat">STAT</option>
+            </Select>
+          </Field>
+          <Field id="eo-notes" label="Clinical notes">
+            <Input id="eo-notes" maxLength={1000} value={f.clinicalNotes} onChange={(e) => setF({ ...f, clinicalNotes: e.target.value })} />
+          </Field>
+          <div className="space-y-3 sm:col-span-2">
+            <ErrorBox error={formError ?? (save.error ? errorMessage(save.error) : null)} />
+            <div className="flex gap-2">
+              <Button type="submit" disabled={save.isPending}>
+                {save.isPending && <Loader2 className="animate-spin" />} Save changes
+              </Button>
+              <Button type="button" variant="ghost" onClick={onCancel}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </form>
+      </CardContent>
+    </Card>
   );
 }

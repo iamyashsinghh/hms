@@ -109,6 +109,29 @@ describe('radiology masters', () => {
     expect(noPrice.statusCode).toBe(400);
   });
 
+  it('edits masters without resetting the fields it was not sent', async () => {
+    let res = await inject('PATCH', `/radiology/modalities/${modalityId}`, admin, { room: 'Room 5' });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ room: 'Room 5', kind: 'US', isActive: true, name: `E2E USG ${suffix}` });
+
+    res = await inject('PATCH', `/radiology/tests/${testId}`, admin, { price: 950 });
+    expect(res.statusCode, res.body).toBe(200);
+    // durationMinutes/taxRate/contrast/isActive have create defaults that must not creep into a partial update.
+    expect(res.json()).toMatchObject({ price: 950, durationMinutes: 20, taxRate: 0, contrast: false, isActive: true, preparation: 'Full bladder' });
+    res = await inject('PATCH', `/radiology/tests/${testId}`, admin, { price: 900, preparation: '' });
+    expect(res.json()).toMatchObject({ price: 900, preparation: null, durationMinutes: 20 });
+    for (const bad of [{ price: -1 }, { durationMinutes: 2 }, { taxRate: 50 }, { name: '' }]) {
+      expect((await inject('PATCH', `/radiology/tests/${testId}`, admin, bad)).statusCode, JSON.stringify(bad)).toBe(400);
+    }
+
+    const tpl = (await inject('GET', `/radiology/templates?modalityId=${modalityId}`, radiologist)).json()[0];
+    res = await inject('PATCH', `/radiology/templates/${tpl.id}`, radiologist, { impression: 'Normal study.' });
+    expect(res.json()).toMatchObject({ impression: 'Normal study.', findings: 'Normal study.', isActive: true });
+
+    expect((await inject('PATCH', `/radiology/tests/${testId}`, doctor, { price: 1 })).statusCode).toBe(403);
+    expect((await inject('PATCH', `/radiology/modalities/${modalityId}`, reception, { room: 'x' })).statusCode).toBe(403);
+  });
+
   it('keeps masters to their roles', async () => {
     expect((await inject('POST', '/radiology/modalities', doctor, { code: 'X', name: 'x', kind: 'XR' })).statusCode).toBe(403);
     expect((await inject('POST', '/radiology/masters/starter', reception)).statusCode).toBe(403);
@@ -124,6 +147,34 @@ describe('radiology order to report', () => {
     expect(order.orderNo).toMatch(/^RAD\d{6}$/);
     expect(order).toMatchObject({ status: 'ordered', source: 'desk', studyName: testName, modalityId, priority: 'urgent' });
     expect((await inject('POST', '/radiology/orders', nurse, { patientId, testId })).statusCode).toBe(403);
+  });
+
+  it('edits the priority, referrer and notes before the scan', async () => {
+    let res = await inject('PATCH', `/radiology/orders/${order.id}`, reception, { clinicalNotes: 'Right flank pain, ? calculus' });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ clinicalNotes: 'Right flank pain, ? calculus', priority: 'urgent', referringDoctorName: 'Dr. Outside' });
+    res = await inject('PATCH', `/radiology/orders/${order.id}`, doctor, { priority: 'stat', referringDoctorName: 'Dr. Outside Clinic' });
+    expect(res.json()).toMatchObject({ priority: 'stat', referringDoctorName: 'Dr. Outside Clinic', clinicalNotes: 'Right flank pain, ? calculus' });
+    expect((await inject('PATCH', `/radiology/orders/${order.id}`, reception, { priority: 'asap' })).statusCode).toBe(400);
+    expect((await inject('PATCH', `/radiology/orders/${order.id}`, reception, { clinicalNotes: 'x'.repeat(1001) })).statusCode).toBe(400);
+    expect((await inject('PATCH', `/radiology/orders/${order.id}`, nurse, { priority: 'routine' })).statusCode).toBe(403);
+    expect((await inject('PATCH', `/radiology/orders/${order.id}`, billingClerk, { priority: 'routine' })).statusCode).toBe(403);
+    res = await inject('PATCH', `/radiology/orders/${order.id}`, reception, { priority: 'urgent' });
+    expect(res.json().priority).toBe('urgent');
+  });
+
+  it('refuses to book a slot in the past', async () => {
+    const res = await inject('POST', `/radiology/orders/${order.id}/schedule`, reception, { scheduledAt: '2020-01-01T10:00:00+05:30' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('slot_in_past');
+  });
+
+  it('does not edit a cancelled order', async () => {
+    const o = await newOrder();
+    expect((await inject('POST', `/radiology/orders/${o.id}/cancel`, admin, { reason: 'Duplicate order' })).statusCode).toBe(200);
+    const res = await inject('PATCH', `/radiology/orders/${o.id}`, reception, { priority: 'stat' });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('order_cancelled');
   });
 
   it('books a machine slot and refuses a clash', async () => {
@@ -243,7 +294,7 @@ describe('radiology orders from EMR', () => {
     res = await inject('PUT', `/emr/encounters/${encounterId}/orders`, doctor, {
       orders: [
         { kind: 'radiology', name: testName.toLowerCase(), priority: 'urgent' },
-        { kind: 'radiology', name: `Something unlisted ${suffix}` },
+        { kind: 'radiology', name: `Something unlisted ${suffix}`, priority: 'urgent' },
         { kind: 'lab', name: 'Urine routine' },
       ],
     });
@@ -268,7 +319,9 @@ describe('radiology orders from EMR', () => {
     // The desk picks the test for the unmatched line, then it can be booked.
     expect((await inject('POST', `/radiology/orders/${unmatched.id}/schedule`, reception, { scheduledAt: slot(600) })).statusCode).toBe(400);
     res = await inject('PATCH', `/radiology/orders/${unmatched.id}`, reception, { testId });
-    expect(res.json()).toMatchObject({ testId, studyName: testName });
+    // Picking the test keeps the doctor's priority (it used to fall back to routine).
+    expect(unmatched.priority).not.toBe('routine');
+    expect(res.json()).toMatchObject({ testId, studyName: testName, priority: unmatched.priority });
   });
 });
 

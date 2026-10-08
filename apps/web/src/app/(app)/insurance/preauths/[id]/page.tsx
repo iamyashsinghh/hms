@@ -4,7 +4,7 @@ import * as React from 'react';
 import Link from 'next/link';
 import { use } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, FileStack } from 'lucide-react';
+import { ArrowLeft, FileStack, Pencil } from 'lucide-react';
 import type { insurance as I } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { Can, usePermission } from '@/lib/auth';
@@ -12,6 +12,7 @@ import { formatDate } from '@/lib/format';
 import { NoAccess } from '@/components/no-access';
 import { buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PREAUTH_EDITABLE } from '@/modules/insurance/preauth-form';
 import { ActionForm, ErrorBox, History, StatusBadge, formatINR, opt } from '@/modules/insurance/ui';
 
 export default function PreauthPage({ params }: { params: Promise<{ id: string }> }) {
@@ -53,6 +54,11 @@ export default function PreauthPage({ params }: { params: Promise<{ id: string }
 
       <Can permission="insurance.preauth.manage">
         <div className="flex flex-wrap gap-2">
+          {PREAUTH_EDITABLE.includes(pa.status) && (
+            <Link href={`/insurance/preauths/${id}/edit`} className={buttonVariants({ variant: 'outline' })}>
+              <Pencil /> Edit
+            </Link>
+          )}
           {(pa.status === 'draft' || pa.status === 'query') && (
             <ActionForm
               label={pa.status === 'draft' ? 'Submit to payer' : 'Answer query and resubmit'}

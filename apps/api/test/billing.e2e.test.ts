@@ -64,6 +64,32 @@ describe('billing masters', () => {
     expect(price).toMatchObject({ price: 450, priceListId: list.json().id });
   });
 
+  it('keeps the payer when a payer price list is edited (BIL-46)', async () => {
+    const svc = (await call(admin, 'GET', `/billing/services?q=${XRAY}`)).json().items[0];
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    const payerId = crypto.randomUUID();
+    const created = await call(admin, 'POST', '/billing/price-lists', { name: `Payer ${tag}`, payerId, effectiveFrom: today, items: [{ serviceId: svc.id, price: 700 }] });
+    expect(created.statusCode, created.body).toBe(201);
+    const id = created.json().id;
+    // Edit as the price-lists screen did before the fix: no payerId in the body.
+    const edited = await call(admin, 'PUT', `/billing/price-lists/${id}`, { name: `Payer ${tag} v2`, effectiveFrom: today, items: [{ serviceId: svc.id, price: 650 }] });
+    expect(edited.statusCode, edited.body).toBe(200);
+    expect(edited.json()).toMatchObject({ name: `Payer ${tag} v2`, payerId, items: [{ serviceId: svc.id, price: 650 }] });
+    expect((await call(admin, 'GET', `/billing/price-lists/${id}`)).json().payerId).toBe(payerId);
+    // The cash price is untouched; the payer price comes from the edited list.
+    expect((await call(clerk, 'GET', `/billing/services/price?code=${XRAY}`)).json().price).toBe(800);
+    expect((await call(clerk, 'GET', `/billing/services/price?code=${XRAY}&payerId=${payerId}`)).json().price).toBe(650);
+    // An explicit null still turns it into a general list; bad dates and negative prices are refused.
+    const bad = await call(admin, 'PUT', `/billing/price-lists/${id}`, { name: 'x', effectiveFrom: today, effectiveTo: '2000-01-01', items: [] });
+    expect(bad.statusCode).toBe(400);
+    const neg = await call(admin, 'PUT', `/billing/price-lists/${id}`, { name: 'x', effectiveFrom: today, items: [{ serviceId: svc.id, price: -1 }] });
+    expect(neg.statusCode).toBe(400);
+    expect((await call(clerk, 'PUT', `/billing/price-lists/${id}`, { name: 'x', effectiveFrom: today, items: [] })).statusCode).toBe(403);
+    expect((await call(admin, 'PUT', `/billing/price-lists/${crypto.randomUUID()}`, { name: 'x', effectiveFrom: today, items: [] })).statusCode).toBe(404);
+    const cleared = await call(admin, 'PUT', `/billing/price-lists/${id}`, { name: `Payer ${tag} v3`, payerId: null, effectiveFrom: today, isActive: false, items: [] });
+    expect(cleared.json().payerId).toBeNull();
+  });
+
   it('builds packages from services', async () => {
     const svcs = (await call(admin, 'GET', `/billing/services?q=${tag.toLowerCase()}`)).json().items;
     const res = await call(admin, 'POST', '/billing/services', {
@@ -118,6 +144,33 @@ describe('invoices', () => {
     await expect(
       db.asTenant({ tenantId }, (tx) => tx.execute(sql`update billing.invoice_lines set total = 1 where invoice_id = ${invoiceId}`)),
     ).rejects.toThrow();
+  });
+
+  it('edits only what is sent on a draft (web edit screen), validates lines and needs invoice.create', async () => {
+    const draft = await call(clerk, 'POST', '/billing/invoices', { patientId, supplyType: 'inter', notes: 'first', lines: [{ serviceCode: XRAY }] });
+    expect(draft.statusCode, draft.body).toBe(201);
+    const id = draft.json().id;
+    // A notes-only edit must not reset the GST supply type to the schema default ('intra').
+    const notes = await call(clerk, 'PATCH', `/billing/invoices/${id}`, { notes: 'second' });
+    expect(notes.statusCode, notes.body).toBe(200);
+    expect(notes.json()).toMatchObject({ supplyType: 'inter', notes: 'second', igstTotal: 144 });
+    // What the edit screen sends: every line with explicit price, discount and GST, plus a free-text line.
+    const full = await call(clerk, 'PATCH', `/billing/invoices/${id}`, {
+      supplyType: 'intra',
+      notes: '',
+      lines: [
+        { serviceCode: XRAY, description: 'X-ray chest PA', qty: 2, unitPrice: 800, discount: 100, taxRate: 18 },
+        { description: 'Dressing', qty: 1, unitPrice: 50, taxRate: 0 },
+      ],
+    });
+    expect(full.statusCode, full.body).toBe(200);
+    expect(full.json()).toMatchObject({ supplyType: 'intra', notes: null, igstTotal: 0, total: 1500 * 1.18 + 50 });
+    expect(full.json().lines).toHaveLength(2);
+    for (const bad of [{ lines: [] }, { lines: [{ description: 'x', unitPrice: -1 }] }, { lines: [{ serviceCode: XRAY, qty: 0 }] }, { lines: [{ description: 'no price' }] }]) {
+      expect((await call(clerk, 'PATCH', `/billing/invoices/${id}`, bad)).statusCode, JSON.stringify(bad)).toBe(400);
+    }
+    expect((await call(owner, 'PATCH', `/billing/invoices/${id}`, { notes: 'x' })).statusCode).toBe(403);
+    expect((await call(clerk, 'DELETE', `/billing/invoices/${id}`)).statusCode).toBe(204);
   });
 
   it('takes split payments, refuses overpayment and shows a UPI link while money is due', async () => {

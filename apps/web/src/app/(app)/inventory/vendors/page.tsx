@@ -3,7 +3,7 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Plus } from 'lucide-react';
-import type { inventory } from '@hms/shared';
+import { inventory } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
@@ -26,6 +26,7 @@ export default function VendorsPage() {
   const [showInactive, setShowInactive] = React.useState(false);
   const [editing, setEditing] = React.useState<inventory.Vendor | 'new' | null>(null);
   const [form, setForm] = React.useState<Form>(EMPTY);
+  const [formError, setFormError] = React.useState<string | null>(null);
 
   const vendors = useQuery({
     queryKey: ['inventory', 'vendors', q, showInactive],
@@ -37,15 +38,25 @@ export default function VendorsPage() {
     mutationFn: () => {
       const body = {
         name: form.name,
-        contactPerson: form.contactPerson || undefined,
-        phone: form.phone || undefined,
-        email: form.email || undefined,
-        gstin: form.gstin || undefined,
-        pan: form.pan || undefined,
-        address: form.address || undefined,
+        contactPerson: form.contactPerson.trim() || undefined,
+        phone: form.phone.trim() || undefined,
+        email: form.email.trim() || undefined,
+        gstin: form.gstin.trim() || undefined,
+        pan: form.pan.trim() || undefined,
+        address: form.address.trim() || undefined,
         paymentTermsDays: Number(form.paymentTermsDays || 0),
       };
-      return editing === 'new' ? api.inventory.vendors.create({ ...body, code: form.code }) : api.inventory.vendors.update((editing as inventory.Vendor).id, body);
+      if (editing === 'new') return api.inventory.vendors.create({ ...body, code: form.code });
+      // On edit an emptied field is sent as '' so the server clears it.
+      return api.inventory.vendors.update((editing as inventory.Vendor).id, {
+        ...body,
+        contactPerson: form.contactPerson.trim(),
+        phone: form.phone.trim(),
+        email: form.email.trim(),
+        gstin: form.gstin.trim(),
+        pan: form.pan.trim(),
+        address: form.address.trim(),
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['inventory', 'vendors'] });
@@ -62,6 +73,7 @@ export default function VendorsPage() {
 
   const open = (v: inventory.Vendor | 'new') => {
     save.reset();
+    setFormError(null);
     setEditing(v);
     setForm(
       v === 'new'
@@ -110,6 +122,22 @@ export default function VendorsPage() {
               className="grid gap-4 sm:grid-cols-3"
               onSubmit={(e) => {
                 e.preventDefault();
+                setFormError(null);
+                const terms = Number(form.paymentTermsDays || 0);
+                const values = {
+                  code: form.code,
+                  name: form.name,
+                  phone: form.phone.trim() || undefined,
+                  email: form.email.trim() || undefined,
+                  gstin: form.gstin.trim() || undefined,
+                  pan: form.pan.trim() || undefined,
+                  paymentTermsDays: terms,
+                };
+                const parsed = (editing === 'new' ? inventory.createVendorSchema : inventory.updateVendorSchema).safeParse(values);
+                if (!parsed.success) {
+                  const issue = parsed.error.issues[0];
+                  return setFormError(issue ? `${issue.path.join('.') || 'Vendor'}: ${issue.message}` : 'Check the vendor details');
+                }
                 save.mutate();
               }}
             >
@@ -122,7 +150,7 @@ export default function VendorsPage() {
               {field('pan', 'PAN', { onChange: (e) => setForm({ ...form, pan: e.target.value.toUpperCase() }) })}
               {field('paymentTermsDays', 'Payment terms (days)', { type: 'number', min: 0, max: 365 })}
               <div className="sm:col-span-3">{field('address', 'Address')}</div>
-              {save.error && <p className="text-sm text-destructive sm:col-span-3">{errorMessage(save.error)}</p>}
+              {(formError || save.error) && <p className="text-sm text-destructive sm:col-span-3">{formError ?? errorMessage(save.error)}</p>}
               <div className="flex justify-end gap-2 sm:col-span-3">
                 <Button type="button" variant="outline" onClick={() => setEditing(null)}>
                   Cancel

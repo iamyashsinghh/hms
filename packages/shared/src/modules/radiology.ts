@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { patchSchema } from '../patch';
 import { payNowSchema } from './billing';
 
 /**
@@ -89,7 +90,7 @@ export const modalityInputSchema = z.object({
   isActive: z.boolean().default(true),
 });
 export type ModalityInput = z.input<typeof modalityInputSchema>;
-export const updateModalitySchema = modalityInputSchema.partial();
+export const updateModalitySchema = patchSchema(modalityInputSchema);
 export type UpdateModality = z.input<typeof updateModalitySchema>;
 
 export interface Modality {
@@ -123,7 +124,7 @@ export const testInputSchema = z.object({
   isActive: z.boolean().default(true),
 });
 export type TestInput = z.input<typeof testInputSchema>;
-export const updateTestSchema = testInputSchema.partial();
+export const updateTestSchema = patchSchema(testInputSchema);
 export type UpdateTest = z.input<typeof updateTestSchema>;
 
 export interface RadiologyTest {
@@ -162,7 +163,7 @@ export const templateInputSchema = z.object({
   isActive: z.boolean().default(true),
 });
 export type TemplateInput = z.input<typeof templateInputSchema>;
-export const updateTemplateSchema = templateInputSchema.partial();
+export const updateTemplateSchema = patchSchema(templateInputSchema);
 export type UpdateTemplate = z.input<typeof updateTemplateSchema>;
 
 export interface ReportTemplate {
@@ -190,7 +191,7 @@ export const createOrderSchema = z.object({
 });
 export type CreateOrder = z.input<typeof createOrderSchema>;
 
-export const updateOrderSchema = createOrderSchema.pick({ testId: true, priority: true, referringDoctorName: true, clinicalNotes: true }).partial();
+export const updateOrderSchema = patchSchema(createOrderSchema.pick({ testId: true, priority: true, referringDoctorName: true, clinicalNotes: true }));
 export type UpdateOrder = z.input<typeof updateOrderSchema>;
 
 export const scheduleOrderSchema = z.object({

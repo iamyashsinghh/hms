@@ -97,6 +97,12 @@ export class LabController {
     return this.lab.getOrder(id);
   }
 
+  @Patch('orders/:id')
+  @RequirePermissions('lab.order.create')
+  updateOrder(@Param('id', ParseUUIDPipe) id: string, @Body(new ZodPipe(lab.updateOrderSchema)) body: lab.UpdateOrder): Promise<Order> {
+    return this.lab.update(id, body);
+  }
+
   @Get('orders/:id/report')
   @RequirePermissions('lab.order.read')
   report(@Param('id', ParseUUIDPipe) id: string): Promise<lab.Report> {

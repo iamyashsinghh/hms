@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { patchSchema } from '../patch';
 
 /**
  * IPD & Nursing: permissions and API contracts (Zod schemas + types).
@@ -105,7 +106,7 @@ export const wardInputSchema = z.object({
   isActive: z.boolean().default(true),
 });
 export type WardInput = z.input<typeof wardInputSchema>;
-export const updateWardSchema = wardInputSchema.omit({ code: true, facilityId: true }).partial();
+export const updateWardSchema = patchSchema(wardInputSchema.omit({ code: true, facilityId: true }));
 export type UpdateWard = z.input<typeof updateWardSchema>;
 
 export interface Ward {
@@ -222,19 +223,24 @@ export const admitSchema = z.object({
 });
 export type AdmitInput = z.input<typeof admitSchema>;
 
-export const updateAdmissionSchema = admitSchema
-  .pick({
-    doctorId: true,
-    reason: true,
-    provisionalDiagnosis: true,
-    isMlc: true,
-    mlcNo: true,
-    attendantName: true,
-    attendantRelation: true,
-    attendantMobile: true,
-    expectedDischargeDate: true,
-  })
-  .partial();
+/** Blank ('' or null) clears an optional field on update. */
+const clearable = <T extends z.ZodType>(s: T) => z.union([s, z.literal('')]).nullable().optional();
+
+/**
+ * Edit an admission while the patient is still admitted. Same rules as admit; optional
+ * fields can be cleared with '' or null. Turning MLC off clears the MLC number.
+ */
+export const updateAdmissionSchema = z.object({
+  doctorId: z.uuid().optional(),
+  reason: z.string().trim().min(2).max(1000).optional(),
+  provisionalDiagnosis: clearable(z.string().trim().max(1000)),
+  isMlc: z.boolean().optional(),
+  mlcNo: clearable(z.string().trim().max(50)),
+  attendantName: clearable(z.string().trim().max(100)),
+  attendantRelation: clearable(z.string().trim().max(50)),
+  attendantMobile: clearable(mobile),
+  expectedDischargeDate: clearable(z.iso.date()),
+});
 export type UpdateAdmission = z.input<typeof updateAdmissionSchema>;
 
 export const transferSchema = z.object({

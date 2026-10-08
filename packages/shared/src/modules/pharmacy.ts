@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { patchSchema } from '../patch';
 
 /**
  * Pharmacy: permissions and API contracts (Zod schemas + types).
@@ -83,7 +84,12 @@ export const createItemSchema = z.object({
 });
 export type CreateItem = z.input<typeof createItemSchema>;
 
-export const updateItemSchema = createItemSchema.omit({ code: true }).partial().extend({ isActive: z.boolean().optional() });
+// patchSchema, not .partial(): Zod 4 keeps defaults inside .partial(), so e.g. deactivating an item reset its GST rate to 5%.
+export const updateItemSchema = patchSchema(createItemSchema.omit({ code: true })).extend({
+  /** '' clears the HSN code. */
+  hsnCode: createItemSchema.shape.hsnCode.or(z.literal('')),
+  isActive: z.boolean().optional(),
+});
 export type UpdateItem = z.input<typeof updateItemSchema>;
 
 export interface Item {

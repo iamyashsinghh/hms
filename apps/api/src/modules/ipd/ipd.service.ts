@@ -235,6 +235,7 @@ export class IpdService {
       const { tenantId, userId } = await this.repo.scope(tx);
       const admittedAt = d.admittedAt ? new Date(d.admittedAt).toISOString() : nowIso();
       if (Date.parse(admittedAt) > Date.now() + 5 * 60_000) throw badRequest('admitted_in_future', 'Admission time cannot be in the future');
+      assertExpectedDischarge(d.expectedDischargeDate, admittedAt);
 
       const row = await this.repo.insertAdmission(tx, {
         tenantId,
@@ -313,16 +314,19 @@ export class IpdService {
   update(id: string, input: I.UpdateAdmission): Promise<I.Admission> {
     const d = contracts.updateAdmissionSchema.parse(input);
     return this.db.tx(async (tx) => {
-      const row = await this.activeAdmission(tx, id);
+      const row = await this.activeAdmission(tx, id, true);
       const { userId } = await this.repo.scope(tx);
+      if (d.expectedDischargeDate) assertExpectedDischarge(d.expectedDischargeDate, iso(row.admittedAt));
       const doctorName = d.doctorId && d.doctorId !== row.doctorId ? await this.doctor(tx, d.doctorId) : undefined;
+      // Turning MLC off drops the MLC number with it.
+      const mlcNo = d.isMlc === false ? null : d.mlcNo !== undefined ? d.mlcNo || null : undefined;
       const updated = await this.repo.updateAdmission(tx, id, {
         ...(d.doctorId !== undefined && { doctorId: d.doctorId }),
         ...(doctorName !== undefined && { doctorName }),
         ...(d.reason !== undefined && { reason: d.reason }),
         ...(d.provisionalDiagnosis !== undefined && { provisionalDiagnosis: d.provisionalDiagnosis || null }),
         ...(d.isMlc !== undefined && { isMlc: d.isMlc }),
-        ...(d.mlcNo !== undefined && { mlcNo: d.mlcNo || null }),
+        ...(mlcNo !== undefined && { mlcNo }),
         ...(d.attendantName !== undefined && { attendantName: d.attendantName || null }),
         ...(d.attendantRelation !== undefined && { attendantRelation: d.attendantRelation || null }),
         ...(d.attendantMobile !== undefined && { attendantMobile: d.attendantMobile || null }),
@@ -1218,3 +1222,10 @@ function summaryDocDto(s: SummaryRow): I.DischargeSummary {
 }
 
 export type AdmissionQuery = z.output<typeof contracts.admissionQuerySchema>;
+
+/** The expected discharge date cannot be before the day of admission (IST). */
+function assertExpectedDischarge(expected: string | null | undefined, admittedAt: string): void {
+  if (expected && expected < istDate(admittedAt)) {
+    throw badRequest('invalid_expected_discharge', 'Expected discharge cannot be before the admission date');
+  }
+}

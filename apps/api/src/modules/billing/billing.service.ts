@@ -276,9 +276,13 @@ export class BillingService {
       const ids = [...new Set(d.items.map((i) => i.serviceId))];
       if (ids.length !== d.items.length) throw badRequest('duplicate_items', 'A service appears twice in the price list');
       if ((await this.repo.servicesByIds(tx, ids)).length !== ids.length) throw notFound('Service');
+      // On update an omitted payerId keeps the list's payer (BIL-46: editing a payer tariff must not
+      // silently turn it into a general cash list); an explicit null clears it.
+      const existing = id ? await this.repo.priceListById(tx, id) : undefined;
+      if (id && !existing) throw notFound('Price list');
       const values = {
         name: d.name,
-        payerId: d.payerId ?? null,
+        payerId: d.payerId !== undefined ? d.payerId : (existing?.payerId ?? null),
         effectiveFrom: d.effectiveFrom,
         effectiveTo: d.effectiveTo ?? null,
         isActive: d.isActive,

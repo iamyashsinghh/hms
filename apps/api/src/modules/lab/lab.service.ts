@@ -335,6 +335,28 @@ export class LabService {
     });
   }
 
+  /** Fix priority, referrer or clinical notes until the report is complete. */
+  update(id: string, input: lab.UpdateOrder): Promise<Order> {
+    const d = lab.updateOrderSchema.parse(input);
+    const ctx = currentContext()!;
+    return this.tx(async (tx) => {
+      const order = await this.openOrder(tx, id);
+      if (order.status === 'completed') throw conflict('order_completed', 'The report is complete; this order can no longer be changed');
+      const values: Partial<OrderRow> = {};
+      if (d.priority !== undefined) values.priority = d.priority;
+      if (d.referredBy !== undefined) values.referredBy = d.referredBy || null;
+      if (d.clinicalNotes !== undefined) values.clinicalNotes = d.clinicalNotes || null;
+      if (d.doctorId === null) Object.assign(values, { doctorId: null, doctorName: null });
+      else if (d.doctorId !== undefined && d.doctorId !== order.doctorId) {
+        const doctorName = (await this.repo.userNames(tx, [d.doctorId])).get(d.doctorId);
+        if (!doctorName) throw badRequest('doctor_not_found', 'Referring doctor not found');
+        Object.assign(values, { doctorId: d.doctorId, doctorName });
+      }
+      if (!Object.keys(values).length) return this.orderDto(tx, order);
+      return this.orderDto(tx, await this.repo.updateOrder(tx, id, { ...values, updatedBy: ctx.userId }));
+    });
+  }
+
   /** Raise the bill for an order booked without one (e.g. from a consultation). */
   bill(id: string, payNow?: lab.CreateOrder['payNow']): Promise<Order> {
     return this.tx(async (tx) => {

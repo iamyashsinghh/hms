@@ -149,6 +149,27 @@ describe('lab order to verified report', () => {
     expect(res.json().tests.map((t: { id: string }) => t.id)).toEqual([hbId, sugarId]);
   });
 
+  it('edits a test or panel without resetting the fields it was not sent', async () => {
+    let res = await inject('PATCH', `/lab/tests/${sugarId}`, admin, { tatHours: 6 });
+    expect(res.statusCode, res.body).toBe(200);
+    // Defaults in the create schema must not creep into a partial update (ranges wiped, price zeroed…).
+    expect(res.json()).toMatchObject({ tatHours: 6, section: 'biochemistry', sampleType: 'plasma', decimals: 0, price: 60, isActive: true });
+    expect(res.json().ranges).toHaveLength(1);
+    res = await inject('PATCH', `/lab/tests/${sugarId}`, admin, { name: `Fasting glucose ${s}`, container: '' });
+    expect(res.json()).toMatchObject({ name: `Fasting glucose ${s}`, container: null, unit: 'mg/dL' });
+    expect((await inject('PATCH', `/lab/tests/${sugarId}`, admin, { price: -1 })).statusCode).toBe(400);
+    expect((await inject('PATCH', `/lab/tests/${sugarId}`, admin, { ranges: [{ low: 100, high: 70 }] })).statusCode).toBe(400);
+    expect((await inject('PATCH', `/lab/tests/${sugarId}`, tech, { tatHours: 1 })).statusCode).toBe(403);
+
+    res = await inject('PATCH', `/lab/panels/${panelId}`, admin, { price: 140 });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ price: 140, isActive: true });
+    expect(res.json().tests).toHaveLength(2);
+    res = await inject('PATCH', `/lab/panels/${panelId}`, admin, { price: 150, name: `Panel ${s}` });
+    expect(res.json().price).toBe(150);
+    expect((await inject('PATCH', `/lab/panels/${panelId}`, admin, { testIds: [] })).statusCode).toBe(400);
+  });
+
   it('books a walk-in order, bills it through billing and makes one barcode per sample type', async () => {
     const res = await inject('POST', '/lab/orders', reception, {
       patientId: femalePatientId,
@@ -192,6 +213,19 @@ describe('lab order to verified report', () => {
     res = await inject('POST', `/lab/samples/${first.id}/receive`, tech);
     expect(res.json().samples.find((x: lab.Sample) => x.id === first.id).status).toBe('received');
     expect((await inject('POST', `/lab/samples/${first.id}/collect`, tech)).statusCode).toBe(409);
+  });
+
+  it('edits priority, referrer and notes until the report is complete', async () => {
+    let res = await inject('PATCH', `/lab/orders/${orderId}`, reception, { priority: 'stat', clinicalNotes: 'Known diabetic, on metformin', referredBy: 'Dr. Mehta Clinic' });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ priority: 'stat', clinicalNotes: 'Known diabetic, on metformin', referredBy: 'Dr. Mehta Clinic', doctorId });
+    res = await inject('PATCH', `/lab/orders/${orderId}`, reception, { referredBy: null, clinicalNotes: '' });
+    expect(res.json()).toMatchObject({ priority: 'stat', referredBy: null, clinicalNotes: null, doctorId });
+    expect((await inject('PATCH', `/lab/orders/${orderId}`, reception, { priority: 'asap' })).statusCode).toBe(400);
+    expect((await inject('PATCH', `/lab/orders/${orderId}`, reception, { doctorId: '00000000-0000-4000-8000-000000000000' })).json().error.code).toBe('doctor_not_found');
+    expect((await inject('PATCH', `/lab/orders/${orderId}`, nurse, { priority: 'routine' })).statusCode).toBe(403);
+    res = await inject('PATCH', `/lab/orders/${orderId}`, reception, { priority: 'routine' });
+    expect(res.json().priority).toBe('routine');
   });
 
   it('finds the order by barcode', async () => {
@@ -267,6 +301,9 @@ describe('lab order to verified report', () => {
     expect(res.json().hospital.name).toBeTruthy();
     const cancel = await inject('POST', `/lab/orders/${orderId}/cancel`, tech, { reason: 'Patient left' });
     expect(cancel.statusCode).toBe(409);
+    const edit = await inject('PATCH', `/lab/orders/${orderId}`, reception, { priority: 'urgent' });
+    expect(edit.statusCode).toBe(409);
+    expect(edit.json().error.code).toBe('order_completed');
   });
 
   it('uses the male range for a male patient and can bill later', async () => {
@@ -299,6 +336,7 @@ describe('lab order to verified report', () => {
     res = await inject('POST', `/lab/orders/${o.id}/cancel`, tech, { reason: 'Patient left' });
     expect(res.json().status).toBe('cancelled');
     expect((await inject('POST', `/lab/orders/${o.id}/collect`, tech)).statusCode).toBe(409);
+    expect((await inject('PATCH', `/lab/orders/${o.id}`, tech, { priority: 'stat' })).json().error.code).toBe('order_cancelled');
   });
 });
 

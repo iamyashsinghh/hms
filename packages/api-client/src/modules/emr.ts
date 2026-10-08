@@ -25,6 +25,7 @@ export const emrApi = (http: Http) => ({
 
   favourites: () => http.get<emr.Favourite[]>('/emr/favourites'),
   createFavourite: (body: emr.FavouriteInput) => http.post<emr.Favourite>('/emr/favourites', body),
+  updateFavourite: (id: string, body: emr.UpdateFavourite) => http.patch<emr.Favourite>(`/emr/favourites/${id}`, body),
   deleteFavourite: (id: string) => http.delete<void>(`/emr/favourites/${id}`),
 
   createCertificate: (body: emr.CreateCertificate) => http.post<emr.Certificate>('/emr/certificates', body),
