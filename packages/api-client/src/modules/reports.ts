@@ -6,6 +6,7 @@ export const reportsApi = (http: Http) => ({
   ownerSummary: (q: reports.OwnerSummaryQuery = {}) => http.get<reports.OwnerSummary>('/reports/owner-summary', q),
   dashboard: (q: reports.ReportRangeQuery) => http.get<reports.DashboardReport>('/reports/dashboard', q),
   dailyCollection: (q: reports.DailyCollectionQuery = {}) => http.get<reports.DailyCollectionReport>('/reports/daily-collection', q),
+  unbilled: (q: reports.UnbilledQuery = {}) => http.get<reports.UnbilledChargesReport>('/reports/unbilled', q),
   opd: (q: reports.ReportRangeQuery) => http.get<reports.OpdReport>('/reports/opd', q),
   revenue: (q: reports.ReportRangeQuery) => http.get<reports.RevenueReport>('/reports/revenue', q),
   patients: (q: reports.ReportRangeQuery) => http.get<reports.PatientsReport>('/reports/patients', q),

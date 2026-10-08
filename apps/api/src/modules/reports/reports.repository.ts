@@ -7,6 +7,21 @@ type DoctorStat = reports.DoctorStat & Record<string, unknown>;
 type ModeTotal = reports.ModeTotal & Record<string, unknown>;
 type ServiceStat = reports.ServiceStat & Record<string, unknown>;
 
+export interface UnbilledChargeRow {
+  chargeId: string;
+  chargeDate: string;
+  ageDays: number;
+  module: string;
+  account: string;
+  description: string;
+  qty: number;
+  amount: number;
+  patientId: string;
+  uhid: string | null;
+  patientName: string | null;
+  mobile: string | null;
+}
+
 /**
  * Which facilities a report covers.
  * - `null`: the whole hospital (facts with no facility are included)
@@ -327,6 +342,35 @@ export class ReportsRepository {
           left join setup.facilities fc on fc.id = p.registered_facility_id
           where ${inRange(sql`p.created_at`, r)} and ${facility(sql`p.registered_facility_id`, f)}
           order by p.created_at limit ${limit}`,
+    );
+    return res.rows;
+  }
+
+  // ---------- patient account (billing.charges, read-only) ----------
+
+  /**
+   * Charges that were still unbilled at the end of `r.to`: posted by then, and neither cancelled nor on a
+   * bill finalized by then. Amount is the line total (after discount, with GST), as billing computes it.
+   */
+  async unbilledCharges(tx: Tx, r: Range, f: FacilityScope, limit = 50000): Promise<UnbilledChargeRow[]> {
+    const gross = sql`round(c.qty * c.unit_price, 2) - c.discount`;
+    const res = await tx.execute<UnbilledChargeRow & Record<string, unknown>>(
+      sql`select c.id as "chargeId", to_char(c.charge_date, 'YYYY-MM-DD') as "chargeDate",
+                 (${r.to}::date - c.charge_date)::int as "ageDays",
+                 c.source_module as module, c.account, c.description, c.qty::float8 as qty,
+                 (case when c.price_includes_tax then ${gross}
+                       else ${gross} + round((${gross}) * c.tax_rate / 100, 2) end)::float8 as amount,
+                 c.patient_id as "patientId", pt.uhid,
+                 nullif(trim(pt.first_name || ' ' || coalesce(pt.last_name, '')), '') as "patientName", pt.mobile
+          from billing.charges c
+          join clinical.patients pt on pt.tenant_id = c.tenant_id and pt.id = c.patient_id
+          left join billing.invoices i on i.tenant_id = c.tenant_id and i.id = c.invoice_id
+          where c.created_at < ${endOf(r)} and c.charge_date <= ${r.to}::date
+            and (c.status = 'pending' or (c.status = 'cancelled' and c.cancelled_at >= ${endOf(r)})
+                 or (c.status = 'billed' and coalesce(i.finalized_at, i.created_at) >= ${endOf(r)}))
+            and ${facility(sql`c.facility_id`, f)}
+          order by c.charge_date, c.created_at
+          limit ${limit}`,
     );
     return res.rows;
   }
