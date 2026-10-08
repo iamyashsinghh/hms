@@ -1,0 +1,120 @@
+# Production stack. Do not run this by hand: use ./deploy.sh, which creates .env.prod and then runs
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+# Everything is served on one port (HMS_PORT, default 4001): web at /, API at /api/v1, DB viewer at /db/.
+name: hms
+
+x-app: &app
+  image: hms-app:latest
+  pull_policy: never
+  restart: unless-stopped
+  environment: &app-env
+    NODE_ENV: production
+    DATABASE_URL: postgres://hms_app:${HMS_APP_PASSWORD:?run ./deploy.sh}@postgres:5432/hms
+    REDIS_URL: redis://redis:6379
+    API_PORT: '4000'
+    API_CORS_ORIGINS: ${PUBLIC_URL:-http://localhost:4001}
+    PUBLIC_API_URL: ${PUBLIC_URL:-http://localhost:4001}/api/v1
+    JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?run ./deploy.sh}
+    JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+    JWT_REFRESH_TTL_DAYS: ${JWT_REFRESH_TTL_DAYS:-30}
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+    PLATFORM_ADMIN_EMAIL: ${PLATFORM_ADMIN_EMAIL:-super@hms.local}
+    PLATFORM_ADMIN_PASSWORD: ${PLATFORM_ADMIN_PASSWORD:?run ./deploy.sh}
+    ABDM_CALLBACK_SECRET: ${ABDM_CALLBACK_SECRET:?run ./deploy.sh}
+    MOCK_PAYMENT_WEBHOOK_SECRET: ${MOCK_PAYMENT_WEBHOOK_SECRET:?run ./deploy.sh}
+  depends_on: &app-deps
+    migrate:
+      condition: service_completed_successfully
+    redis:
+      condition: service_started
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run ./deploy.sh}
+      POSTGRES_DB: hms
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d hms']
+      interval: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redisdata:/data
+
+  # One-shot: database roles, migrations, then demo seed (empty DB only) or permission sync.
+  migrate:
+    build: .
+    image: hms-app:latest
+    pull_policy: build
+    restart: 'no'
+    command: ['node', 'infra/docker/db-bootstrap.js']
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run ./deploy.sh}
+      HMS_MIGRATOR_PASSWORD: ${HMS_MIGRATOR_PASSWORD:?run ./deploy.sh}
+      HMS_APP_PASSWORD: ${HMS_APP_PASSWORD:?run ./deploy.sh}
+      HMS_PLATFORM_PASSWORD: ${HMS_PLATFORM_PASSWORD:?run ./deploy.sh}
+      SEED_DEMO: ${SEED_DEMO:-auto}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    command: ['node', 'apps/api/dist/main.js']
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://localhost:4000/api/v1/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  worker:
+    <<: *app
+    command: ['node', 'apps/api/dist/worker.js']
+
+  web:
+    <<: *app
+    working_dir: /app/apps/web
+    environment:
+      NODE_ENV: production
+    command: ['node', '/app/node_modules/next/dist/bin/next', 'start', '-p', '3000', '-H', '0.0.0.0']
+    depends_on:
+      api:
+        condition: service_started
+
+  # Database viewer at /db/. It asks for the Postgres user and password on every login.
+  adminer:
+    image: adminer:5
+    restart: unless-stopped
+    command: ['php', '-S', '0.0.0.0:8080', '-t', '/var/www/html', '/router.php']
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    volumes:
+      - ./infra/docker/adminer-router.php:/router.php:ro
+    depends_on:
+      - postgres
+
+  proxy:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - '${HMS_BIND:-0.0.0.0}:${HMS_PORT:-4001}:80'
+    volumes:
+      - ./infra/docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - web
+      - api
+      - adminer
+
+volumes:
+  pgdata:
+  redisdata:

@@ -34,6 +34,29 @@ Demo login: hospital code `demo`, `admin@demo.hms` / `Demo@12345`
 (also `doctor@`, `reception@`, `pharmacy@`, `owner@`, `nurse@`, `billing@`, `lab@`, `radiology@`, `store@`, `accounts@`, `hr@`, `quality@` — same password).
 A second hospital `city` (`admin@city.hms`) exists to prove isolation.
 
+## Deploy on a server (Docker)
+
+Needs Docker with the Compose plugin. Everything runs on one port, **4001**: web at `/`, API at `/api/v1`,
+database viewer (Adminer) at `/db/`.
+
+```bash
+git clone https://github.com/iamyashsinghh/hms.git && cd hms
+./deploy.sh            # first run creates .env.prod with random secrets, builds, migrates, seeds the demo
+# every update:
+git pull && ./deploy.sh
+```
+
+- `.env.prod` holds every secret (Postgres, DB roles, JWT, super admin password). It is git-ignored; back it up.
+- Migrations run on every deploy before the API starts. The demo hospitals are seeded only on an empty
+  database (`SEED_DEMO=auto`; set `never` to skip). Permissions and system roles are synced every deploy.
+- Super admin console: `/admin`, login `super@hms.local` with `PLATFORM_ADMIN_PASSWORD` from `.env.prod`.
+  Its **Database** button opens `/db/`: server `postgres`, user `postgres`, password `POSTGRES_PASSWORD`, database `hms`.
+- Domain + HTTPS: see [infra/nginx/hms.conf.example](infra/nginx/hms.conf.example), then set
+  `PUBLIC_URL=https://your-domain` in `.env.prod` and run `./deploy.sh` again. To hide port 4001 from the
+  internet once nginx is in front, set `HMS_BIND=127.0.0.1`.
+- Logs: `docker compose -f docker-compose.prod.yml logs -f api worker`. Backup:
+  `docker compose -f docker-compose.prod.yml exec postgres pg_dump -U postgres hms > backup.sql`.
+
 ## Checks
 
 ```bash

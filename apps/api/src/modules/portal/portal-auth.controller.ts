@@ -81,7 +81,8 @@ export class PortalAuthController {
   private setCookie(reply: FastifyReply, token: string) {
     reply.setCookie(PATIENT_REFRESH_COOKIE, token, {
       httpOnly: true,
-      secure: this.config.NODE_ENV === 'production',
+      // Secure only when the browser is on HTTPS (behind the proxy), so a plain http://host:port deploy still keeps the session.
+      secure: this.config.NODE_ENV === 'production' && reply.request.protocol === 'https',
       sameSite: 'lax',
       path: COOKIE_PATH,
       maxAge: this.config.JWT_REFRESH_TTL_DAYS * 24 * 3600,

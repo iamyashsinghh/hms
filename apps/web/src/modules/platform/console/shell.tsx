@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Loader2, LogOut } from 'lucide-react';
+import { Database, Loader2, LogOut } from 'lucide-react';
 import { platform } from '@hms/shared';
 import { errorMessage } from '@/lib/api';
 import { Logo } from '@/components/logo';
@@ -92,6 +92,18 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
               );
             })}
           </nav>
+          {admin.role === 'super_admin' && (
+            // Adminer, served by the Docker proxy at /db/; it asks for the Postgres password itself.
+            <a
+              href="/db/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-sm hover:text-white"
+              title="Database viewer (needs the Postgres password)"
+            >
+              <Database className="size-4" /> Database
+            </a>
+          )}
           <span className="hidden text-xs sm:block">
             {admin.name} · {admin.role === 'super_admin' ? 'Super admin' : 'Support'}
           </span>

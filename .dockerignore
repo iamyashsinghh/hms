@@ -1,0 +1,14 @@
+**/node_modules
+**/dist
+**/.next
+**/.turbo
+**/.expo
+**/coverage
+**/*.tsbuildinfo
+.git
+.env
+.env.*
+!.env.example
+.pgdata
+apps/mobile/*
+!apps/mobile/package.json

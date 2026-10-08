@@ -7,6 +7,7 @@ coverage
 *.log
 .env
 .env.local
+.env.prod
 .pgdata
 tsconfig.tsbuildinfo
 *.tsbuildinfo
