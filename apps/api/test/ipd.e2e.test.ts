@@ -90,6 +90,49 @@ describe('wards and beds', () => {
   it('only ward managers can change wards and beds', async () => {
     expect((await call(nurse, 'POST', '/ipd/wards', { code: `X${tag}`.slice(0, 20), name: 'Nope' })).statusCode).toBe(403);
     expect((await call(reception, 'POST', '/ipd/beds', { wardId, code: 'B9' })).statusCode).toBe(403);
+    expect((await call(nurse, 'PATCH', `/ipd/wards/${wardId}`, { name: 'Nope' })).statusCode).toBe(403);
+    expect((await call(reception, 'PATCH', `/ipd/beds/${beds[0]!.id}`, { code: 'Nope' })).statusCode).toBe(403);
+  });
+
+  it('edits a ward without resetting the fields it was not sent', async () => {
+    const res = await call(admin, 'PATCH', `/ipd/wards/${wardId}`, { floor: '2nd floor' });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ name: `General ${tag}`, wardType: 'general', defaultDailyRate: 1500, floor: '2nd floor', isActive: true });
+
+    const icu = await call(admin, 'POST', '/ipd/wards', { code: `I${tag}`.slice(0, 20), name: `ICU ${tag}`, wardType: 'icu', defaultDailyRate: 5000 });
+    expect(icu.statusCode, icu.body).toBe(201);
+    const icuId = icu.json().id as string;
+    const renamed = await call(admin, 'PATCH', `/ipd/wards/${icuId}`, { name: `Medical ICU ${tag}`, wardType: 'hdu', defaultDailyRate: 4200.5 });
+    expect(renamed.json()).toMatchObject({ code: `I${tag}`.slice(0, 20), name: `Medical ICU ${tag}`, wardType: 'hdu', defaultDailyRate: 4200.5 });
+    // Closing (the web's Close ward button) only flips isActive.
+    const closed = await call(admin, 'PATCH', `/ipd/wards/${icuId}`, { isActive: false });
+    expect(closed.json()).toMatchObject({ isActive: false, wardType: 'hdu', defaultDailyRate: 4200.5 });
+    expect((await call(admin, 'PATCH', `/ipd/wards/${icuId}`, { isActive: true })).json()).toMatchObject({ isActive: true, wardType: 'hdu' });
+
+    for (const bad of [{ name: '' }, { defaultDailyRate: -1 }, { defaultDailyRate: 10.123 }, { wardType: 'palace' }]) {
+      expect((await call(admin, 'PATCH', `/ipd/wards/${icuId}`, bad)).statusCode, JSON.stringify(bad)).toBe(400);
+    }
+    expect((await call(admin, 'PATCH', `/ipd/wards/00000000-0000-4000-8000-000000000000`, { name: 'Ghost' })).statusCode).toBe(404);
+  });
+
+  it('adds a single bed and edits it', async () => {
+    const icu = await call(admin, 'POST', '/ipd/wards', { code: `J${tag}`.slice(0, 20), name: `Step-down ${tag}`, defaultDailyRate: 2500 });
+    const icuId = icu.json().id as string;
+    const res = await call(admin, 'POST', '/ipd/beds', { wardId: icuId, code: 'SD-1', roomNo: '201' });
+    expect(res.statusCode, res.body).toBe(201);
+    expect(res.json()).toMatchObject({ code: 'SD-1', roomNo: '201', dailyRate: 2500, status: 'available' });
+    await call(admin, 'POST', '/ipd/beds', { wardId: icuId, code: 'SD-2' });
+    const bedId = res.json().id as string;
+
+    const edited = await call(admin, 'PATCH', `/ipd/beds/${bedId}`, { code: 'SD-1A', roomNo: '202', dailyRate: 2750, chargeServiceCode: 'room-sd' });
+    expect(edited.statusCode, edited.body).toBe(200);
+    expect(edited.json()).toMatchObject({ code: 'SD-1A', roomNo: '202', dailyRate: 2750, chargeServiceCode: 'ROOM-SD', isActive: true });
+    // Blank clears optional fields.
+    expect((await call(admin, 'PATCH', `/ipd/beds/${bedId}`, { roomNo: null, chargeServiceCode: null })).json()).toMatchObject({ roomNo: null, chargeServiceCode: null, dailyRate: 2750 });
+    expect((await call(admin, 'PATCH', `/ipd/beds/${bedId}`, { code: 'SD-2' })).statusCode).toBe(409);
+    expect((await call(admin, 'PATCH', `/ipd/beds/${bedId}`, { dailyRate: -5 })).statusCode).toBe(400);
+    expect((await call(admin, 'PATCH', `/ipd/beds/${bedId}`, { code: '' })).statusCode).toBe(400);
+    expect((await call(admin, 'POST', '/ipd/beds', { wardId: icuId, code: 'SD-3', dailyRate: -1 })).statusCode).toBe(400);
   });
 });
 
@@ -130,6 +173,54 @@ describe('admission to discharge', () => {
     const notDoctor = await call(reception, 'POST', '/ipd/admissions', { patientId: other, bedId: beds[2]!.id, doctorId: (await login(app, 'nurse@demo.hms')).user.id, reason: 'x y' });
     expect(notDoctor.statusCode).toBe(400);
     expect(notDoctor.json().error.code).toBe('invalid_doctor');
+  });
+
+  it('edits the admission details while the patient is admitted', async () => {
+    const res = await call(reception, 'PATCH', `/ipd/admissions/${admissionId}`, {
+      isMlc: true,
+      mlcNo: 'PS-123/26',
+      attendantName: 'Suresh',
+      attendantRelation: 'Son',
+      attendantMobile: '9876533333',
+      expectedDischargeDate: '2099-01-10',
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({
+      isMlc: true,
+      mlcNo: 'PS-123/26',
+      attendantName: 'Suresh',
+      attendantRelation: 'Son',
+      attendantMobile: '9876533333',
+      expectedDischargeDate: '2099-01-10',
+      // Fields not sent stay as they were.
+      reason: 'Fever with breathlessness',
+      provisionalDiagnosis: 'Community acquired pneumonia',
+      admissionType: 'emergency',
+      doctorId,
+    });
+    // A partial update does not reset MLC; turning MLC off clears the number; null clears optional fields.
+    expect((await call(reception, 'PATCH', `/ipd/admissions/${admissionId}`, { attendantRelation: 'Nephew' })).json()).toMatchObject({ isMlc: true, mlcNo: 'PS-123/26' });
+    const cleared = await call(doctor, 'PATCH', `/ipd/admissions/${admissionId}`, { isMlc: false, attendantMobile: null, expectedDischargeDate: '' });
+    expect(cleared.json()).toMatchObject({ isMlc: false, mlcNo: null, attendantMobile: null, expectedDischargeDate: null, attendantName: 'Suresh' });
+
+    const before = await call(reception, 'PATCH', `/ipd/admissions/${admissionId}`, { expectedDischargeDate: '2020-01-01' });
+    expect(before.statusCode).toBe(400);
+    expect(before.json().error.code).toBe('invalid_expected_discharge');
+    for (const bad of [{ reason: 'x' }, { attendantMobile: '12345' }, { expectedDischargeDate: '2099-02-30' }, { doctorId: 'nope' }]) {
+      expect((await call(reception, 'PATCH', `/ipd/admissions/${admissionId}`, bad)).statusCode, JSON.stringify(bad)).toBe(400);
+    }
+    const nurseUser = (await login(app, 'nurse@demo.hms')).user.id;
+    expect((await call(reception, 'PATCH', `/ipd/admissions/${admissionId}`, { doctorId: nurseUser })).json().error.code).toBe('invalid_doctor');
+    expect((await call(nurse, 'PATCH', `/ipd/admissions/${admissionId}`, { attendantName: 'Nope' })).statusCode).toBe(403);
+    expect((await call(owner, 'PATCH', `/ipd/admissions/${admissionId}`, { attendantName: 'Nope' })).statusCode).toBe(403);
+  });
+
+  it('refuses an expected discharge before the admission date when admitting', async () => {
+    const pid = await newPatient('Early');
+    const res = await call(reception, 'POST', '/ipd/admissions', { patientId: pid, bedId: beds[2]!.id, doctorId, reason: 'Back dated', expectedDischargeDate: '2020-01-01' });
+    expect(res.statusCode).toBe(400);
+    // The shared admit schema refuses a past date before the service's own check.
+    expect(res.json().error.message).toContain('Expected discharge date cannot be in the past');
   });
 
   it('records nursing charts, MAR and rounds with the right roles', async () => {
@@ -279,6 +370,9 @@ describe('admission to discharge', () => {
     expect(devices.every((d: { removedAt: string | null }) => d.removedAt)).toBe(true);
     const list = (await call(reception, 'GET', `/ipd/admissions?status=discharged&q=${tag.toLowerCase()}`)).json();
     expect(list.items.map((a: { id: string }) => a.id)).toContain(admissionId);
+    const late = await call(reception, 'PATCH', `/ipd/admissions/${admissionId}`, { attendantName: 'Too late' });
+    expect(late.statusCode).toBe(409);
+    expect(late.json().error.code).toBe('not_admitted');
   });
 
   it('cancels an admission made by mistake and frees the bed', async () => {

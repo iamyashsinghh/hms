@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { use } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Loader2, Plus } from 'lucide-react';
-import { billing as B, type insurance as I } from '@hms/shared';
+import { billing as B, insurance as I } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { firstError, validate } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
@@ -74,21 +74,25 @@ function Packages({ payerId }: { payerId: string }) {
   const queryClient = useQueryClient();
   const key = ['insurance', 'packages', payerId];
   const { data, error } = useQuery({ queryKey: key, queryFn: () => api.insurance.payers.packages(payerId, true) });
-  const [form, setForm] = React.useState({ code: '', name: '', specialty: '', rate: '', losDays: '' });
+  const blank = { id: '', code: '', name: '', specialty: '', rate: '', losDays: '' };
+  const [form, setForm] = React.useState(blank);
+  const [formError, setFormError] = React.useState<string | null>(null);
   const add = useMutation({
-    mutationFn: () =>
-      api.insurance.payers.createPackage(payerId, {
-        code: form.code,
-        name: form.name,
-        specialty: opt(form.specialty) ?? null,
-        rate: Number(form.rate),
-        losDays: optNum(form.losDays) ?? null,
-      }),
+    mutationFn: () => {
+      const body = { name: form.name.trim(), specialty: opt(form.specialty) ?? null, rate: Number(form.rate), losDays: optNum(form.losDays) ?? null };
+      // Editing keeps the code (it is the payer's package code on claims); everything else can change.
+      return form.id ? api.insurance.payers.updatePackage(payerId, form.id, body) : api.insurance.payers.createPackage(payerId, { ...body, code: form.code });
+    },
     onSuccess: () => {
-      setForm({ code: '', name: '', specialty: '', rate: '', losDays: '' });
+      setForm(blank);
       queryClient.invalidateQueries({ queryKey: key });
     },
   });
+  const startEdit = (p: I.SchemePackage) => {
+    add.reset();
+    setFormError(null);
+    setForm({ id: p.id, code: p.code, name: p.name, specialty: p.specialty ?? '', rate: String(p.rate), losDays: p.losDays != null ? String(p.losDays) : '' });
+  };
   const toggle = useMutation({
     mutationFn: (p: I.SchemePackage) => api.insurance.payers.updatePackage(payerId, p.id, { isActive: !p.isActive }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: key }),
@@ -122,6 +126,9 @@ function Packages({ payerId }: { payerId: string }) {
               <TableCell className="text-right tabular-nums">{formatINR(p.rate)}</TableCell>
               <TableCell className="text-right">
                 <Can permission="insurance.payer.manage">
+                  <Button variant="ghost" size="sm" onClick={() => startEdit(p)}>
+                    Edit
+                  </Button>
                   <Button variant="ghost" size="sm" onClick={() => toggle.mutate(p)}>
                     {p.isActive ? 'Deactivate' : 'Activate'}
                   </Button>
@@ -143,19 +150,47 @@ function Packages({ payerId }: { payerId: string }) {
           className="flex flex-wrap items-end gap-2 border-t p-4"
           onSubmit={(e) => {
             e.preventDefault();
+            setFormError(null);
+            const values = { code: form.code, name: form.name, specialty: opt(form.specialty) ?? null, rate: form.rate.trim() === '' ? undefined : Number(form.rate), losDays: optNum(form.losDays) ?? null };
+            const parsed = (form.id ? I.updatePackageSchema : I.packageInputSchema).safeParse(values);
+            if (form.rate.trim() === '') return setFormError('Enter the package rate');
+            if (!parsed.success) {
+              const issue = parsed.error.issues[0];
+              return setFormError(issue ? `${issue.path.join('.') || 'Package'}: ${issue.message}` : 'Check the package');
+            }
             add.mutate();
           }}
         >
-          <Input className="w-32" required placeholder="Code" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} />
+          {form.id && <p className="w-full text-sm font-medium">Editing package {form.code}</p>}
+          <Input className="w-32" required disabled={!!form.id} aria-label="Package code" placeholder="Code" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} />
           <Input className="min-w-48 flex-1" required placeholder="Package name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           <Input className="w-40" placeholder="Specialty" value={form.specialty} onChange={(e) => setForm({ ...form, specialty: e.target.value })} />
           <Input className="w-24" type="number" min={0} placeholder="Days" value={form.losDays} onChange={(e) => setForm({ ...form, losDays: e.target.value })} />
           <Input className="w-32" type="number" step="0.01" min={0} required placeholder="Rate ₹" value={form.rate} onChange={(e) => setForm({ ...form, rate: e.target.value })} />
           <Button type="submit" disabled={add.isPending}>
-            <Plus /> Add
+            {form.id ? (
+              'Save'
+            ) : (
+              <>
+                <Plus /> Add
+              </>
+            )}
           </Button>
+          {form.id && (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setForm(blank);
+                setFormError(null);
+                add.reset();
+              }}
+            >
+              Cancel
+            </Button>
+          )}
           <div className="w-full">
-            <ErrorBox error={add.error ? errorMessage(add.error) : null} />
+            <ErrorBox error={formError ?? (add.error ? errorMessage(add.error) : toggle.error ? errorMessage(toggle.error) : null)} />
           </div>
         </form>
       </Can>
@@ -233,7 +268,7 @@ function PriceListEditor({ payer, list, onDone }: { payer: I.Payer; list: B.Pric
       payerId: payer.id,
       effectiveFrom: from,
       effectiveTo: to || null,
-      // Keep an inactive list inactive on edit.
+      // Keep an inactive tariff inactive on edit (the API defaults isActive to true).
       isActive: list?.isActive ?? true,
       items: Object.entries(prices)
         .filter(([, p]) => p.trim() !== '')

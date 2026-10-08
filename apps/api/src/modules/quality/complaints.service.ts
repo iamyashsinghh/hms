@@ -95,6 +95,8 @@ export class ComplaintsService {
 
       const patch: Partial<typeof qualityComplaints.$inferInsert> = { updatedBy: ctx.userId };
       if (input.assignedTo !== undefined) patch.assignedTo = input.assignedTo;
+      if (input.category !== undefined) patch.category = input.category;
+      if (input.department !== undefined) patch.department = input.department || null;
       if (input.priority && input.priority !== row.priority) {
         patch.priority = input.priority;
         patch.dueAt = new Date(new Date(row.createdAt).getTime() + Q.COMPLAINT_TAT_HOURS[input.priority] * 3_600_000).toISOString();

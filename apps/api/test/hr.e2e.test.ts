@@ -466,3 +466,27 @@ describe('validation', () => {
     expect(msg(quota)).toContain('half days');
   });
 });
+
+describe('editing HR masters keeps fields that were not sent', () => {
+  it('updates an employee, a shift and a leave type partially', async () => {
+    const emp = (await call(hrManager, 'POST', '/hr/employees', { fullName: `Edit Me ${tag.replace(/\d/g, 'x')}`, category: 'nurse', employmentType: 'contract', dateOfJoining: '2025-02-01' })).json();
+    const e2 = await call(hrManager, 'PATCH', `/hr/employees/${emp.id}`, { designation: 'Senior Nurse' });
+    expect(e2.statusCode, e2.body).toBe(200);
+    expect(e2.json()).toMatchObject({ designation: 'Senior Nurse', category: 'nurse', employmentType: 'contract' });
+    expect((await call(hrManager, 'PATCH', `/hr/employees/${emp.id}`, { mobile: '12345' })).statusCode).toBe(400);
+    expect((await call(nurse, 'PATCH', `/hr/employees/${emp.id}`, { designation: 'x' })).statusCode).toBe(403);
+
+    const shift = (await call(hrManager, 'POST', '/hr/shifts', { code: `E${tag.slice(-4)}`.toUpperCase(), name: 'Evening edit', startTime: '14:00', endTime: '22:00', breakMinutes: 30, graceMinutes: 5 })).json();
+    const s2 = (await call(hrManager, 'PATCH', `/hr/shifts/${shift.id}`, { name: 'Evening (edited)' })).json();
+    expect(s2).toMatchObject({ name: 'Evening (edited)', breakMinutes: 30, graceMinutes: 5, isActive: true });
+    expect((await call(hrManager, 'PATCH', `/hr/shifts/${shift.id}`, { breakMinutes: -5 })).statusCode).toBe(400);
+    expect((await call(nurse, 'PATCH', `/hr/shifts/${shift.id}`, { name: 'x' })).statusCode).toBe(403);
+
+    const lt = (await call(hrManager, 'POST', '/hr/leave-types', { code: `U${tag.slice(-4)}`.toUpperCase(), name: 'Unpaid study', annualQuota: 0, isPaid: false })).json();
+    const off = (await call(hrManager, 'PATCH', `/hr/leave-types/${lt.id}`, { isActive: false })).json();
+    expect(off).toMatchObject({ isActive: false, isPaid: false });
+    const renamed = (await call(hrManager, 'PATCH', `/hr/leave-types/${lt.id}`, { name: 'Study leave (unpaid)' })).json();
+    expect(renamed).toMatchObject({ name: 'Study leave (unpaid)', isActive: false, isPaid: false });
+    expect((await call(hrManager, 'PATCH', `/hr/leave-types/${lt.id}`, { annualQuota: 1.3 })).statusCode).toBe(400);
+  });
+});

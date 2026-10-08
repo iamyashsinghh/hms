@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
 import { datesInOrder as inOrder, emailAddress, END_BEFORE_START, gstin as strictGstin, isoDate, pastOrTodayDate, phoneNumber, todayIso } from '../validation';
+import { patchSchema } from '../patch';
 
 /**
  * Insurance & Schemes: payers (insurers, TPAs, corporates, PM-JAY/CGHS-style schemes), scheme packages,
@@ -111,17 +112,8 @@ const payerBase = z.object({
   });
 export const payerInputSchema = payerBase.refine((p) => p.type !== 'government' || !!p.scheme, { message: 'Pick the scheme', path: ['scheme'] });
 export type PayerInput = z.input<typeof payerInputSchema>;
-/** No defaults on updates: a partial update must not reset credit days, TDS, co-pay or flags it did not send. */
-export const updatePayerSchema = payerBase
-  .omit({ code: true })
-  .extend({
-    creditDays: payerBase.shape.creditDays.unwrap(),
-    tdsPercent: percent,
-    copayPercent: percent,
-    preauthRequired: z.boolean(),
-    isActive: z.boolean(),
-  })
-  .partial();
+/** No defaults on updates (patchSchema, not .partial()): a partial update must not reset credit days, TDS, co-pay or flags it did not send. */
+export const updatePayerSchema = patchSchema(payerBase.omit({ code: true }));
 export type UpdatePayer = z.input<typeof updatePayerSchema>;
 
 export interface Payer {
@@ -170,10 +162,8 @@ export const packageInputSchema = z.object({
   isActive: z.boolean().default(true),
 });
 export type PackageInput = z.input<typeof packageInputSchema>;
-export const updatePackageSchema = packageInputSchema
-  .omit({ code: true })
-  .extend({ preauthRequired: z.boolean(), isActive: z.boolean() })
-  .partial();
+// patchSchema, not .partial(): Zod 4 keeps defaults inside .partial(), so a PATCH would reset omitted fields.
+export const updatePackageSchema = patchSchema(packageInputSchema.omit({ code: true }));
 export type UpdatePackage = z.input<typeof updatePackageSchema>;
 
 export interface SchemePackage {
@@ -219,10 +209,8 @@ export const policyInputSchema = policyBase
   .refine(datesInOrder, { message: END_BEFORE_START, path: ['validTo'] })
   .refine(roomRentWithinCover, ROOM_RENT_OVER_COVER);
 export type PolicyInput = z.input<typeof policyInputSchema>;
-export const updatePolicySchema = policyBase
-  .omit({ patientId: true })
-  .extend({ relation: z.enum(RELATIONS), isActive: z.boolean() })
-  .partial()
+// patchSchema keeps relation / isActive from being reset; the date-order and room-rent checks still apply.
+export const updatePolicySchema = patchSchema(policyBase.omit({ patientId: true }))
   .refine(datesInOrder, { message: END_BEFORE_START, path: ['validTo'] })
   .refine(roomRentWithinCover, ROOM_RENT_OVER_COVER);
 export type UpdatePolicy = z.input<typeof updatePolicySchema>;
@@ -318,7 +306,8 @@ export const preauthInputSchema = preauthBase.refine((v) => v.estimatedAmount > 
   path: ['estimatedAmount'],
 });
 export type PreauthInput = z.input<typeof preauthInputSchema>;
-export const updatePreauthSchema = preauthBase.omit({ policyId: true, facilityId: true }).extend({ icdCodes: preauthBase.shape.icdCodes.unwrap() }).partial();
+// Built from the unrefined base (no defaults, so icdCodes is not reset to []).
+export const updatePreauthSchema = patchSchema(preauthBase.omit({ policyId: true, facilityId: true }));
 export type UpdatePreauth = z.input<typeof updatePreauthSchema>;
 
 export const preauthApproveSchema = z.object({
@@ -475,7 +464,7 @@ export const documentInputSchema = z.object({
   received: z.boolean().default(false),
 });
 export type DocumentInput = z.input<typeof documentInputSchema>;
-export const updateDocumentSchema = documentInputSchema.partial();
+export const updateDocumentSchema = patchSchema(documentInputSchema);
 export type UpdateDocument = z.input<typeof updateDocumentSchema>;
 
 export interface SettlementPosting {

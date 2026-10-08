@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { patchSchema } from '../patch';
 import { indianMobile, isoDate, pastOrTodayDate, positiveMoney, requiredText } from '../validation';
 
 /**
@@ -479,7 +480,7 @@ export const deviceInputSchema = z.object({
   isActive: z.boolean().default(true),
 });
 export type DeviceInput = z.input<typeof deviceInputSchema>;
-export const updateDeviceSchema = deviceInputSchema.omit({ code: true }).partial();
+export const updateDeviceSchema = patchSchema(deviceInputSchema.omit({ code: true }));
 export type UpdateDevice = z.input<typeof updateDeviceSchema>;
 
 export interface LabDevice {

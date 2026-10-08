@@ -42,8 +42,15 @@ export class LinenService {
     });
   }
 
-  updateItem(id: string, input: Partial<z.output<typeof O.linenItemInputSchema>>): Promise<O.LinenItem> {
+  updateItem(id: string, input: z.output<typeof O.updateLinenItemSchema>): Promise<O.LinenItem> {
     return this.db.tx(async (tx) => {
+      if (input.name) {
+        const [dup] = await tx
+          .select({ id: opsLinenItems.id })
+          .from(opsLinenItems)
+          .where(and(sql`lower(${opsLinenItems.name}) = lower(${input.name})`, sql`${opsLinenItems.id} <> ${id}`));
+        if (dup) throw conflict('duplicate_item', `${input.name} already exists`);
+      }
       const [row] = await tx
         .update(opsLinenItems)
         .set(defined({ name: input.name, parLevel: input.parLevel, isActive: input.isActive }))

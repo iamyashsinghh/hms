@@ -163,7 +163,7 @@ const patientFields = z.object({
 export const createPatientSchema = patientFields;
 export type CreatePatient = z.infer<typeof createPatientSchema>;
 
-/** For edits, '' or null clears an optional field. */
+/** For edits (partial update), '' or null clears an optional field. */
 const clearable = <T extends z.ZodType>(schema: T) =>
   z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? null : v), schema.nullable().optional());
 

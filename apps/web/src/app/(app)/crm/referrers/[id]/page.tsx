@@ -17,7 +17,7 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ErrorBox, Field, PatientPicker, REFERRER_TYPE_LABELS, RULE_SCOPE_LABELS, Select, StatTile, addDaysISO, formatINR, todayIST } from '@/modules/crm/ui';
+import { ErrorBox, Field, PatientPicker, REFERRER_TYPE_LABELS, RULE_SCOPE_LABELS, Select, StatTile, addDaysISO, firstIssue, formatINR, todayIST } from '@/modules/crm/ui';
 import { ReferrerForm } from '../referrer-form';
 
 export default function ReferrerPage({ params }: { params: Promise<{ id: string }> }) {
@@ -28,6 +28,7 @@ export default function ReferrerPage({ params }: { params: Promise<{ id: string 
   const canSeeMoney = usePermission('crm.commission.read');
   const queryClient = useQueryClient();
   const [editing, setEditing] = React.useState(false);
+  const [editingRule, setEditingRule] = React.useState<C.CommissionRule | null>(null);
 
   const { data: r, error } = useQuery({ queryKey: ['crm', 'referrer', id], queryFn: () => api.crm.referrers.get(id), enabled: canRead });
   const { data: rules } = useQuery({ queryKey: ['crm', 'rules', id], queryFn: () => api.crm.rules.list(id), enabled: canRead });
@@ -98,12 +99,13 @@ export default function ReferrerPage({ params }: { params: Promise<{ id: string 
                   <TableHead>Rate</TableHead>
                   <TableHead>From</TableHead>
                   <TableHead>Whose</TableHead>
+                  {canManage && <TableHead />}
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {!rules?.length ? (
                   <TableRow>
-                    <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">
+                    <TableCell colSpan={canManage ? 5 : 4} className="py-6 text-center text-muted-foreground">
                       No rules: this referrer earns nothing yet.
                     </TableCell>
                   </TableRow>
@@ -120,12 +122,20 @@ export default function ReferrerPage({ params }: { params: Promise<{ id: string 
                         {x.effectiveTo && ` – ${formatDate(x.effectiveTo)}`}
                       </TableCell>
                       <TableCell>{x.referrerId ? 'This referrer' : <Badge variant="outline">Hospital default</Badge>}</TableCell>
+                      {canManage && (
+                        <TableCell className="text-right">
+                          <Button variant="ghost" size="sm" aria-label="Edit rule" onClick={() => setEditingRule(x)}>
+                            <Pencil />
+                          </Button>
+                        </TableCell>
+                      )}
                     </TableRow>
                   ))
                 )}
               </TableBody>
             </Table>
-            {canManage && <AddRule referrerId={id} onSaved={refresh} />}
+            {canManage && editingRule && <RuleForm key={editingRule.id} referrerId={id} initial={editingRule} onSaved={refresh} onCancel={() => setEditingRule(null)} />}
+            {canManage && !editingRule && <RuleForm referrerId={id} onSaved={refresh} />}
           </CardContent>
         </Card>
 
@@ -219,26 +229,56 @@ export default function ReferrerPage({ params }: { params: Promise<{ id: string 
   );
 }
 
-function AddRule({ referrerId, onSaved }: { referrerId: string; onSaved: () => void }) {
-  const [open, setOpen] = React.useState(false);
-  const [f, setF] = React.useState({ forAll: false, appliesTo: 'all' as C.RuleScope, serviceCode: '', rateType: 'percent' as C.RateType, rate: '', effectiveFrom: todayIST() });
-  const [ruleError, setRuleError] = React.useState<string | null>(null);
-  const ruleBody = (): C.CommissionRuleInput => ({
+const RULE_LABELS: Record<string, string> = { rate: 'Rate', effectiveFrom: 'From', effectiveTo: 'Until', serviceCode: 'Service code' };
+
+/** Add a commission rule; with `initial` it edits that rule (rate, scope, dates, active). */
+function RuleForm({ referrerId, initial, onSaved, onCancel }: { referrerId: string; initial?: C.CommissionRule; onSaved: () => void; onCancel?: () => void }) {
+  const [open, setOpen] = React.useState(!!initial);
+  const blank = () => ({
+    forAll: initial ? !initial.referrerId : false,
+    appliesTo: initial?.appliesTo ?? ('all' as C.RuleScope),
+    serviceCode: initial?.serviceCode ?? '',
+    rateType: initial?.rateType ?? ('percent' as C.RateType),
+    rate: initial ? String(initial.rate) : '',
+    effectiveFrom: initial?.effectiveFrom ?? todayIST(),
+    effectiveTo: initial?.effectiveTo ?? '',
+    isActive: initial?.isActive ?? true,
+  });
+  const [f, setF] = React.useState(blank);
+  const [invalid, setInvalid] = React.useState<string | null>(null);
+  const body = (): C.CommissionRuleInput => ({
     referrerId: f.forAll ? null : referrerId,
     appliesTo: f.appliesTo,
     serviceCode: f.serviceCode || null,
     rateType: f.rateType,
-    rate: Number(f.rate),
+    rate: f.rate === '' ? Number.NaN : Number(f.rate),
     effectiveFrom: f.effectiveFrom,
+    effectiveTo: f.effectiveTo || null,
+    isActive: f.isActive,
   });
   const m = useMutation({
-    mutationFn: () => api.crm.rules.create(ruleBody()),
+    mutationFn: (b: C.CommissionRuleInput) => (initial ? api.crm.rules.update(initial.id, b) : api.crm.rules.create(b)),
     onSuccess: () => {
-      setOpen(false);
-      setF({ ...f, rate: '', serviceCode: '' });
+      if (initial) onCancel?.();
+      else {
+        setOpen(false);
+        setF({ ...f, rate: '', serviceCode: '', effectiveTo: '' });
+      }
       onSaved();
     },
   });
+  const close = () => {
+    setInvalid(null);
+    if (initial) onCancel?.();
+    else setOpen(false);
+  };
+  const submit = () => {
+    const b = body();
+    const problem = firstIssue(C.commissionRuleInputSchema, b, RULE_LABELS);
+    if (problem) return setInvalid(problem);
+    setInvalid(null);
+    m.mutate(b);
+  };
   if (!open)
     return (
       <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
@@ -247,7 +287,8 @@ function AddRule({ referrerId, onSaved }: { referrerId: string; onSaved: () => v
     );
   return (
     <div className="space-y-3 rounded-md border p-3">
-      <ErrorBox error={ruleError ?? (m.error ? errorMessage(m.error) : null)} />
+      {initial && <p className="text-sm font-medium">Edit rule</p>}
+      <ErrorBox error={invalid ?? (m.error ? errorMessage(m.error) : null)} />
       <div className="grid gap-3 sm:grid-cols-3">
         <Field id="ru-scope" label="Applies to">
           <Select id="ru-scope" value={f.appliesTo} onChange={(e) => setF({ ...f, appliesTo: e.target.value as C.RuleScope })}>
@@ -261,9 +302,6 @@ function AddRule({ referrerId, onSaved }: { referrerId: string; onSaved: () => v
         <Field id="ru-code" label="Service code (optional)">
           <Input id="ru-code" maxLength={40} value={f.serviceCode} onChange={(e) => setF({ ...f, serviceCode: e.target.value.toUpperCase() })} />
         </Field>
-        <Field id="ru-from" label="From">
-          <Input id="ru-from" type="date" value={f.effectiveFrom} onChange={(e) => setF({ ...f, effectiveFrom: e.target.value })} />
-        </Field>
         <Field id="ru-type" label="Rate type">
           <Select id="ru-type" value={f.rateType} onChange={(e) => setF({ ...f, rateType: e.target.value as C.RateType })}>
             <option value="percent">% of bill line</option>
@@ -273,23 +311,26 @@ function AddRule({ referrerId, onSaved }: { referrerId: string; onSaved: () => v
         <Field id="ru-rate" label={f.rateType === 'percent' ? 'Percent *' : 'Amount (₹) *'}>
           <Input id="ru-rate" type="number" min={0.01} max={f.rateType === 'percent' ? 100 : undefined} step="0.01" value={f.rate} onChange={(e) => setF({ ...f, rate: e.target.value })} />
         </Field>
-        <label className="flex items-end gap-2 pb-2 text-sm">
+        <Field id="ru-from" label="From *">
+          <Input id="ru-from" type="date" value={f.effectiveFrom} onChange={(e) => setF({ ...f, effectiveFrom: e.target.value })} />
+        </Field>
+        <Field id="ru-to" label="Until (optional)">
+          <Input id="ru-to" type="date" min={f.effectiveFrom || undefined} value={f.effectiveTo} onChange={(e) => setF({ ...f, effectiveTo: e.target.value })} />
+        </Field>
+        <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={f.forAll} onChange={(e) => setF({ ...f, forAll: e.target.checked })} /> Hospital default (all referrers)
         </label>
+        {initial && (
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={f.isActive} onChange={(e) => setF({ ...f, isActive: e.target.checked })} /> Active
+          </label>
+        )}
       </div>
       <div className="flex justify-end gap-2">
-        <Button variant="outline" size="sm" onClick={() => setOpen(false)}>
+        <Button variant="outline" size="sm" onClick={close}>
           Cancel
         </Button>
-        <Button
-          size="sm"
-          disabled={m.isPending || f.rate === ''}
-          onClick={() => {
-            const problem = firstError(validate(C.commissionRuleInputSchema, ruleBody()).errors);
-            setRuleError(problem);
-            if (!problem) m.mutate();
-          }}
-        >
+        <Button size="sm" disabled={m.isPending || f.rate === '' || !f.effectiveFrom} onClick={submit}>
           {m.isPending && <Loader2 className="animate-spin" />}
           Save rule
         </Button>

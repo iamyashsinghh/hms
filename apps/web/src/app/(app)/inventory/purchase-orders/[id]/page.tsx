@@ -4,14 +4,14 @@ import * as React from 'react';
 import { use } from 'react';
 import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Loader2, PackageCheck, Printer } from 'lucide-react';
+import { ArrowLeft, Loader2, PackageCheck, Pencil, Printer } from 'lucide-react';
 import { inventory, todayIso } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { validate } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
 import { NoAccess } from '@/components/no-access';
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -113,6 +113,11 @@ export default function PurchaseOrderPage({ params }: { params: Promise<{ id: st
           <ArrowLeft className="size-4" /> Purchase orders
         </Link>
         <div className="flex gap-2">
+          {canOrder && p.status === 'draft' && (
+            <Link href={`/inventory/purchase-orders/${id}/edit`} className={buttonVariants({ variant: 'outline' })}>
+              <Pencil /> Edit
+            </Link>
+          )}
           {canApprove && p.status === 'draft' && (
             <Button disabled={act.isPending} onClick={() => act.mutate('approve')}>
               Approve

@@ -334,3 +334,13 @@ export function checked<T>(schema: z.ZodType, body: T): T {
 export const num = (s: string) => (s.trim() === '' ? undefined : Number(s));
 /** Optional string from a text input value. */
 export const opt = (s: string) => (s.trim() === '' ? undefined : s.trim());
+
+/** First validation problem from a shared Zod schema, as one readable line (null when the body is valid). */
+export function firstIssue(schema: z.ZodType, body: unknown, labels: Record<string, string> = {}): string | null {
+  const r = schema.safeParse(body);
+  if (r.success) return null;
+  const issue = r.error.issues[0]!;
+  const key = String(issue.path[0] ?? '');
+  const label = labels[key] ?? key;
+  return label ? `${label}: ${issue.message}` : issue.message;
+}

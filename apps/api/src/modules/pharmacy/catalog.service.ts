@@ -51,9 +51,10 @@ export class PharmacyCatalogService {
     return row;
   }
 
-  createItem(input: z.output<typeof pharmacy.createItemSchema>): Promise<pharmacy.Item> {
+  /** Pass the caller's tx to create inside it (bulk import adds opening stock in the same tx). */
+  createItem(input: z.output<typeof pharmacy.createItemSchema>, outer?: Tx): Promise<pharmacy.Item> {
     const ctx = currentContext()!;
-    return this.db.tx(async (tx) => {
+    const run = async (tx: Tx) => {
       const [dup] = await tx.select({ id: pharmacyItems.id }).from(pharmacyItems).where(sql`upper(${pharmacyItems.code}) = upper(${input.code})`).limit(1);
       if (dup) throw conflict('item_code_taken', `Item code ${input.code.toUpperCase()} already exists`);
       const [row] = await tx
@@ -68,12 +69,13 @@ export class PharmacyCatalogService {
         })
         .returning();
       return itemDto(row!);
-    });
+    };
+    return outer ? run(outer) : this.db.tx(run);
   }
 
-  updateItem(id: string, input: z.output<typeof pharmacy.updateItemSchema>): Promise<pharmacy.Item> {
+  updateItem(id: string, input: z.output<typeof pharmacy.updateItemSchema>, outer?: Tx): Promise<pharmacy.Item> {
     const ctx = currentContext()!;
-    return this.db.tx(async (tx) => {
+    const run = async (tx: Tx) => {
       const [row] = await tx
         .update(pharmacyItems)
         .set({ ...itemColumns(input), ...(input.isActive !== undefined ? { isActive: input.isActive } : {}), updatedBy: ctx.userId })
@@ -81,6 +83,18 @@ export class PharmacyCatalogService {
         .returning();
       if (!row) throw notFound('Item');
       return itemDto(row);
+    };
+    return outer ? run(outer) : this.db.tx(run);
+  }
+
+  /** Item ids by code (upper-cased), for the bulk import's duplicate check. */
+  itemIdsByCode(codes: string[]): Promise<Map<string, string>> {
+    return this.db.tx(async (tx) => {
+      const rows = await tx
+        .select({ id: pharmacyItems.id, code: pharmacyItems.code })
+        .from(pharmacyItems)
+        .where(sql`upper(${pharmacyItems.code}) in (${sql.join(codes.map((c) => sql`${c.toUpperCase()}`), sql`, `)})`);
+      return new Map(rows.map((r) => [r.code.toUpperCase(), r.id]));
     });
   }
 

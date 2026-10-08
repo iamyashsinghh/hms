@@ -13,6 +13,7 @@ import {
   requiredText,
   todayIso,
 } from '../validation';
+import { patchSchema } from '../patch';
 
 /**
  * Hospital Setup: permissions and API contracts (Zod schemas + types).
@@ -177,7 +178,7 @@ export const createFacilitySchema = z.object({
   address: addressSchema.optional(),
 });
 export type CreateFacility = z.input<typeof createFacilitySchema>;
-export const updateFacilitySchema = createFacilitySchema.partial().extend({ isActive: z.boolean().optional() });
+export const updateFacilitySchema = patchSchema(createFacilitySchema).extend({ isActive: z.boolean().optional() });
 export type UpdateFacility = z.input<typeof updateFacilitySchema>;
 export interface FacilityDetail {
   id: string;
@@ -204,9 +205,7 @@ export const createDepartmentSchema = z.object({
   description: optText('Description', 500),
 });
 export type CreateDepartment = z.input<typeof createDepartmentSchema>;
-export const updateDepartmentSchema = createDepartmentSchema
-  .partial()
-  .extend({ facilityId: z.uuid().nullable().optional(), isActive: z.boolean().optional() });
+export const updateDepartmentSchema = patchSchema(createDepartmentSchema).extend({ facilityId: z.uuid().nullable().optional(), isActive: z.boolean().optional() });
 export type UpdateDepartment = z.input<typeof updateDepartmentSchema>;
 export interface Department {
   id: string;
@@ -226,7 +225,7 @@ export const createSpecializationSchema = z.object({
   name: requiredText('the specialization name', 120, 2),
 });
 export type CreateSpecialization = z.input<typeof createSpecializationSchema>;
-export const updateSpecializationSchema = createSpecializationSchema.partial().extend({ isActive: z.boolean().optional() });
+export const updateSpecializationSchema = patchSchema(createSpecializationSchema).extend({ isActive: z.boolean().optional() });
 export type UpdateSpecialization = z.input<typeof updateSpecializationSchema>;
 export interface Specialization {
   id: string;
@@ -515,7 +514,8 @@ const roleName = requiredText('the role name', 80, 2).regex(/^[\p{L}\p{M}\d][\p{
 const permissionList = z
   .array(z.string().regex(/^[a-z]+\.[a-z_]+\.[a-z_]+$/, 'Unknown permission'), { error: 'Pick the permissions for this role' })
   .max(500, 'Too many permissions')
-  .refine((p) => new Set(p).size === p.length, 'A permission is listed twice');
+  // A permission picked twice (e.g. merging two role templates) is kept once.
+  .transform((p) => [...new Set(p)]);
 
 export const createRoleSchema = z.object({
   name: roleName,

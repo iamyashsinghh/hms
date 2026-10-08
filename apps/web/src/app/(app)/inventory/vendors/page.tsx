@@ -7,6 +7,7 @@ import { inventory } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { validate, type FieldErrors } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
+import { BulkImportButton } from '@/components/bulk-import';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
 import { Badge } from '@/components/ui/badge';
@@ -35,16 +36,20 @@ export default function VendorsPage() {
     enabled: canRead,
   });
 
-  const vendorBody = () => ({
-    name: form.name,
-    contactPerson: form.contactPerson || undefined,
-    phone: form.phone || undefined,
-    email: form.email || undefined,
-    gstin: form.gstin || undefined,
-    pan: form.pan || undefined,
-    address: form.address || undefined,
-    paymentTermsDays: Number(form.paymentTermsDays || 0),
-  });
+  /** On create blanks are left out; on edit an emptied field is sent as '' so the server clears it. */
+  const vendorBody = () => {
+    const blank = (v: string) => (editing === 'new' ? v.trim() || undefined : v.trim());
+    return {
+      name: form.name,
+      contactPerson: blank(form.contactPerson),
+      phone: blank(form.phone),
+      email: blank(form.email),
+      gstin: blank(form.gstin),
+      pan: blank(form.pan),
+      address: blank(form.address),
+      paymentTermsDays: Number(form.paymentTermsDays || 0),
+    };
+  };
   const save = useMutation({
     mutationFn: () => {
       const body = vendorBody();
@@ -98,9 +103,12 @@ export default function VendorsPage() {
         description="Suppliers you buy consumables, devices and drugs from."
         actions={
           canManage && (
-            <Button onClick={() => open('new')}>
-              <Plus /> New vendor
-            </Button>
+            <>
+              <BulkImportButton noun="vendors" columns={inventory.VENDOR_IMPORT_COLUMNS} run={(req) => api.inventory.vendors.import(req)} invalidate={[['inventory', 'vendors']]} />
+              <Button onClick={() => open('new')}>
+                <Plus /> New vendor
+              </Button>
+            </>
           )
         }
       />

@@ -7,6 +7,7 @@ import { lab as L } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { validate, type FieldErrors } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
+import { BulkImportButton } from '@/components/bulk-import';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
 import { Badge } from '@/components/ui/badge';
@@ -198,6 +199,7 @@ export default function LabCataloguePage() {
         description="The lab catalogue: tests with units, reference and critical ranges, and panels (CBC, LFT…) that group them. Prices here are used when a test has no billing service code."
         actions={
           <Can permission="lab.test.manage">
+            <BulkImportButton noun="lab tests" columns={L.TEST_IMPORT_COLUMNS} run={(req) => api.lab.tests.import(req)} invalidate={[['lab']]} />
             <Button variant="outline" disabled={starter.isPending} onClick={() => starter.mutate()}>
               {starter.isPending ? <Loader2 className="animate-spin" /> : <Sparkles />} Add common tests
             </Button>

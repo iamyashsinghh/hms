@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Put, Query } from '@nestjs/common';
-import { radiology, type Paginated } from '@hms/shared';
+import { importRequestSchema, radiology, type ImportResult, type Paginated } from '@hms/shared';
 import type { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
@@ -55,6 +55,14 @@ export class RadiologyController {
   @RequirePermissions('radiology.master.manage')
   createTest(@Body(new ZodPipe(radiology.testInputSchema)) body: radiology.TestInput): Promise<radiology.RadiologyTest> {
     return this.svc.createTest(body);
+  }
+
+  /** Bulk import from Excel / CSV. `dryRun` validates only (the preview). */
+  @Post('tests/import')
+  @HttpCode(200)
+  @RequirePermissions('radiology.master.manage')
+  importTests(@Body(new ZodPipe(importRequestSchema)) body: Out<typeof importRequestSchema>): Promise<ImportResult> {
+    return this.svc.importTests(body);
   }
 
   @Patch('tests/:id')

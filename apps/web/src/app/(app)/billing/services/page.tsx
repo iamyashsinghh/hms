@@ -7,6 +7,7 @@ import { billing as B } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { validate, type FieldErrors } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
+import { BulkImportButton } from '@/components/bulk-import';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
 import { Badge } from '@/components/ui/badge';
@@ -108,6 +109,7 @@ export default function ServicesPage() {
         description="The service master used on bills: consultations, procedures, tests, rooms and packages. Base price applies when no price list covers a service."
         actions={
           <Can permission="billing.service.manage">
+            <BulkImportButton noun="services" columns={B.SERVICE_IMPORT_COLUMNS} run={(req) => api.billing.services.import(req)} invalidate={[['billing', 'services']]} />
             <Button
               onClick={() => {
                 setErrors({});

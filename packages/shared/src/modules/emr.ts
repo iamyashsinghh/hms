@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
 import { END_BEFORE_START, datesInOrder, isoDate, requiredText, todayIso, todayOrFutureDate } from '../validation';
+import { patchSchema } from '../patch';
 
 /**
  * OPD / EMR: permissions and API contracts (Zod schemas + types).
@@ -248,6 +249,9 @@ export const favouriteInputSchema = z.object({
   lines: z.array(prescriptionLineInputSchema.omit({ allergyOverrideReason: true })).min(1, 'Add at least one medicine').max(40, 'At most 40 medicines'),
 });
 export type FavouriteInput = z.input<typeof favouriteInputSchema>;
+/** Rename a favourite and/or replace its medicines. */
+export const updateFavouriteSchema = patchSchema(favouriteInputSchema);
+export type UpdateFavourite = z.input<typeof updateFavouriteSchema>;
 
 export interface Favourite {
   id: string;

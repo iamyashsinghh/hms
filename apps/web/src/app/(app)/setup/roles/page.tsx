@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
-import { Plus } from 'lucide-react';
+import { Pencil, Plus } from 'lucide-react';
 import { api, errorMessage } from '@/lib/api';
 import { Can, usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
@@ -14,6 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 
 export default function RolesPage() {
   const canRead = usePermission('core.role.read');
+  const canManage = usePermission('core.role.manage');
   const { data, isPending, error } = useQuery({ queryKey: ['setup', 'roles'], queryFn: () => api.setup.listRoles(), enabled: canRead });
   if (!canRead) return <NoAccess />;
 
@@ -21,7 +22,7 @@ export default function RolesPage() {
     <>
       <PageHeader
         title="Roles"
-        description="System roles come ready-made. Create custom roles for anything else."
+        description="System roles come ready-made and their permissions can be changed. Create custom roles for anything else."
         actions={
           <Can permission="core.role.manage">
             <Link href="/setup/roles/new" className={buttonVariants()}>
@@ -41,12 +42,13 @@ export default function RolesPage() {
                 <TableHead>Type</TableHead>
                 <TableHead>Permissions</TableHead>
                 <TableHead>Active users</TableHead>
+                <TableHead className="text-right" />
               </TableRow>
             </TableHeader>
             <TableBody>
               {isPending ? (
                 <TableRow>
-                  <TableCell colSpan={4} className="py-10 text-center text-muted-foreground">
+                  <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
                     Loading…
                   </TableCell>
                 </TableRow>
@@ -62,6 +64,13 @@ export default function RolesPage() {
                     <TableCell>{r.isSystem ? <Badge variant="secondary">System</Badge> : <Badge variant="accent">Custom</Badge>}</TableCell>
                     <TableCell>{r.permissions.length}</TableCell>
                     <TableCell>{r.userCount}</TableCell>
+                    <TableCell className="text-right">
+                      {canManage && r.key !== 'hospital_admin' && (
+                        <Link href={`/setup/roles/${r.id}`} className={buttonVariants({ variant: 'ghost', size: 'sm' })}>
+                          <Pencil /> Edit
+                        </Link>
+                      )}
+                    </TableCell>
                   </TableRow>
                 ))
               )}

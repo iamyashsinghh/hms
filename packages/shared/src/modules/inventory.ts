@@ -14,6 +14,8 @@ import {
   todayIso,
   todayOrFutureDate,
 } from '../validation';
+import { patchSchema } from '../patch';
+import type { ImportColumn } from '../imports';
 
 /**
  * Inventory & Procurement: permissions and API contracts (Zod schemas + types).
@@ -106,10 +108,29 @@ const PAN_GSTIN_MISMATCH = { message: 'PAN does not match the GSTIN (characters 
 export const createVendorSchema = vendorBaseSchema.refine(panMatchesGstin, PAN_GSTIN_MISMATCH);
 export type CreateVendor = z.input<typeof createVendorSchema>;
 
-export const updateVendorSchema = vendorBaseSchema
-  .omit({ code: true })
-  .partial()
-  .extend({ isActive: z.boolean().optional() })
+/** Columns of the vendor import sheet. */
+export const VENDOR_IMPORT_COLUMNS: readonly ImportColumn[] = [
+  { key: 'code', header: 'Code', type: 'text', required: true, example: 'V-SURGI' },
+  { key: 'name', header: 'Name', type: 'text', required: true, example: 'Surgi Supplies Pvt Ltd' },
+  { key: 'contactPerson', header: 'Contact person', type: 'text', example: 'Ravi Kumar' },
+  { key: 'phone', header: 'Phone', type: 'text', example: '9876543210' },
+  { key: 'email', header: 'Email', type: 'text', example: 'orders@surgi.example' },
+  { key: 'gstin', header: 'GSTIN', type: 'text', example: '07AABCS1429B1ZB' },
+  { key: 'pan', header: 'PAN', type: 'text', example: 'AABCS1429B' },
+  { key: 'address', header: 'Address', type: 'text', example: 'Okhla Phase 2, New Delhi' },
+  { key: 'paymentTermsDays', header: 'Payment terms (days)', type: 'integer', example: 30 },
+  { key: 'notes', header: 'Notes', type: 'text', example: '' },
+];
+
+/** Empty string clears an optional contact field on edit; anything else must still be valid. No defaults (patchSchema). */
+export const updateVendorSchema = patchSchema(vendorBaseSchema.omit({ code: true }))
+  .extend({
+    phone: z.literal('').or(phoneNumber).optional(),
+    email: z.literal('').or(emailAddress).optional(),
+    gstin: z.literal('').or(gstinNumber).optional(),
+    pan: z.literal('').or(panNumber).optional(),
+    isActive: z.boolean().optional(),
+  })
   .refine(panMatchesGstin, PAN_GSTIN_MISMATCH);
 export type UpdateVendor = z.input<typeof updateVendorSchema>;
 
@@ -152,6 +173,10 @@ export const createRequisitionSchema = z.object({
     .refine(uniqueBy((l: { itemId: string }) => l.itemId), 'The same item is listed twice; combine the quantities into one line'),
 });
 export type CreateRequisition = z.input<typeof createRequisitionSchema>;
+
+/** Only submitted (undecided) requisitions can be edited; the lines replace the old ones. */
+export const updateRequisitionSchema = patchSchema(createRequisitionSchema.omit({ storeId: true }).extend({ neededBy: isoDate.nullable() }));
+export type UpdateRequisition = z.input<typeof updateRequisitionSchema>;
 
 export const decisionSchema = z.object({
   approve: z.boolean(),
@@ -235,17 +260,17 @@ export type CreatePurchaseOrder = z.input<typeof createPurchaseOrderSchema>;
 
 /**
  * Only drafts can be edited; the lines replace the old ones. The expected date is checked against
- * today by the API only when it changes, so an older draft can still be saved as it was.
+ * today by the API only when it changes, so an older draft can still be saved as it was. null clears it.
  */
-export const updatePurchaseOrderSchema = z
-  .object({
+export const updatePurchaseOrderSchema = patchSchema(
+  z.object({
     vendorId: z.uuid({ error: 'Pick a vendor' }),
     expectedDate: blankToUndefined(isoDate.nullable().optional()),
     terms: optText(1000),
     notes: optText(500),
     lines: poLines,
-  })
-  .partial();
+  }),
+);
 export type UpdatePurchaseOrder = z.input<typeof updatePurchaseOrderSchema>;
 
 export const closePurchaseOrderSchema = z.object({ reason: text(300, 'a reason') });
@@ -415,6 +440,10 @@ export const createIndentSchema = z.object({
     .refine(uniqueBy((l: { itemId: string }) => l.itemId), 'The same item is listed twice; combine the quantities into one line'),
 });
 export type CreateIndent = z.input<typeof createIndentSchema>;
+
+/** Only submitted (undecided) indents can be edited; the stores stay, the lines replace the old ones. */
+export const updateIndentSchema = patchSchema(createIndentSchema.omit({ toStoreId: true, fromStoreId: true }));
+export type UpdateIndent = z.input<typeof updateIndentSchema>;
 
 export const decideIndentSchema = z.object({
   approve: z.boolean(),

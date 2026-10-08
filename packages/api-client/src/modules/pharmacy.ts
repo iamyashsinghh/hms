@@ -1,4 +1,4 @@
-import type { Paginated, PaginationQuery, pharmacy } from '@hms/shared';
+import type { ImportResult, Paginated, PaginationQuery, pharmacy } from '@hms/shared';
 import type { Http } from '../http';
 
 /** Pharmacy endpoints. Owned by the "pharmacy" workstream. Types come from @hms/shared (pharmacy.*). */
@@ -7,6 +7,7 @@ export const pharmacyApi = (http: Http) => ({
     list: (q: pharmacy.ItemSearchQuery = {}) => http.get<Paginated<pharmacy.Item>>('/pharmacy/items', q),
     get: (id: string) => http.get<pharmacy.Item>(`/pharmacy/items/${id}`),
     create: (body: pharmacy.CreateItem) => http.post<pharmacy.Item>('/pharmacy/items', body),
+    import: (body: pharmacy.ItemImport) => http.post<ImportResult>('/pharmacy/items/import', body),
     update: (id: string, body: pharmacy.UpdateItem) => http.patch<pharmacy.Item>(`/pharmacy/items/${id}`, body),
   },
   stores: {

@@ -156,6 +156,12 @@ export class EmrController {
     return this.emr.createFavourite(body);
   }
 
+  @Patch('favourites/:id')
+  @RequirePermissions('emr.prescription.write')
+  updateFavourite(@Param('id', ParseUUIDPipe) id: string, @Body(new ZodPipe(emr.updateFavouriteSchema)) body: Out<typeof emr.updateFavouriteSchema>): Promise<Favourite> {
+    return this.emr.updateFavourite(id, body);
+  }
+
   @Delete('favourites/:id')
   @HttpCode(204)
   @RequirePermissions('emr.prescription.write')

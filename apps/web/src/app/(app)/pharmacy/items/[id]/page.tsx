@@ -52,7 +52,10 @@ export default function EditItemPage({ params }: { params: Promise<{ id: string 
               key={item.updatedAt}
               initial={item}
               submitLabel="Save changes"
-              onSubmit={(values) => update.mutate(values)}
+              onSubmit={(values) =>
+                // Emptied optional fields go as '' so the server clears them (undefined would leave the old value).
+                update.mutate({ ...values, genericName: values.genericName ?? '', strength: values.strength ?? '', manufacturer: values.manufacturer ?? '', hsnCode: values.hsnCode ?? '' })
+              }
               pending={update.isPending}
               error={update.error}
             />

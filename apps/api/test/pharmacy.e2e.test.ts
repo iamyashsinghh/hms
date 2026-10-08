@@ -91,6 +91,32 @@ describe('pharmacy item master', () => {
     expect(upd.json()).toMatchObject({ reorderLevel: 20, schedule: 'H' });
   });
 
+  it('a partial edit leaves the other fields alone and can clear optional ones', async () => {
+    const item = await newItem({ gstRate: 12, unit: 'strip', packSize: 15, schedule: 'H', reorderLevel: 7, form: 'capsule' });
+    // Deactivating used to send the item back to the schema defaults (5% GST, otc, tablet...).
+    const off = await call(pharmacist, 'PATCH', `/items/${item.id}`, { isActive: false });
+    expect(off.statusCode, off.body).toBe(200);
+    expect(off.json()).toMatchObject({ isActive: false, gstRate: 12, unit: 'strip', packSize: 15, schedule: 'H', reorderLevel: 7, form: 'capsule' });
+    const cleared = await call(pharmacist, 'PATCH', `/items/${item.id}`, { genericName: '', strength: '', hsnCode: '', isActive: true });
+    expect(cleared.json()).toMatchObject({ genericName: null, strength: null, hsnCode: null, isActive: true, gstRate: 12 });
+    expect((await call(pharmacist, 'PATCH', `/items/${item.id}`, { gstRate: -1 })).statusCode).toBe(400);
+    expect((await call(pharmacist, 'PATCH', `/items/${item.id}`, { packSize: 0 })).statusCode).toBe(400);
+    expect((await call(pharmacist, 'PATCH', `/items/${item.id}`, { hsnCode: '12' })).statusCode).toBe(400);
+    expect((await call(doctor, 'PATCH', `/items/${item.id}`, { name: 'Nope' })).statusCode).toBe(403);
+  });
+
+  it('renames and retypes a store; only store managers can', async () => {
+    const res = await call(admin, 'POST', '/stores', { facilityId, code: `ED${run}`, name: `OT store ${run}`, type: 'ward' });
+    expect(res.statusCode, res.body).toBe(201);
+    const id = res.json().id;
+    const upd = await call(admin, 'PATCH', `/stores/${id}`, { name: `OT sub-store ${run}`, type: 'pharmacy' });
+    expect(upd.statusCode, upd.body).toBe(200);
+    expect(upd.json()).toMatchObject({ code: `ED${run}`, name: `OT sub-store ${run}`, type: 'pharmacy', isActive: true });
+    expect((await call(admin, 'PATCH', `/stores/${id}`, { name: '' })).statusCode).toBe(400);
+    expect((await call(pharmacist, 'PATCH', `/stores/${id}`, { name: 'Nope' })).statusCode).toBe(403);
+    await call(admin, 'PATCH', `/stores/${id}`, { isActive: false });
+  });
+
   it('validates input with the shared schema', async () => {
     const res = await call(pharmacist, 'POST', '/items', { code: 'bad code!', name: '', gstRate: 99 });
     expect(res.statusCode).toBe(400);

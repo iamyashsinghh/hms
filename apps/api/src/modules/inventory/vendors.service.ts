@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { and, asc, count, eq, iso, inventoryVendors, sql, type Tx } from '@hms/db';
-import type { inventory, Paginated } from '@hms/shared';
+import { inventory, type ImportRequest, type ImportResult, type Paginated } from '@hms/shared';
+import { runImport } from '../../common/imports/bulk-import';
 import type { z } from 'zod';
 import { DbService } from '../../common/db/db.service';
 import { currentContext } from '../../common/context/request-context';
@@ -57,6 +58,29 @@ export class InventoryVendorsService {
       if (!row) throw notFound('Vendor');
       return vendorDto(row);
     });
+  }
+
+  /** Bulk import from Excel / CSV. */
+  import(input: ImportRequest & { dryRun: boolean; updateExisting: boolean }): Promise<ImportResult> {
+    return runImport<z.output<typeof inventory.createVendorSchema>>(
+      {
+        columns: inventory.VENDOR_IMPORT_COLUMNS,
+        schema: inventory.createVendorSchema,
+        key: (r) => r.code.toUpperCase(),
+        label: (r) => r.name,
+        existing: (codes) =>
+          this.db.tx(async (tx) => {
+            const rows = await tx
+              .select({ id: inventoryVendors.id, code: inventoryVendors.code })
+              .from(inventoryVendors)
+              .where(sql`upper(${inventoryVendors.code}) in (${sql.join(codes.map((c) => sql`${c.toUpperCase()}`), sql`, `)})`);
+            return new Map(rows.map((r) => [r.code.toUpperCase(), r.id]));
+          }),
+        create: (r) => this.create(r),
+        update: (id, given) => this.update(id, given),
+      },
+      input,
+    );
   }
 
   async row(tx: Tx, id: string): Promise<VendorRow> {

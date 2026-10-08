@@ -3,7 +3,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { config } from 'dotenv';
 import { Client } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { DEMO_PASSWORD, provisionTenant, upsertUser } from '@hms/db';
+import { DEMO_PASSWORD, provisionTenant, syncSystemRoles, upsertUser } from '@hms/db';
 import { DbService } from '../src/common/db/db.service';
 import { SetupService } from '../src/modules/setup/setup.service';
 import { bearer, bootApp, login } from './helpers';
@@ -134,6 +134,15 @@ describe('facilities, departments, specializations', () => {
     const res = await call(admin, 'PATCH', `/setup/facilities/${list[0]!.id}`, { isActive: false });
     expect(res.status).toBe(409);
     expect((res.body as { error: { code: string } }).error.code).toBe('last_facility');
+  });
+
+  it('renames a department and keeps fields a partial edit leaves out', async () => {
+    const d = (await call(admin, 'POST', '/setup/departments', { code: `RN${run}`, name: 'Radio', type: 'diagnostic' })).body as { id: string };
+    const off = await call(admin, 'PATCH', `/setup/departments/${d.id}`, { isActive: false });
+    expect(off.body).toMatchObject({ isActive: false, type: 'diagnostic', name: 'Radio' });
+    const renamed = await call(admin, 'PATCH', `/setup/departments/${d.id}`, { name: 'Radiology' });
+    expect(renamed.body).toMatchObject({ isActive: false, type: 'diagnostic', name: 'Radiology' });
+    expect((await call(reception, 'PATCH', `/setup/departments/${d.id}`, { name: 'Nope' })).status).toBe(403);
   });
 
   it('creates departments and specializations', async () => {
@@ -310,6 +319,59 @@ describe('roles', () => {
     expect((await call(admin, 'DELETE', `/setup/roles/${systemRole}`)).status).toBe(403);
   });
 
+  it("edits a system role's permissions but not its name, and keeps Hospital Admin locked", async () => {
+    const nurseId = await roleId(admin, 'nurse');
+    const before = (await call(admin, 'GET', '/setup/roles')).body as { id: string; permissions: string[] }[];
+    const nurse = before.find((r) => r.id === nurseId)!;
+    const dropped = nurse.permissions[0]!;
+    const kept = nurse.permissions.filter((p) => p !== dropped);
+    const res = await call(admin, 'PATCH', `/setup/roles/${nurseId}`, { permissions: [...new Set([...kept, 'setup.department.read'])] });
+    expect(res.status).toBe(200);
+    expect((res.body as { permissions: string[] }).permissions).toEqual(expect.arrayContaining(['setup.department.read']));
+    expect((res.body as { permissions: string[] }).permissions).not.toContain(dropped);
+    expect((await call(admin, 'PATCH', `/setup/roles/${nurseId}`, { name: 'Nurse', permissions: kept })).status).toBe(200);
+    expect((await call(admin, 'PATCH', `/setup/roles/${nurseId}`, { name: 'Senior Nurse' })).status).toBe(403);
+    expect((await call(admin, 'PATCH', `/setup/roles/${await roleId(admin, 'hospital_admin')}`, { permissions: [] })).status).toBe(403);
+    expect((await call(reception, 'PATCH', `/setup/roles/${nurseId}`, { permissions: kept })).status).toBe(403);
+
+    // A deploy's role sync does not undo the hospital's edit, but still grants permissions new to the catalog.
+    const client = new Client({ connectionString: process.env.DATABASE_MIGRATOR_URL });
+    await client.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`SELECT set_config('app.tenant_id', $1, true)`, [tenantId]);
+      await syncSystemRoles(client, tenantId, [dropped]);
+      await client.query('COMMIT');
+    } finally {
+      await client.end();
+    }
+    const after = ((await call(admin, 'GET', '/setup/roles')).body as { id: string; permissions: string[] }[]).find((r) => r.id === nurseId)!;
+    expect(after.permissions).toContain(dropped);
+
+    await call(admin, 'PATCH', `/setup/roles/${nurseId}`, { permissions: kept });
+    const client2 = new Client({ connectionString: process.env.DATABASE_MIGRATOR_URL });
+    await client2.connect();
+    try {
+      await client2.query('BEGIN');
+      await client2.query(`SELECT set_config('app.tenant_id', $1, true)`, [tenantId]);
+      await syncSystemRoles(client2, tenantId, []);
+      await client2.query('COMMIT');
+    } finally {
+      await client2.end();
+    }
+    const final = ((await call(admin, 'GET', '/setup/roles')).body as { id: string; permissions: string[] }[]).find((r) => r.id === nurseId)!;
+    expect(final.permissions).not.toContain(dropped);
+  });
+
+  it('renames a custom role and rejects a duplicate name', async () => {
+    const a = (await call(admin, 'POST', '/setup/roles', { name: `Rename A ${run}`, permissions: ['core.patient.read'] })).body as { id: string };
+    await call(admin, 'POST', '/setup/roles', { name: `Rename B ${run}`, permissions: ['core.patient.read'] });
+    const ok = await call(admin, 'PATCH', `/setup/roles/${a.id}`, { name: `Renamed A ${run}` });
+    expect(ok.status).toBe(200);
+    expect((ok.body as { name: string }).name).toBe(`Renamed A ${run}`);
+    expect((await call(admin, 'PATCH', `/setup/roles/${a.id}`, { name: `rename b ${run}` })).status).toBe(409);
+  });
+
   it('lists the permission catalog', async () => {
     const res = await call(admin, 'GET', '/setup/permissions');
     expect((res.body as { key: string }[]).map((p) => p.key)).toEqual(expect.arrayContaining(['core.user.manage', 'setup.schedule.manage']));
@@ -483,7 +545,9 @@ describe('setup validation messages', () => {
 
   it('checks roles, number series and print templates', async () => {
     await expect400(await call(admin, 'POST', '/setup/roles', { name: '', permissions: [] }), 'The role name needs at least 2 characters');
-    await expect400(await call(admin, 'POST', '/setup/roles', { name: `Twice ${run}`, permissions: ['core.patient.read', 'core.patient.read'] }), 'A permission is listed twice');
+    const twice = await call(admin, 'POST', '/setup/roles', { name: `Twice ${run}`, permissions: ['core.patient.read', 'core.patient.read'] });
+    expect(twice.status).toBe(201);
+    expect(twice.body.permissions).toEqual(['core.patient.read']);
     const unknown = await call(admin, 'POST', '/setup/roles', { name: `Unknown ${run}`, permissions: ['setup.nothing.here'] });
     await expect400(unknown, 'These permissions do not exist: setup.nothing.here');
     await expect400(await call(admin, 'PUT', '/setup/number-series/uhid', { prefix: 'UH#1', width: 6 }), 'Letters, digits, / - _ only');

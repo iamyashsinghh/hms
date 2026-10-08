@@ -273,7 +273,20 @@ function LeaveTypes() {
             {data?.map((t) => (
               <TableRow key={t.id}>
                 <TableCell className="font-mono text-xs">{t.code}</TableCell>
-                <TableCell>{t.name}</TableCell>
+                <TableCell>
+                  <Input
+                    key={t.name}
+                    className="h-8 w-48"
+                    maxLength={60}
+                    defaultValue={t.name}
+                    aria-label={`${t.code} name`}
+                    onBlur={(e) => {
+                      const name = e.target.value.trim();
+                      if (!name) e.target.value = t.name;
+                      else if (name !== t.name) update.mutate({ id: t.id, body: { name } });
+                    }}
+                  />
+                </TableCell>
                 <TableCell>
                   <Input
                     type="number"
@@ -283,7 +296,12 @@ function LeaveTypes() {
                     className="h-8 w-24"
                     defaultValue={t.annualQuota}
                     disabled={!t.isPaid}
-                    onBlur={(e) => Number(e.target.value) !== t.annualQuota && update.mutate({ id: t.id, body: { annualQuota: Number(e.target.value) } })}
+                    onBlur={(e) => {
+                      const q = Number(e.target.value);
+                      // Whole or half days, 0-365 (same rule as the server).
+                      if (e.target.value === '' || !Number.isFinite(q) || q < 0 || q > 365 || (q * 2) % 1 !== 0) e.target.value = String(t.annualQuota);
+                      else if (q !== t.annualQuota) update.mutate({ id: t.id, body: { annualQuota: q } });
+                    }}
                     aria-label={`${t.name} quota`}
                   />
                 </TableCell>

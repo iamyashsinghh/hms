@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { patchSchema } from '../patch';
 import { blankToUndefined, datesInOrder, indianMobile, isoDate as calendarDate, notFutureDateTime, requiredText, todayIso } from '../validation';
 
 /**
@@ -248,6 +249,9 @@ export const updateComplaintSchema = z.object({
   status: z.enum(COMPLAINT_STATUSES).optional(),
   assignedTo: z.uuid().nullable().optional(),
   priority: z.enum(COMPLAINT_PRIORITIES).optional(),
+  /** Correct a mis-filed complaint. */
+  category: z.enum(COMPLAINT_CATEGORIES).optional(),
+  department: optionalText(120),
   /** Required when resolving. */
   resolution: optionalText(5000),
   note: optionalText(2000),
@@ -321,12 +325,18 @@ const haiFields = z.object({
   status: z.enum(HAI_STATUSES).default('suspected'),
   notes: optionalText(2000),
 });
-const deviceBeforeOnset = (v: { onsetDate?: string; deviceInsertedOn?: string }) => datesInOrder(v.deviceInsertedOn, v.onsetDate);
+const deviceBeforeOnset = (v: { onsetDate?: string; deviceInsertedOn?: string | null }) => datesInOrder(v.deviceInsertedOn, v.onsetDate);
 const DEVICE_AFTER_ONSET = { message: 'Device insertion date must be on or before the onset date', path: ['deviceInsertedOn'] };
 export const createHaiSchema = haiFields.refine(deviceBeforeOnset, DEVICE_AFTER_ONSET);
 export type CreateHai = z.input<typeof createHaiSchema>;
 /** The API also checks the dates against the saved case. */
-export const updateHaiSchema = haiFields.omit({ patientId: true }).partial().refine(deviceBeforeOnset, DEVICE_AFTER_ONSET);
+// patchSchema, not .partial(): Zod 4 keeps defaults inside .partial(), so editing a field reset status to 'suspected'.
+export const updateHaiSchema = patchSchema(
+  haiFields
+    .omit({ patientId: true })
+    // '' or null clears the device/surgery date.
+    .extend({ deviceInsertedOn: z.union([notFutureDate('Device insertion date cannot be in the future'), z.literal('')]).nullish() }),
+).refine(deviceBeforeOnset, DEVICE_AFTER_ONSET);
 export type UpdateHai = z.input<typeof updateHaiSchema>;
 
 export const haiQuerySchema = z.object({
@@ -581,7 +591,7 @@ const reviewAfterEffective = (v: { effectiveFrom?: string; reviewDue?: string })
 export const createDocumentSchema = documentFields.refine(reviewAfterEffective, REVIEW_BEFORE_EFFECTIVE);
 export type CreateDocument = z.input<typeof createDocumentSchema>;
 /** The API also checks the dates against the saved draft. */
-export const updateDocumentSchema = documentFields.omit({ code: true }).partial().refine(reviewAfterEffective, REVIEW_BEFORE_EFFECTIVE);
+export const updateDocumentSchema = patchSchema(documentFields.omit({ code: true })).refine(reviewAfterEffective, REVIEW_BEFORE_EFFECTIVE);
 export type UpdateDocument = z.input<typeof updateDocumentSchema>;
 
 export const documentQuerySchema = z.object({

@@ -505,3 +505,35 @@ describe('quality: validation', () => {
     expect(msg(await call(admin, 'PUT', '/quality/indicators/PRE-SAT/values', { period: period(), numerator: 10, denominator: 0 }))).toContain('Denominator must be more than 0');
   });
 });
+
+describe('quality: editing records', () => {
+  const msg = (res: { json: () => { error: { message: string } } }) => res.json().error.message;
+  it('edits an infection case: fields, clearing the device date, date rules and permissions', async () => {
+    const h = await ok(nurse, 'POST', '/quality/hai', { patientId, infectionType: 'clabsi', ward: 'ICU', onsetDate: today(), deviceInsertedOn: today() });
+    const edited = await ok(nurse, 'PATCH', `/quality/hai/${h.id}`, { infectionType: 'vap', ward: `MICU ${tag}`, organism: 'Klebsiella', cultureRef: 'CX-1', notes: 'Updated after culture' });
+    expect(edited).toMatchObject({ infectionType: 'vap', ward: `MICU ${tag}`, organism: 'Klebsiella', cultureRef: 'CX-1', notes: 'Updated after culture', deviceInsertedOn: today() });
+    const cleared = await ok(nurse, 'PATCH', `/quality/hai/${h.id}`, { deviceInsertedOn: null, ward: '' });
+    expect(cleared).toMatchObject({ deviceInsertedOn: null, ward: null });
+
+    expect(msg(await call(nurse, 'PATCH', `/quality/hai/${h.id}`, { onsetDate: '2099-01-01' }))).toContain('Onset date cannot be in the future');
+    expect(msg(await call(nurse, 'PATCH', `/quality/hai/${h.id}`, { deviceInsertedOn: '2099-01-01' }))).toContain('Device insertion date cannot be in the future');
+    // A device date after the saved onset date is refused by the API.
+    expect((await call(nurse, 'PATCH', `/quality/hai/${h.id}`, { onsetDate: daysFromToday(-3), deviceInsertedOn: daysFromToday(-1) })).statusCode).toBe(400);
+    expect((await call(nurse, 'PATCH', `/quality/hai/${h.id}`, { onsetDate: 'yesterday' })).statusCode).toBe(400);
+    expect((await call(nurse, 'PATCH', `/quality/hai/${h.id}`, { infectionType: 'flu' })).statusCode).toBe(400);
+    expect((await call(doctor, 'PATCH', `/quality/hai/${h.id}`, { organism: 'x' })).statusCode).toBe(403);
+  });
+
+  it('re-files a complaint under another category and department', async () => {
+    const c = await ok(reception, 'POST', '/quality/complaints', {
+      source: 'phone',
+      category: 'waiting_time',
+      complainantName: `Edit ${tag}`,
+      description: 'Filed under the wrong category',
+    });
+    const res = await ok(admin, 'PATCH', `/quality/complaints/${c.id}`, { category: 'billing', department: 'Accounts' });
+    expect(res).toMatchObject({ category: 'billing', department: 'Accounts', status: c.status });
+    expect((await call(admin, 'PATCH', `/quality/complaints/${c.id}`, { category: 'nonsense' })).statusCode).toBe(400);
+    expect((await call(reception, 'PATCH', `/quality/complaints/${c.id}`, { category: 'billing' })).statusCode).toBe(403);
+  });
+});

@@ -29,12 +29,12 @@ export class PatientsRepository {
     return row;
   }
 
-  /** Another active patient holding this ABHA number, if any. */
-  async findActiveByAbha(tx: Tx, abhaNumber: string, excludeId?: string): Promise<Pick<PatientRow, 'id' | 'uhid'> | undefined> {
+  /** Another active patient already holding this ABHA number, if any. */
+  async findActiveByAbha(tx: Tx, abhaNumber: string, exceptId?: string): Promise<Pick<PatientRow, 'id' | 'uhid'> | undefined> {
     const [row] = await tx
       .select({ id: patients.id, uhid: patients.uhid })
       .from(patients)
-      .where(and(eq(patients.abhaNumber, abhaNumber), eq(patients.isActive, true), excludeId ? sql`${patients.id} <> ${excludeId}` : undefined))
+      .where(and(eq(patients.abhaNumber, abhaNumber), eq(patients.isActive, true), exceptId ? sql`${patients.id} <> ${exceptId}` : undefined))
       .limit(1);
     return row;
   }

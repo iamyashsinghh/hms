@@ -4,6 +4,7 @@ import type { Http } from '../http';
 /** Referral & CRM endpoints. Owned by the "crm" workstream. Types come from @hms/shared (crm.*). */
 export const crmApi = (http: Http) => ({
   dashboard: () => http.get<C.CrmDashboard>('/crm/dashboard'),
+  staff: () => http.get<C.CrmStaff[]>('/crm/staff'),
   leads: {
     list: (q: C.LeadQuery = {}) => http.get<Paginated<C.Lead>>('/crm/leads', q),
     get: (id: string) => http.get<C.LeadDetail>(`/crm/leads/${id}`),

@@ -27,7 +27,9 @@ function ItemFormCard({ initial, onDone }: { initial: ItemForm; onDone: () => vo
   const [f, setF] = React.useState(initial);
   const save = useMutation({
     mutationFn: () => {
-      const body = checked(O.linenItemInputSchema, { name: f.name.trim(), parLevel: f.parLevel.trim() === '' ? 0 : Number(f.parLevel), isActive: f.isActive });
+      const body = { name: f.name.trim(), parLevel: f.parLevel.trim() === '' ? 0 : Number(f.parLevel), isActive: f.isActive };
+      // Same rules on create and edit; the edit body is a full item, so the create schema checks it.
+      checked(f.id ? O.updateLinenItemSchema : O.linenItemInputSchema, body);
       return f.id ? api.ops.linen.updateItem(f.id, body) : api.ops.linen.createItem(body);
     },
     onSuccess: () => {
@@ -55,7 +57,7 @@ function ItemFormCard({ initial, onDone }: { initial: ItemForm; onDone: () => vo
             <Input id="li-name" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="e.g. Bedsheet (single)" required />
           </Field>
           <Field id="li-par" label="Par level (min clean stock)">
-            <Input id="li-par" type="number" min={0} value={f.parLevel} onChange={(e) => setF({ ...f, parLevel: e.target.value })} />
+            <Input id="li-par" type="number" min={0} step={1} value={f.parLevel} onChange={(e) => setF({ ...f, parLevel: e.target.value })} />
           </Field>
           <label className="flex items-center gap-2 pt-7 text-sm">
             <input type="checkbox" checked={f.isActive} onChange={(e) => setF({ ...f, isActive: e.target.checked })} /> Active

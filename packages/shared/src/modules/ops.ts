@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { patchSchema } from '../patch';
 import {
   blankToUndefined,
   datesInOrder,
@@ -129,7 +130,8 @@ const checkAssetDates = (a: Parameters<typeof assetDateIssues>[0], ctx: z.Refine
 export const assetInputSchema = assetFields.superRefine(checkAssetDates);
 export type AssetInput = z.input<typeof assetInputSchema>;
 
-export const updateAssetSchema = assetFields.partial().extend({
+// patchSchema, not .partial(): Zod 4 keeps defaults inside .partial(), so a partial update would reset them.
+export const updateAssetSchema = patchSchema(assetFields).extend({
   /** Only out_of_service <-> in_service and condemned are set by hand; maintenance status follows work orders. */
   status: z.enum(['in_service', 'out_of_service', 'condemned']).optional(),
 }).superRefine(checkAssetDates);
@@ -255,6 +257,8 @@ export const cssdSetInputSchema = z.object({
   isActive: z.boolean().optional(),
 });
 export type CssdSetInput = z.input<typeof cssdSetInputSchema>;
+export const updateCssdSetSchema = patchSchema(cssdSetInputSchema).extend({ department: optionalText(100).nullable() });
+export type UpdateCssdSet = z.input<typeof updateCssdSetSchema>;
 
 export interface CssdSet {
   id: string;
@@ -363,6 +367,8 @@ export const linenItemInputSchema = z.object({
   isActive: z.boolean().optional(),
 });
 export type LinenItemInput = z.input<typeof linenItemInputSchema>;
+export const updateLinenItemSchema = patchSchema(linenItemInputSchema);
+export type UpdateLinenItem = z.input<typeof updateLinenItemSchema>;
 
 export interface LinenItem {
   id: string;
@@ -445,6 +451,12 @@ export const vehicleInputSchema = z.object({
   status: z.enum(['available', 'maintenance', 'inactive']).optional(),
 });
 export type VehicleInput = z.input<typeof vehicleInputSchema>;
+export const updateVehicleSchema = patchSchema(vehicleInputSchema).extend({
+  driverName: optionalText(100).nullable(),
+  /** null clears the driver mobile; +91 / spaces are accepted like on create. */
+  driverMobile: blankToUndefined(mobile.nullable().optional()),
+});
+export type UpdateVehicle = z.input<typeof updateVehicleSchema>;
 
 export interface Vehicle {
   id: string;
@@ -629,6 +641,12 @@ export const updateHkTaskSchema = z.object({
   status: z.enum(['in_progress', 'done', 'verified', 'cancelled']).optional(),
   assignedTo: optionalText(100),
   remarks: optionalText(500),
+  /** Task details: editable only while the task is pending or in progress. */
+  location: text(200).optional(),
+  kind: z.enum(HK_KINDS).optional(),
+  priority: z.enum(HK_PRIORITIES).optional(),
+  description: optionalText(1000).nullable(),
+  dueAt: z.iso.datetime({ offset: true }).nullable().optional(),
 });
 export type UpdateHkTask = z.input<typeof updateHkTaskSchema>;
 

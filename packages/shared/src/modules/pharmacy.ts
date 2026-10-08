@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { patchSchema } from '../patch';
+import { importRequestSchema, type ImportColumn } from '../imports';
 import { GST_RATES } from './billing';
 import {
   blankToUndefined,
@@ -118,7 +120,12 @@ export const createItemSchema = z.object({
 });
 export type CreateItem = z.input<typeof createItemSchema>;
 
-export const updateItemSchema = z.object(itemFields).partial().extend({ isActive: z.boolean().optional() });
+// patchSchema, not .partial(): Zod 4 keeps defaults inside .partial(), so e.g. deactivating an item reset its GST rate to 5%.
+export const updateItemSchema = patchSchema(createItemSchema.omit({ code: true })).extend({
+  /** '' (or blanks) clears the HSN code; anything else must be a valid HSN. '' is checked first so it is not turned into "not sent". */
+  hsnCode: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? '' : v), z.union([z.literal(''), hsnCode])).optional(),
+  isActive: z.boolean().optional(),
+});
 export type UpdateItem = z.input<typeof updateItemSchema>;
 
 export interface Item {
@@ -146,6 +153,68 @@ export const itemSearchQuerySchema = z.object({
   ...pageQuery,
 });
 export type ItemSearchQuery = PageQuery & { q?: string; includeInactive?: boolean };
+
+// ---------- bulk import (Excel / CSV) ----------
+
+/** Columns of the drug import sheet. Batch columns are optional; fill them to load opening stock too. */
+export const ITEM_IMPORT_COLUMNS: readonly ImportColumn[] = [
+  { key: 'code', header: 'Code', type: 'text', required: true, example: 'PCM500', help: 'Unique drug code' },
+  { key: 'name', header: 'Name', type: 'text', required: true, example: 'Paracetamol 500mg Tablet' },
+  { key: 'genericName', header: 'Generic name', type: 'text', example: 'Paracetamol' },
+  { key: 'form', header: 'Form', type: 'enum', options: ITEM_FORMS, example: 'tablet' },
+  { key: 'strength', header: 'Strength', type: 'text', example: '500 mg' },
+  { key: 'manufacturer', header: 'Manufacturer', type: 'text', example: 'Cipla' },
+  { key: 'hsnCode', header: 'HSN', type: 'text', example: '30049099', help: '4 to 8 digits' },
+  { key: 'gstRate', header: 'GST %', type: 'enum', options: GST_RATES, example: 12, help: 'A GST slab billing accepts' },
+  { key: 'unit', header: 'Unit', type: 'text', example: 'tablet', help: 'Sale unit; stock and prices are per unit' },
+  { key: 'packSize', header: 'Pack size', type: 'integer', example: 10 },
+  { key: 'schedule', header: 'Schedule', type: 'enum', options: DRUG_SCHEDULES, example: 'otc' },
+  { key: 'reorderLevel', header: 'Reorder level', type: 'integer', example: 100 },
+  { key: 'batchNo', header: 'Batch no', type: 'text', example: 'B2401', help: 'Opening stock: fill batch, expiry, MRP and qty' },
+  { key: 'expiryDate', header: 'Expiry', type: 'date', example: '31/12/2027', help: 'DD/MM/YYYY or MM/YYYY' },
+  { key: 'mrp', header: 'MRP', type: 'number', example: 2.5, help: 'Per unit, GST inclusive' },
+  { key: 'purchaseRate', header: 'Purchase rate', type: 'number', example: 1.6 },
+  { key: 'saleRate', header: 'Sale rate', type: 'number', example: 2.5, help: 'Defaults to MRP' },
+  { key: 'qty', header: 'Qty', type: 'integer', example: 500 },
+];
+
+const STOCK_FIELDS = ['batchNo', 'expiryDate', 'mrp', 'qty'] as const;
+export const itemImportRowSchema = createItemSchema
+  .extend({
+    // Billing only accepts the GST slabs, so an imported drug must use one too.
+    gstRate: z
+      .number()
+      .refine((v) => (GST_RATES as readonly number[]).includes(v), `Use a GST slab: ${GST_RATES.join(', ')}`)
+      .default(5),
+    batchNo: z.string().trim().min(1).max(40).optional(),
+    expiryDate: z.iso.date().optional(),
+    mrp: money.optional(),
+    purchaseRate: money.optional(),
+    saleRate: money.optional(),
+    qty: qty.optional(),
+  })
+  .superRefine((r, ctx) => {
+    const given = STOCK_FIELDS.filter((f) => r[f] !== undefined);
+    const anyStock = given.length > 0 || r.purchaseRate !== undefined || r.saleRate !== undefined;
+    if (!anyStock) return;
+    for (const f of STOCK_FIELDS) {
+      if (r[f] === undefined) ctx.addIssue({ code: 'custom', path: [f], message: 'Required when loading stock (batch, expiry, MRP and qty)' });
+    }
+    if (r.expiryDate && r.expiryDate <= new Date().toISOString().slice(0, 10)) {
+      ctx.addIssue({ code: 'custom', path: ['expiryDate'], message: 'This batch has already expired' });
+    }
+    if (r.mrp !== undefined && r.saleRate !== undefined && r.saleRate > r.mrp) {
+      ctx.addIssue({ code: 'custom', path: ['saleRate'], message: 'Sale rate cannot be above MRP' });
+    }
+    if (r.mrp !== undefined && r.purchaseRate !== undefined && r.purchaseRate > r.mrp) {
+      ctx.addIssue({ code: 'custom', path: ['purchaseRate'], message: 'Purchase rate is above MRP' });
+    }
+  });
+export type ItemImportRow = z.output<typeof itemImportRowSchema>;
+
+/** Drug import request; `storeId` is where opening stock goes (needed only when rows carry batches). */
+export const itemImportSchema = importRequestSchema.extend({ storeId: z.uuid().optional() });
+export type ItemImport = z.input<typeof itemImportSchema>;
 
 // ---------- stores ----------
 

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import {
   and,
+  asc,
   count,
   crmCamps,
   crmLeadActivities,
@@ -24,7 +25,7 @@ import { currentContext } from '../../common/context/request-context';
 import { conflict, notFound } from '../../common/errors/errors';
 import { PatientsService } from '../patients/patients.service';
 import { ReferralsService } from './referrals.service';
-import { actor, tenantId } from './crm.util';
+import { actor, checkAssignee, tenantId } from './crm.util';
 
 type LeadRow = typeof crmLeads.$inferSelect;
 
@@ -72,10 +73,15 @@ export class LeadsService {
     return this.db.tx((tx) => this.detail(tx, id));
   }
 
+  staff(): Promise<crm.CrmStaff[]> {
+    return this.db.tx((tx) => tx.select({ id: users.id, name: users.name }).from(users).where(eq(users.status, 'active')).orderBy(asc(users.name)));
+  }
+
   create(input: crm.LeadInput): Promise<crm.LeadDetail> {
     const d = crm.leadInputSchema.parse(input);
     return this.db.tx(async (tx) => {
       await this.checkLinks(tx, d.referrerId, d.campId);
+      await checkAssignee(tx, d.assignedTo);
       const number = formatSeries('LD', await nextCounter(tx, 'crm.lead'));
       const source = d.campId && d.source === 'walk_in' ? 'camp' : d.source;
       const [row] = await tx
@@ -102,6 +108,7 @@ export class LeadsService {
         throw conflict('lead_closed', `This enquiry is ${lead.status}; only notes can change`);
       }
       await this.checkLinks(tx, d.referrerId, d.campId);
+      await checkAssignee(tx, d.assignedTo);
       const mobile = d.mobile === undefined ? lead.mobile : d.mobile;
       const email = d.email === undefined ? lead.email : d.email;
       if (!mobile && !email) throw conflict('lead_contact_required', 'Keep a mobile number or an email');

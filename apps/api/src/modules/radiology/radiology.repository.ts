@@ -79,6 +79,12 @@ export class RadiologyRepository {
       .limit(500);
   }
 
+  testsByCodes(tx: Tx, codes: string[]) {
+    return codes.length
+      ? tx.select({ id: radiologyTests.id, code: radiologyTests.code }).from(radiologyTests).where(inArray(radiologyTests.code, codes))
+      : Promise.resolve([]);
+  }
+
   async test(tx: Tx, id: string) {
     const [row] = await tx
       .select({ test: radiologyTests, modalityCode: radiologyModalities.code, modalityName: radiologyModalities.name })

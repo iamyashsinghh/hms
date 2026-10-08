@@ -14,6 +14,8 @@ import {
   todayIso,
 } from '../validation';
 import { GST_RATES } from './billing';
+import { patchSchema } from '../patch';
+import type { ImportColumn } from '../imports';
 
 /**
  * IPD & Nursing: permissions and API contracts (Zod schemas + types).
@@ -121,7 +123,7 @@ export const wardInputSchema = z.object({
   isActive: z.boolean().default(true),
 });
 export type WardInput = z.input<typeof wardInputSchema>;
-export const updateWardSchema = wardInputSchema.omit({ code: true, facilityId: true }).partial();
+export const updateWardSchema = patchSchema(wardInputSchema.omit({ code: true, facilityId: true }));
 export type UpdateWard = z.input<typeof updateWardSchema>;
 
 export interface Ward {
@@ -147,6 +149,17 @@ export const bedInputSchema = z.object({
   chargeServiceCode: z.string().trim().toUpperCase().max(40).optional(),
 });
 export type BedInput = z.input<typeof bedInputSchema>;
+
+/** Columns of the bed import sheet. `Ward` is the ward code (or name) in the current facility. */
+export const BED_IMPORT_COLUMNS: readonly ImportColumn[] = [
+  { key: 'ward', header: 'Ward', type: 'text', required: true, example: 'GW', help: 'Ward code or name' },
+  { key: 'code', header: 'Bed', type: 'text', required: true, example: 'GW-1' },
+  { key: 'roomNo', header: 'Room no', type: 'text', example: '101' },
+  { key: 'dailyRate', header: 'Daily rate', type: 'number', example: 1500, help: "Defaults to the ward's rate" },
+  { key: 'chargeServiceCode', header: 'Charge service code', type: 'text', example: '' },
+];
+export const bedImportRowSchema = bedInputSchema.omit({ wardId: true }).extend({ ward: z.string().trim().min(1).max(100) });
+export type BedImportRow = z.output<typeof bedImportRowSchema>;
 
 /** Add several beds at once: prefix + numbers, e.g. "GW-" 1..10 → GW-1 … GW-10. */
 export const bulkBedsSchema = z
@@ -252,25 +265,26 @@ export const admitSchema = admitFields.superRefine((a, ctx) => {
 });
 export type AdmitInput = z.input<typeof admitSchema>;
 
-/** Editing after admit: '' clears an optional field. The date is checked against the admission date by the API. */
-export const updateAdmissionSchema = admitFields
-  .extend({
-    attendantName: z.union([z.literal(''), personName('the attendant name')]).optional(),
-    attendantMobile: z.union([z.literal(''), mobile]).optional(),
-    expectedDischargeDate: z.union([z.literal(''), isoDate]).optional(),
-  })
-  .pick({
-    doctorId: true,
-    reason: true,
-    provisionalDiagnosis: true,
-    isMlc: true,
-    mlcNo: true,
-    attendantName: true,
-    attendantRelation: true,
-    attendantMobile: true,
-    expectedDischargeDate: true,
-  })
-  .partial();
+/** Blank ('' or null) clears an optional field on update. */
+const clearable = <T extends z.ZodType>(s: T) => z.union([s, z.literal('')]).nullable().optional();
+
+/**
+ * Edit an admission while the patient is still admitted. Same rules as admit; optional
+ * fields can be cleared with '' or null. Turning MLC off clears the MLC number.
+ * No defaults here, so a partial edit never resets other fields. The expected discharge
+ * date is checked against the admission date by the API.
+ */
+export const updateAdmissionSchema = z.object({
+  doctorId: z.uuid({ error: 'Pick the treating doctor' }).optional(),
+  reason: requiredText('the reason for admission', 1000, 2).optional(),
+  provisionalDiagnosis: clearable(z.string().trim().max(1000, 'Enter at most 1000 characters')),
+  isMlc: z.boolean().optional(),
+  mlcNo: clearable(z.string().trim().max(50, 'Enter at most 50 characters')),
+  attendantName: clearable(personName('the attendant name')),
+  attendantRelation: clearable(z.string().trim().max(50, 'Enter at most 50 characters')),
+  attendantMobile: clearable(mobile),
+  expectedDischargeDate: clearable(isoDate),
+});
 export type UpdateAdmission = z.input<typeof updateAdmissionSchema>;
 
 export const transferSchema = z.object({

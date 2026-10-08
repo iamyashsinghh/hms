@@ -414,3 +414,55 @@ describe('platform: input validation', () => {
     expect(res.json().error.message).toContain('The subject needs at least 5 characters');
   });
 });
+
+describe('console editing', () => {
+  it("changes a plan's modules; a partial update keeps everything else", async () => {
+    const code = `p-${uniq()}`.slice(0, 30);
+    const created = await admin('POST', '/plans', { code, name: 'Edit Plan', modules: ['frontoffice', 'billing'], trialDays: 7, isPublic: false, limits: { users: 5 } });
+    expect(created.statusCode, created.body).toBe(201);
+    const res = await admin('PATCH', `/plans/${code}`, { modules: ['frontoffice', 'billing', 'crm'] });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ modules: ['frontoffice', 'billing', 'crm'], trialDays: 7, isPublic: false, limits: { users: 5 } });
+    // Before patchSchema this reset modules to [] and trialDays to 14.
+    const renamed = (await admin('PATCH', `/plans/${code}`, { name: 'Edited Plan' })).json();
+    expect(renamed).toMatchObject({ name: 'Edited Plan', modules: ['frontoffice', 'billing', 'crm'], trialDays: 7, isPublic: false });
+    expect((await admin('PATCH', `/plans/${code}`, { modules: [] })).json().error.code).toBe('modules_required');
+    expect((await admin('PATCH', `/plans/${code}`, { modules: ['teleport'] })).statusCode).toBe(400);
+    expect((await admin('PATCH', `/plans/${code}`, { trialDays: 120 })).statusCode).toBe(400);
+    expect((await admin('PATCH', `/plans/${code}`, { priceMonthly: '-5' })).statusCode).toBe(400);
+    expect((await admin('PATCH', `/plans/${code}`, { modules: ['crm'] }, demoAdmin)).statusCode).toBe(401);
+    await admin('PATCH', `/plans/${code}`, { isActive: false });
+  });
+
+  it('edits an announcement end date and refuses an end before the start or an unknown plan', async () => {
+    const a = (await admin('POST', '/announcements', { title: 'Edit me', body: 'Body', isPublished: false })).json();
+    const ends = new Date(Date.now() + 7 * 86_400_000).toISOString();
+    const res = await admin('PATCH', `/announcements/${a.id}`, { endsAt: ends, title: 'Edited', planCodes: ['growth'] });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ title: 'Edited', planCodes: ['growth'], severity: 'info', isPublished: false });
+    expect(new Date(res.json().endsAt).toISOString()).toBe(ends);
+    // A partial update keeps the audience and publish flag (no defaults re-applied).
+    expect((await admin('PATCH', `/announcements/${a.id}`, { body: 'New body' })).json()).toMatchObject({ planCodes: ['growth'], isPublished: false });
+    const past = await admin('PATCH', `/announcements/${a.id}`, { endsAt: new Date(Date.now() - 86_400_000 * 365).toISOString() });
+    expect(past.statusCode).toBe(400);
+    expect(past.json().error.message).toContain('End time is already in the past');
+    const backwards = await admin('POST', '/announcements', { title: 'Bad dates', body: 'x', startsAt: ends, endsAt: new Date(Date.now() + 86_400_000).toISOString() });
+    expect(backwards.statusCode).toBe(400);
+    expect(backwards.json().error.message).toContain('End time must be after the start time');
+    expect((await admin('PATCH', `/announcements/${a.id}`, { planCodes: ['no-such-plan'] })).json().error.code).toBe('unknown_plan');
+    expect((await admin('PATCH', `/announcements/${a.id}`, { endsAt: 'next week' })).statusCode).toBe(400);
+    expect((await admin('PATCH', `/announcements/${a.id}`, { endsAt: null })).json().endsAt).toBeNull();
+  });
+
+  it('edits a help article and refuses a slug that is taken', async () => {
+    const slug = `edit-${uniq()}`;
+    const h = (await admin('POST', '/help', { slug, title: 'Edit help', body: 'Old', isPublished: false, sortOrder: 9 })).json();
+    const res = await admin('PATCH', `/help/${h.id}`, { title: 'Edited help', body: 'New body', moduleKey: 'crm' });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ slug, title: 'Edited help', body: 'New body', moduleKey: 'crm', isPublished: false, sortOrder: 9 });
+    expect((await admin('PATCH', `/help/${h.id}`, { slug: 'getting-started' })).json().error.code).toBe('slug_taken');
+    expect((await admin('PATCH', `/help/${h.id}`, { slug: 'Bad Slug!' })).statusCode).toBe(400);
+    expect((await admin('PATCH', `/help/${h.id}`, { title: 'x' })).statusCode).toBe(400);
+    expect((await admin('PATCH', `/help/${h.id}`, { title: 'Nope nope' }, demoAdmin)).statusCode).toBe(401);
+  });
+});

@@ -12,6 +12,7 @@ import { NoAccess } from '@/components/no-access';
 import { Badge } from '@/components/ui/badge';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { AddCapa } from '@/modules/quality/capa-form';
 import { ActivityList, CapaList, EnumSelect, ErrorBox, Field, StaffSelect, StatusBadge, Textarea, formatDateTime, humanize } from '@/modules/quality/ui';
 
@@ -94,6 +95,8 @@ function ManagePanel({ c, onSaved }: { c: Q.Complaint; onSaved: (c: Q.Complaint)
   const [status, setStatus] = React.useState<Q.ComplaintStatus | ''>(c.status);
   const [assignedTo, setAssignedTo] = React.useState(c.assignedTo?.id ?? '');
   const [priority, setPriority] = React.useState<Q.ComplaintPriority | ''>(c.priority);
+  const [category, setCategory] = React.useState<Q.ComplaintCategory | ''>(c.category);
+  const [department, setDepartment] = React.useState(c.department ?? '');
   const [resolution, setResolution] = React.useState('');
   const [note, setNote] = React.useState('');
   const save = useMutation({
@@ -102,6 +105,8 @@ function ManagePanel({ c, onSaved }: { c: Q.Complaint; onSaved: (c: Q.Complaint)
         status: status && status !== c.status ? status : undefined,
         assignedTo: assignedTo || null,
         priority: priority || undefined,
+        category: category || undefined,
+        department: department.trim(),
         resolution: resolution || undefined,
         note: note || undefined,
       }),
@@ -135,6 +140,12 @@ function ManagePanel({ c, onSaved }: { c: Q.Complaint; onSaved: (c: Q.Complaint)
           </Field>
           <Field id="priority" label="Priority" hint="Changing priority moves the due time.">
             <EnumSelect id="priority" value={priority} onChange={setPriority} options={Q.COMPLAINT_PRIORITIES} />
+          </Field>
+          <Field id="category" label="Category">
+            <EnumSelect id="category" value={category} onChange={setCategory} options={Q.COMPLAINT_CATEGORIES} />
+          </Field>
+          <Field id="department" label="Department">
+            <Input id="department" maxLength={120} value={department} onChange={(e) => setDepartment(e.target.value)} />
           </Field>
           {status === 'resolved' && status !== c.status && (
             <Field id="resolution" label="How was it resolved? *">

@@ -4,7 +4,7 @@ import * as React from 'react';
 import Link from 'next/link';
 import { use } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Check, ExternalLink, Loader2, Plus, RotateCw, Trash2 } from 'lucide-react';
+import { ArrowLeft, Check, ExternalLink, Loader2, Pencil, Plus, RotateCw, Trash2 } from 'lucide-react';
 import { insurance as I, todayIso } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
 import { firstError, validate } from '@/lib/validate';
@@ -16,6 +16,7 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { CLAIM_CLOSED, ClaimEditForm } from '@/modules/insurance/claim-edit-form';
 import { ActionForm, DEDUCTION_LABELS, DOC_LABELS, ErrorBox, Field, History, StatusBadge, formatINR, opt, todayIST } from '@/modules/insurance/ui';
 
 const OPEN = ['submitted', 'query', 'approved', 'partially_settled'];
@@ -37,6 +38,7 @@ export default function ClaimPage({ params }: { params: Promise<{ id: string }> 
     },
   });
   const run = (fn: () => Promise<I.Claim>) => act.mutate(fn);
+  const [editing, setEditing] = React.useState(false);
 
   if (!canRead) return <NoAccess />;
   if (isPending) return <p className="text-sm text-muted-foreground">Loading…</p>;
@@ -70,10 +72,22 @@ export default function ClaimPage({ params }: { params: Promise<{ id: string }> 
           )}
           {c.payerClaimNo && ` · payer claim no. ${c.payerClaimNo}`}
         </p>
+        {(c.admissionDate || c.dischargeDate || c.diagnosis || c.notes) && (
+          <p className="mt-1 text-sm text-muted-foreground">
+            {(c.admissionDate || c.dischargeDate) && `Stay ${c.admissionDate ? formatDate(c.admissionDate) : '?'} – ${c.dischargeDate ? formatDate(c.dischargeDate) : '?'}`}
+            {c.diagnosis && ` · ${c.diagnosis}`}
+            {c.notes && ` · ${c.notes}`}
+          </p>
+        )}
       </div>
 
       <Can permission="insurance.claim.manage">
         <div className="flex flex-wrap gap-2">
+          {!CLAIM_CLOSED.includes(c.status) && !editing && (
+            <Button variant="outline" onClick={() => setEditing(true)}>
+              <Pencil /> Edit details
+            </Button>
+          )}
           {(c.status === 'draft' || c.status === 'query') && (
             <ActionForm
               label={c.status === 'draft' ? 'Submit to payer' : 'Answer query and resubmit'}
@@ -114,6 +128,26 @@ export default function ClaimPage({ params }: { params: Promise<{ id: string }> 
         </p>
       )}
       <ErrorBox error={act.error ? errorMessage(act.error) : null} />
+      {editing && canManage && !CLAIM_CLOSED.includes(c.status) && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Edit claim details</CardTitle>
+            <CardDescription>
+              {c.status === 'draft' ? 'Dates, diagnosis, notes and the payer share on each bill.' : 'Dates, diagnosis and notes. Bill shares are fixed once the claim is submitted.'}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ClaimEditForm
+              claim={c}
+              onCancel={() => setEditing(false)}
+              onDone={(next) => {
+                queryClient.setQueryData(key, next);
+                setEditing(false);
+              }}
+            />
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <Amount label="Claimed" value={c.claimedAmount} />

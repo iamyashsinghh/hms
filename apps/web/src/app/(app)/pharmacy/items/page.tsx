@@ -15,6 +15,7 @@ import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { SCHEDULE_LABEL } from '@/modules/pharmacy/format';
+import { ImportDrugsButton } from '@/modules/pharmacy/import-drugs';
 
 const PAGE_SIZE = 25;
 
@@ -47,9 +48,12 @@ export default function DrugMasterPage() {
         description="Every drug and consumable the pharmacy stocks, with HSN, GST and schedule."
         actions={
           <Can permission="pharmacy.item.manage">
-            <Link href="/pharmacy/items/new" className={buttonVariants()}>
-              <Plus /> Add drug
-            </Link>
+            <div className="flex gap-2">
+              <ImportDrugsButton />
+              <Link href="/pharmacy/items/new" className={buttonVariants()}>
+                <Plus /> Add drug
+              </Link>
+            </div>
           </Can>
         }
       />

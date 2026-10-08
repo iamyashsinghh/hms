@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { patchSchema } from '../patch';
 import { END_BEFORE_START, datesInOrder, emailAddress, indianMobile, personName, requiredText } from '../validation';
 
 /**
@@ -102,7 +103,7 @@ export const upsertPlanSchema = z.object({
   sortOrder: z.number().int('Must be a whole number').min(-1000).max(1000).default(0),
 });
 export type UpsertPlan = z.input<typeof upsertPlanSchema>;
-export const updatePlanSchema = upsertPlanSchema.omit({ code: true }).partial();
+export const updatePlanSchema = patchSchema(upsertPlanSchema.omit({ code: true }));
 export type UpdatePlan = z.input<typeof updatePlanSchema>;
 
 export interface Entitlements {
@@ -309,9 +310,11 @@ const announcementOrder = (a: { startsAt?: string; endsAt?: string | null }) =>
   !a.endsAt || Date.parse(a.endsAt) > (a.startsAt ? Date.parse(a.startsAt) : Date.now());
 export const upsertAnnouncementSchema = announcementFields.refine(announcementOrder, { message: 'End time must be after the start time', path: ['endsAt'] });
 export type UpsertAnnouncement = z.input<typeof upsertAnnouncementSchema>;
-export const updateAnnouncementSchema = announcementFields
-  .partial()
-  .refine((a) => !a.startsAt || !a.endsAt || datesInOrder(a.startsAt, a.endsAt), { message: END_BEFORE_START, path: ['endsAt'] });
+// patchSchema, not .partial(): no defaults (planCodes, tenantIds, isPublished) on a partial update.
+export const updateAnnouncementSchema = patchSchema(announcementFields).refine(
+  (a) => !a.startsAt || !a.endsAt || datesInOrder(a.startsAt, a.endsAt),
+  { message: END_BEFORE_START, path: ['endsAt'] },
+);
 export type UpdateAnnouncement = z.input<typeof updateAnnouncementSchema>;
 
 export interface HelpArticle {
@@ -342,7 +345,7 @@ export const upsertHelpArticleSchema = z.object({
   isPublished: z.boolean().default(true),
 });
 export type UpsertHelpArticle = z.input<typeof upsertHelpArticleSchema>;
-export const updateHelpArticleSchema = upsertHelpArticleSchema.partial();
+export const updateHelpArticleSchema = patchSchema(upsertHelpArticleSchema);
 export type UpdateHelpArticle = z.input<typeof updateHelpArticleSchema>;
 
 // ---------- Support tickets ----------

@@ -1,5 +1,5 @@
 import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
-import { inventory, type Paginated } from '@hms/shared';
+import { importRequestSchema, inventory, type ImportResult, type Paginated } from '@hms/shared';
 import type { z } from 'zod';
 import { RequirePermissions } from '../../common/auth/decorators';
 import { ZodPipe } from '../../common/validation/zod.pipe';
@@ -34,6 +34,14 @@ export class InventoryVendorsController {
     return this.vendors.create(body);
   }
 
+  /** Bulk import from Excel / CSV. `dryRun` validates only (the preview). */
+  @Post('import')
+  @HttpCode(200)
+  @RequirePermissions('inventory.vendor.manage')
+  importVendors(@Body(new ZodPipe(importRequestSchema)) body: Out<typeof importRequestSchema>): Promise<ImportResult> {
+    return this.vendors.import(body);
+  }
+
   @Patch(':id')
   @RequirePermissions('inventory.vendor.manage')
   update(@Param('id', id) vendorId: string, @Body(new ZodPipe(inventory.updateVendorSchema)) body: Out<typeof inventory.updateVendorSchema>): Promise<inventory.Vendor> {
@@ -62,6 +70,12 @@ export class InventoryRequisitionsController {
   @RequirePermissions('inventory.purchase.request')
   create(@Body(new ZodPipe(inventory.createRequisitionSchema)) body: Out<typeof inventory.createRequisitionSchema>): Promise<inventory.Requisition> {
     return this.purchase.createRequisition(body);
+  }
+
+  @Patch(':id')
+  @RequirePermissions('inventory.purchase.request')
+  update(@Param('id', id) reqId: string, @Body(new ZodPipe(inventory.updateRequisitionSchema)) body: Out<typeof inventory.updateRequisitionSchema>): Promise<inventory.Requisition> {
+    return this.purchase.updateRequisition(reqId, body);
   }
 
   @Post(':id/decision')
@@ -181,6 +195,12 @@ export class InventoryIndentsController {
   @RequirePermissions('inventory.indent.create')
   create(@Body(new ZodPipe(inventory.createIndentSchema)) body: Out<typeof inventory.createIndentSchema>): Promise<inventory.Indent> {
     return this.indents.create(body);
+  }
+
+  @Patch(':id')
+  @RequirePermissions('inventory.indent.create')
+  update(@Param('id', id) indentId: string, @Body(new ZodPipe(inventory.updateIndentSchema)) body: Out<typeof inventory.updateIndentSchema>): Promise<inventory.Indent> {
+    return this.indents.update(indentId, body);
   }
 
   @Post(':id/decision')

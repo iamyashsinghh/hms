@@ -1,7 +1,9 @@
 import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Put, Query } from '@nestjs/common';
 import { crm, type Paginated } from '@hms/shared';
 import { z } from 'zod';
-import { RequirePermissions } from '../../common/auth/decorators';
+import { Ctx, RequirePermissions } from '../../common/auth/decorators';
+import type { RequestContext } from '../../common/context/request-context';
+import { forbidden } from '../../common/errors/errors';
 import { ZodPipe } from '../../common/validation/zod.pipe';
 import { RequireEntitlement } from '../platform';
 import { CampsService } from './camps.service';
@@ -30,6 +32,13 @@ export class CrmController {
   @RequirePermissions('crm.lead.read')
   getDashboard(): Promise<crm.CrmDashboard> {
     return this.dashboard.get();
+  }
+
+  /** Active staff who can own an enquiry or a follow-up (for the assignee pickers). */
+  @Get('staff')
+  listStaff(@Ctx() ctx: RequestContext): Promise<crm.CrmStaff[]> {
+    if (!ctx.permissions.has('crm.lead.manage') && !ctx.permissions.has('crm.followup.manage')) throw forbidden();
+    return this.leads.staff();
   }
 
   // ---------- leads ----------

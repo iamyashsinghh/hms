@@ -18,7 +18,7 @@ export const opsApi = (http: Http) => ({
   cssd: {
     sets: (q: { status?: O.CssdSetStatus; q?: string } = {}) => http.get<O.CssdSet[]>('/ops/cssd/sets', q),
     createSet: (body: O.CssdSetInput) => http.post<O.CssdSet>('/ops/cssd/sets', body),
-    updateSet: (id: string, body: Partial<O.CssdSetInput>) => http.patch<O.CssdSet>(`/ops/cssd/sets/${id}`, body),
+    updateSet: (id: string, body: O.UpdateCssdSet) => http.patch<O.CssdSet>(`/ops/cssd/sets/${id}`, body),
     cycles: (q: { page?: number; pageSize?: number } = {}) => http.get<Paginated<O.CssdCycle>>('/ops/cssd/cycles', q),
     startCycle: (body: O.StartCycle) => http.post<O.CssdCycle>('/ops/cssd/cycles', body),
     completeCycle: (id: string, body: O.CompleteCycle) => http.post<O.CssdCycle>(`/ops/cssd/cycles/${id}/complete`, body),
@@ -29,7 +29,7 @@ export const opsApi = (http: Http) => ({
   linen: {
     items: () => http.get<O.LinenItem[]>('/ops/linen/items'),
     createItem: (body: O.LinenItemInput) => http.post<O.LinenItem>('/ops/linen/items', body),
-    updateItem: (id: string, body: Partial<O.LinenItemInput>) => http.patch<O.LinenItem>(`/ops/linen/items/${id}`, body),
+    updateItem: (id: string, body: O.UpdateLinenItem) => http.patch<O.LinenItem>(`/ops/linen/items/${id}`, body),
     stock: () => http.get<O.LinenStock[]>('/ops/linen/stock'),
     txns: (q: O.LinenTxnQuery = {}) => http.get<Paginated<O.LinenTxn>>('/ops/linen/txns', q),
     record: (body: O.LinenTxnInput) => http.post<O.LinenTxn>('/ops/linen/txns', body),
@@ -37,7 +37,7 @@ export const opsApi = (http: Http) => ({
   ambulance: {
     vehicles: () => http.get<O.Vehicle[]>('/ops/ambulance/vehicles'),
     createVehicle: (body: O.VehicleInput) => http.post<O.Vehicle>('/ops/ambulance/vehicles', body),
-    updateVehicle: (id: string, body: Partial<O.VehicleInput>) => http.patch<O.Vehicle>(`/ops/ambulance/vehicles/${id}`, body),
+    updateVehicle: (id: string, body: O.UpdateVehicle) => http.patch<O.Vehicle>(`/ops/ambulance/vehicles/${id}`, body),
     trips: (q: O.TripQuery = {}) => http.get<Paginated<O.Trip>>('/ops/ambulance/trips', q),
     getTrip: (id: string) => http.get<O.Trip>(`/ops/ambulance/trips/${id}`),
     createTrip: (body: O.CreateTrip) => http.post<O.Trip>('/ops/ambulance/trips', body),

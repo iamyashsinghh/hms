@@ -4,10 +4,9 @@ import * as React from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { BellRing, Check, Loader2, Plus, Send, X } from 'lucide-react';
+import { BellRing, Check, Loader2, Pencil, Plus, Send, X } from 'lucide-react';
 import { crm as C, type Patient } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
-import { firstError, validate } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
 import { PageHeader } from '@/components/page-header';
@@ -26,7 +25,9 @@ import {
   Pager,
   PatientPicker,
   Select,
+  StaffSelect,
   addDaysISO,
+  firstIssue,
   formatDateTime,
   todayIST,
 } from '@/modules/crm/ui';
@@ -57,6 +58,7 @@ function FollowUps() {
   const [page, setPage] = React.useState(1);
   const [adding, setAdding] = React.useState(false);
   const [closing, setClosing] = React.useState<C.FollowUp | null>(null);
+  const [editing, setEditing] = React.useState<C.FollowUp | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
 
   const query: C.FollowUpQuery =
@@ -112,8 +114,19 @@ function FollowUps() {
           </Button>
         </div>
       )}
+      {editing && canManage && (
+        <FollowUpForm
+          key={editing.id}
+          initial={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            refresh();
+          }}
+        />
+      )}
       {adding && canManage && (
-        <NewFollowUp
+        <FollowUpForm
           onClose={() => setAdding(false)}
           onSaved={() => {
             setAdding(false);
@@ -204,6 +217,7 @@ function FollowUps() {
                     <TableCell>{FOLLOW_UP_TYPE_LABELS[f.type]}</TableCell>
                     <TableCell className="max-w-64">
                       <span className="line-clamp-2">{f.reason ?? '—'}</span>
+                      {f.assignedToName && <div className="text-xs text-muted-foreground">Assigned: {f.assignedToName}</div>}
                       {f.outcome && <div className="text-xs text-muted-foreground">Outcome: {f.outcome}</div>}
                     </TableCell>
                     <TableCell>
@@ -215,6 +229,9 @@ function FollowUps() {
                         <div className="flex justify-end gap-1">
                           <Button variant="ghost" size="sm" disabled={remind.isPending} onClick={() => remind.mutate(f.id)}>
                             <BellRing /> Remind
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={() => setEditing(f)}>
+                            <Pencil /> Edit
                           </Button>
                           <Button variant="ghost" size="sm" onClick={() => setClosing(f)}>
                             <Check /> Close
@@ -235,27 +252,46 @@ function FollowUps() {
   );
 }
 
-function NewFollowUp({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+const FU_LABELS: Record<string, string> = { patientId: 'Patient', dueDate: 'Due on', reason: 'Reason' };
+
+/** New follow-up; with `initial` it reschedules / edits a pending one. */
+function FollowUpForm({ initial, onClose, onSaved }: { initial?: C.FollowUp; onClose: () => void; onSaved: () => void }) {
   const [patient, setPatient] = React.useState<Patient | null>(null);
-  const [dueDate, setDueDate] = React.useState(addDaysISO(todayIST(), 7));
-  const [type, setType] = React.useState<C.FollowUpType>('revisit');
-  const [reason, setReason] = React.useState('');
-  const [formError, setFormError] = React.useState<string | null>(null);
+  const [dueDate, setDueDate] = React.useState(initial?.dueDate ?? addDaysISO(todayIST(), 7));
+  const [type, setType] = React.useState<C.FollowUpType>(initial?.type ?? 'revisit');
+  const [reason, setReason] = React.useState(initial?.reason ?? '');
+  const [assignedTo, setAssignedTo] = React.useState(initial?.assignedTo ?? '');
+  const [invalid, setInvalid] = React.useState<string | null>(null);
   const m = useMutation({
-    mutationFn: () => api.crm.followUps.create({ patientId: patient!.id, dueDate, type, reason: reason || null }),
+    mutationFn: () => {
+      const common = { dueDate, type, reason: reason || null, assignedTo: assignedTo || null };
+      return initial ? api.crm.followUps.update(initial.id, common) : api.crm.followUps.create({ ...common, patientId: patient?.id });
+    },
     onSuccess: onSaved,
   });
+  const submit = () => {
+    const common = { dueDate, type, reason: reason || null, assignedTo: assignedTo || null };
+    const problem = initial
+      ? firstIssue(C.updateFollowUpSchema, common, FU_LABELS)
+      : firstIssue(C.followUpInputSchema, { ...common, patientId: patient?.id }, FU_LABELS);
+    const past = dueDate < todayIST() && dueDate !== initial?.dueDate ? 'Due on: the date cannot be in the past' : null;
+    if (problem || past) return setInvalid(problem ?? past);
+    setInvalid(null);
+    m.mutate();
+  };
   return (
     <Card className="mb-6">
       <CardHeader>
-        <CardTitle>New follow-up</CardTitle>
+        <CardTitle>{initial ? `Edit follow-up for ${initial.patientName ?? initial.leadName}` : 'New follow-up'}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <ErrorBox error={formError ?? (m.error ? errorMessage(m.error) : null)} />
+        <ErrorBox error={invalid ?? (m.error ? errorMessage(m.error) : null)} />
         <div className="grid gap-4 sm:grid-cols-4">
-          <div className="sm:col-span-2">
-            <PatientPicker value={patient} onChange={setPatient} />
-          </div>
+          {!initial && (
+            <div className="sm:col-span-2">
+              <PatientPicker value={patient} onChange={setPatient} />
+            </div>
+          )}
           <Field id="fu-due" label="Due on *">
             <Input id="fu-due" type="date" min={todayIST()} max={addDaysISO(todayIST(), 3 * 366)} value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
           </Field>
@@ -268,7 +304,10 @@ function NewFollowUp({ onClose, onSaved }: { onClose: () => void; onSaved: () =>
               ))}
             </Select>
           </Field>
-          <Field id="fu-reason" label="Reason" className="sm:col-span-4">
+          <Field id="fu-assigned" label="Assigned to">
+            <StaffSelect id="fu-assigned" value={assignedTo} onChange={setAssignedTo} />
+          </Field>
+          <Field id="fu-reason" label="Reason" className={initial ? 'sm:col-span-4' : 'sm:col-span-3'}>
             <Input id="fu-reason" maxLength={1000} placeholder="e.g. Review BP after medicine change" value={reason} onChange={(e) => setReason(e.target.value)} />
           </Field>
         </div>
@@ -276,14 +315,7 @@ function NewFollowUp({ onClose, onSaved }: { onClose: () => void; onSaved: () =>
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          <Button
-            disabled={m.isPending || !patient || !dueDate}
-            onClick={() => {
-              const problem = firstError(validate(C.followUpInputSchema, { patientId: patient?.id, dueDate, type, reason: reason || null }).errors);
-              setFormError(problem);
-              if (!problem) m.mutate();
-            }}
-          >
+          <Button disabled={m.isPending || (!initial && !patient) || !dueDate} onClick={submit}>
             {m.isPending && <Loader2 className="animate-spin" />}
             Save
           </Button>

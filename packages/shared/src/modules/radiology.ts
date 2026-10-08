@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { patchSchema } from '../patch';
 import { GST_RATES, payNowSchema } from './billing';
 import { isoDate, isoDateTime, money as moneyField, requiredText } from '../validation';
+import type { ImportColumn } from '../imports';
 
 /**
  * Radiology (RIS): permissions and API contracts (Zod schemas + types).
@@ -96,7 +98,7 @@ export const modalityInputSchema = z.object({
   isActive: z.boolean().default(true),
 });
 export type ModalityInput = z.input<typeof modalityInputSchema>;
-export const updateModalitySchema = modalityInputSchema.partial();
+export const updateModalitySchema = patchSchema(modalityInputSchema);
 export type UpdateModality = z.input<typeof updateModalitySchema>;
 
 export interface Modality {
@@ -138,8 +140,32 @@ export const testInputSchema = z.object({
   isActive: z.boolean().default(true),
 });
 export type TestInput = z.input<typeof testInputSchema>;
-export const updateTestSchema = testInputSchema.partial();
+export const updateTestSchema = patchSchema(testInputSchema);
 export type UpdateTest = z.input<typeof updateTestSchema>;
+
+/** Columns of the radiology test import sheet. `Modality` is the modality code (or name) set up under Masters. */
+export const TEST_IMPORT_COLUMNS: readonly ImportColumn[] = [
+  { key: 'code', header: 'Code', type: 'text', required: true, example: 'XR-CHEST-PA' },
+  { key: 'name', header: 'Name', type: 'text', required: true, example: 'X-ray chest PA view' },
+  { key: 'modality', header: 'Modality', type: 'text', required: true, example: 'XR1', help: 'Modality code or name' },
+  { key: 'bodyPart', header: 'Body part', type: 'text', example: 'Chest' },
+  { key: 'price', header: 'Price', type: 'number', example: 400, help: 'Price or billing service code is required' },
+  { key: 'serviceCode', header: 'Billing service code', type: 'text', example: '' },
+  { key: 'taxRate', header: 'GST %', type: 'enum', options: GST_RATES.filter((r) => r <= 28), example: 0 },
+  { key: 'durationMinutes', header: 'Duration (min)', type: 'integer', example: 10 },
+  { key: 'contrast', header: 'Contrast', type: 'boolean', example: 'No' },
+  { key: 'preparation', header: 'Preparation', type: 'text', example: '' },
+  { key: 'isActive', header: 'Active', type: 'boolean', example: 'Yes' },
+];
+
+export const testImportRowSchema = testInputSchema
+  .omit({ modalityId: true, defaultTemplateId: true })
+  .extend({
+    modality: z.string().trim().min(1).max(100),
+    taxRate: z.number().refine((v) => (GST_RATES as readonly number[]).includes(v) && v <= 28, 'Use a GST slab up to 28').default(0),
+  })
+  .refine((r) => r.price !== undefined || !!r.serviceCode, { path: ['price'], message: 'Give a price or a billing service code' });
+export type TestImportRow = z.output<typeof testImportRowSchema>;
 
 export interface RadiologyTest {
   id: string;
@@ -177,7 +203,7 @@ export const templateInputSchema = z.object({
   isActive: z.boolean().default(true),
 });
 export type TemplateInput = z.input<typeof templateInputSchema>;
-export const updateTemplateSchema = templateInputSchema.partial();
+export const updateTemplateSchema = patchSchema(templateInputSchema);
 export type UpdateTemplate = z.input<typeof updateTemplateSchema>;
 
 export interface ReportTemplate {
@@ -205,7 +231,7 @@ export const createOrderSchema = z.object({
 });
 export type CreateOrder = z.input<typeof createOrderSchema>;
 
-export const updateOrderSchema = createOrderSchema.pick({ testId: true, priority: true, referringDoctorName: true, clinicalNotes: true }).partial();
+export const updateOrderSchema = patchSchema(createOrderSchema.pick({ testId: true, priority: true, referringDoctorName: true, clinicalNotes: true }));
 export type UpdateOrder = z.input<typeof updateOrderSchema>;
 
 /** How far back a slot may start (a booking made a few minutes late) and how far ahead it may be. */

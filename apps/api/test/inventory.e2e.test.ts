@@ -264,6 +264,77 @@ describe('indents and issues', () => {
   });
 });
 
+describe('editing', () => {
+  const ist = (days = 0) => new Date(Date.now() + days * 86_400_000).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
+  it('edits a vendor without resetting omitted fields, and clears contact fields with ""', async () => {
+    const v = await ok(call(admin, 'POST', '/vendors', { code: `E${run}`, name: `Edit Traders ${run}`, phone: '98200 11223', email: 'a@b.in', paymentTermsDays: 60 }), 201);
+    const off = await ok(call(admin, 'PATCH', `/vendors/${v.id}`, { isActive: false }));
+    expect(off).toMatchObject({ isActive: false, paymentTermsDays: 60, phone: '98200 11223' });
+    const cleared = await ok(call(admin, 'PATCH', `/vendors/${v.id}`, { phone: '', email: '', name: `Edit Traders ${run} Pvt` }));
+    expect(cleared).toMatchObject({ phone: null, email: null, name: `Edit Traders ${run} Pvt`, paymentTermsDays: 60 });
+    expect((await call(admin, 'PATCH', `/vendors/${v.id}`, { paymentTermsDays: -1 })).statusCode).toBe(400);
+    expect((await call(admin, 'PATCH', `/vendors/${v.id}`, { gstin: 'NOTAGSTIN' })).statusCode).toBe(400);
+    expect((await call(nurse, 'PATCH', `/vendors/${v.id}`, { name: 'x' })).statusCode).toBe(403);
+  });
+
+  it('edits a draft PO: vendor, dates and lines; refuses past dates and bad lines', async () => {
+    const [a, b] = [await newItem(12), await newItem(5)];
+    const draft = await ok(call(admin, 'POST', '/purchase-orders', { vendorId, storeId: mainStoreId, expectedDate: ist(7), lines: [{ itemId: a.id, qty: 5, rate: 2 }] }), 201);
+    const past = await call(admin, 'POST', '/purchase-orders', { vendorId, storeId: mainStoreId, expectedDate: '2000-01-01', lines: [{ itemId: a.id, qty: 5, rate: 2 }] });
+    expect(past.statusCode).toBe(400);
+    // The shared schema refuses a past date before the service sees it.
+    expect(past.json().error.message).toContain('cannot be in the past');
+
+    const other = await ok(call(admin, 'POST', '/vendors', { code: `P${run}`, name: `Other Supplier ${run}` }), 201);
+    const edited = await ok(
+      call(admin, 'PATCH', `/purchase-orders/${draft.id}`, { vendorId: other.id, expectedDate: ist(10), notes: 'Urgent', lines: [{ itemId: a.id, qty: 10, rate: 3 }, { itemId: b.id, qty: 4, rate: 25 }] }),
+    );
+    expect(edited).toMatchObject({ vendorName: `Other Supplier ${run}`, expectedDate: ist(10), notes: 'Urgent', subtotal: 130, total: 138.6 });
+    expect(edited.lines).toHaveLength(2);
+    // Partial edit keeps the lines; null clears the date.
+    const partial = await ok(call(admin, 'PATCH', `/purchase-orders/${draft.id}`, { expectedDate: null, terms: 'Net 30' }));
+    expect(partial).toMatchObject({ expectedDate: null, terms: 'Net 30', total: 138.6 });
+    expect(partial.lines).toHaveLength(2);
+
+    for (const bad of [{ expectedDate: '2000-01-01' }, { lines: [] }, { lines: [{ itemId: a.id, qty: 0, rate: 1 }] }, { lines: [{ itemId: a.id, qty: 1, rate: -1 }] }, { expectedDate: '2026-13-01' }]) {
+      expect((await call(admin, 'PATCH', `/purchase-orders/${draft.id}`, bad)).statusCode, JSON.stringify(bad)).toBe(400);
+    }
+    expect((await call(pharmacist, 'PATCH', `/purchase-orders/${draft.id}`, { notes: 'x' })).statusCode).toBe(403);
+    await ok(call(admin, 'POST', `/purchase-orders/${draft.id}/cancel`, { reason: 'Test done' }));
+    expect((await call(admin, 'PATCH', `/purchase-orders/${draft.id}`, { notes: 'x' })).json().error.code).toBe('po_not_draft');
+  });
+
+  it('edits a requisition until it is decided', async () => {
+    const [a, b] = [await newItem(), await newItem()];
+    const req = await ok(call(pharmacist, 'POST', '/requisitions', { storeId: mainStoreId, lines: [{ itemId: a.id, qty: 10 }] }), 201);
+    const edited = await ok(call(pharmacist, 'PATCH', `/requisitions/${req.id}`, { neededBy: ist(3), notes: 'For OT', lines: [{ itemId: a.id, qty: 12 }, { itemId: b.id, qty: 3, note: 'size M' }] }));
+    expect(edited).toMatchObject({ status: 'submitted', neededBy: ist(3), notes: 'For OT', storeId: mainStoreId });
+    expect(edited.lines.map((l: { qty: number }) => l.qty)).toEqual([12, 3]);
+    const partial = await ok(call(pharmacist, 'PATCH', `/requisitions/${req.id}`, { neededBy: null }));
+    expect(partial.neededBy).toBeNull();
+    expect(partial.lines).toHaveLength(2);
+    expect((await call(pharmacist, 'PATCH', `/requisitions/${req.id}`, { lines: [{ itemId: a.id, qty: 0 }] })).statusCode).toBe(400);
+    expect((await call(nurse, 'PATCH', `/requisitions/${req.id}`, { notes: 'x' })).statusCode).toBe(403);
+    await ok(call(admin, 'POST', `/requisitions/${req.id}/decision`, { approve: false }));
+    expect((await call(pharmacist, 'PATCH', `/requisitions/${req.id}`, { notes: 'x' })).json().error.code).toBe('invalid_status');
+  });
+
+  it('edits an indent until it is decided', async () => {
+    const [a, b] = [await newItem(), await newItem()];
+    const indent = await ok(call(nurse, 'POST', '/indents', { toStoreId: wardStoreId, fromStoreId: mainStoreId, lines: [{ itemId: a.id, qty: 4 }] }), 201);
+    const edited = await ok(call(nurse, 'PATCH', `/indents/${indent.id}`, { priority: 'urgent', notes: 'Bed 12', lines: [{ itemId: a.id, qty: 6 }, { itemId: b.id, qty: 2 }] }));
+    expect(edited).toMatchObject({ status: 'submitted', priority: 'urgent', notes: 'Bed 12', toStoreId: wardStoreId, fromStoreId: mainStoreId });
+    expect(edited.lines.map((l: { requestedQty: number }) => l.requestedQty)).toEqual([6, 2]);
+    // Partial edit keeps the priority (no 'normal' default sneaking in).
+    expect((await ok(call(nurse, 'PATCH', `/indents/${indent.id}`, { notes: 'Bed 14' }))).priority).toBe('urgent');
+    expect((await call(nurse, 'PATCH', `/indents/${indent.id}`, { priority: 'asap' })).statusCode).toBe(400);
+    expect((await call(doctor, 'PATCH', `/indents/${indent.id}`, { notes: 'x' })).statusCode).toBe(403);
+    await ok(call(admin, 'POST', `/indents/${indent.id}/decision`, { approve: false }));
+    expect((await call(nurse, 'PATCH', `/indents/${indent.id}`, { notes: 'x' })).json().error.code).toBe('invalid_status');
+  });
+});
+
 describe('access control', () => {
   it('enforces permissions per role', async () => {
     expect((await call(doctor, 'GET', '/vendors')).statusCode).toBe(403);

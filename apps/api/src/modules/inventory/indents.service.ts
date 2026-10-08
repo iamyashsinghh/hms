@@ -142,6 +142,39 @@ export class InventoryIndentsService {
     });
   }
 
+  async update(id: string, input: z.output<typeof inventory.updateIndentSchema>): Promise<inventory.Indent> {
+    const ctx = currentContext()!;
+    const items = input.lines ? await this.stock.items(input.lines.map((l) => l.itemId)) : null;
+    return this.db.tx(async (tx) => {
+      const indent = await this.row(tx, id, true);
+      if (indent.status !== 'submitted') throw conflict('invalid_status', `Indent ${indent.number} is ${indent.status}; only unapproved indents can be edited`);
+      const patch: Partial<typeof inventoryIndents.$inferInsert> = { updatedBy: ctx.userId };
+      if (input.priority !== undefined) patch.priority = input.priority;
+      if (input.notes !== undefined) patch.notes = input.notes || null;
+      await tx.update(inventoryIndents).set(patch).where(eq(inventoryIndents.id, id));
+      if (input.lines && items) {
+        await tx.delete(inventoryIndentLines).where(eq(inventoryIndentLines.indentId, id));
+        await tx.insert(inventoryIndentLines).values(
+          input.lines.map((l, i) => {
+            const item = items.get(l.itemId)!;
+            return {
+              tenantId: ctx.tenantId!,
+              indentId: id,
+              lineNo: i + 1,
+              itemId: item.id,
+              itemCode: item.code,
+              itemName: item.name,
+              unit: item.unit,
+              requestedQty: l.qty,
+              note: l.note ?? null,
+            };
+          }),
+        );
+      }
+      return this.full(tx, id);
+    });
+  }
+
   cancel(id: string): Promise<inventory.Indent> {
     const ctx = currentContext()!;
     return this.db.tx(async (tx) => {

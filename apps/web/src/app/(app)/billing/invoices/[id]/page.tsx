@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { use } from 'react';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Ban, Loader2, Printer, Trash2 } from 'lucide-react';
+import { ArrowLeft, Ban, Loader2, Pencil, Printer, Trash2 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { billing as B } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
@@ -66,6 +66,9 @@ export default function InvoicePage({ params }: { params: Promise<{ id: string }
           {inv.status === 'draft' && (
             <>
               <Can permission="billing.invoice.create">
+                <Link href={`/billing/invoices/${id}/edit`} className={buttonVariants({ variant: 'outline' })}>
+                  <Pencil /> Edit draft
+                </Link>
                 <Button variant="outline" disabled={remove.isPending} onClick={() => confirm('Delete this draft?') && remove.mutate()}>
                   <Trash2 /> Delete draft
                 </Button>

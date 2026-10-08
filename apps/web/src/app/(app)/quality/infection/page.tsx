@@ -2,10 +2,10 @@
 
 import * as React from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus } from 'lucide-react';
+import { Loader2, Pencil, Plus } from 'lucide-react';
 import { quality as Q } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
-import { validate, type FieldErrors } from '@/lib/validate';
+import { firstError, validate, type FieldErrors } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -24,6 +24,7 @@ export default function InfectionControlPage() {
   const [status, setStatus] = React.useState<Q.HaiStatus | ''>('');
   const [page, setPage] = React.useState(1);
   const [adding, setAdding] = React.useState(false);
+  const [editing, setEditing] = React.useState<Q.HaiCase | null>(null);
   const query = { infectionType: type || undefined, status: status || undefined, page, pageSize: 25 };
   const { data, isPending, error } = useQuery({
     queryKey: ['quality', 'hai', query],
@@ -51,7 +52,8 @@ export default function InfectionControlPage() {
         }
       />
       <div className="space-y-6">
-        {adding && <NewCase onDone={() => setAdding(false)} />}
+        {adding && <CaseForm onDone={() => setAdding(false)} />}
+        {editing && canManage && <CaseForm key={editing.id} initial={editing} onDone={() => setEditing(null)} />}
         <Card>
           <div className="flex flex-wrap items-center gap-3 border-b p-4">
             <div className="w-56">
@@ -72,18 +74,19 @@ export default function InfectionControlPage() {
                 <TableHead>Onset</TableHead>
                 <TableHead>Organism</TableHead>
                 <TableHead>Status</TableHead>
+                {canManage && <TableHead />}
               </TableRow>
             </TableHeader>
             <TableBody>
               {isPending ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                  <TableCell colSpan={canManage ? 8 : 7} className="py-10 text-center text-muted-foreground">
                     Loading…
                   </TableCell>
                 </TableRow>
               ) : !data?.items.length ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                  <TableCell colSpan={canManage ? 8 : 7} className="py-10 text-center text-muted-foreground">
                     No infection cases recorded.
                   </TableCell>
                 </TableRow>
@@ -116,6 +119,13 @@ export default function InfectionControlPage() {
                         <StatusBadge status={h.status} />
                       )}
                     </TableCell>
+                    {canManage && (
+                      <TableCell className="text-right">
+                        <Button variant="ghost" size="sm" aria-label={`Edit ${h.caseNo}`} onClick={() => setEditing(h)}>
+                          <Pencil />
+                        </Button>
+                      </TableCell>
+                    )}
                   </TableRow>
                 ))
               )}
@@ -131,36 +141,51 @@ export default function InfectionControlPage() {
   );
 }
 
-function NewCase({ onDone }: { onDone: () => void }) {
+/** Record a new infection case; with `initial` it edits that case (patient and case number stay). */
+function CaseForm({ initial, onDone }: { initial?: Q.HaiCase; onDone: () => void }) {
   const queryClient = useQueryClient();
-  const [patient, setPatient] = React.useState<Q.PatientRef | null>(null);
-  const [f, setF] = React.useState({ infectionType: '' as Q.HaiType | '', ward: '', onsetDate: todayIST(), deviceInsertedOn: '', procedureName: '', organism: '', cultureRef: '', notes: '' });
-  const [status, setStatus] = React.useState<Q.HaiStatus | ''>('suspected');
+  const [patient, setPatient] = React.useState<Q.PatientRef | null>(initial?.patient ?? null);
+  const [f, setF] = React.useState({
+    infectionType: (initial?.infectionType ?? '') as Q.HaiType | '',
+    ward: initial?.ward ?? '',
+    onsetDate: initial?.onsetDate ?? todayIST(),
+    deviceInsertedOn: initial?.deviceInsertedOn ?? '',
+    procedureName: initial?.procedureName ?? '',
+    organism: initial?.organism ?? '',
+    cultureRef: initial?.cultureRef ?? '',
+    notes: initial?.notes ?? '',
+  });
+  const [status, setStatus] = React.useState<Q.HaiStatus | ''>(initial?.status ?? 'suspected');
+  const [invalid, setInvalid] = React.useState<string | null>(null);
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setF({ ...f, [k]: e.target.value });
   const [errors, setErrors] = React.useState<FieldErrors>({});
-  const create = useMutation({
-    mutationFn: (body: Q.CreateHai) => api.quality.hai.create(body),
+  const save = useMutation({
+    mutationFn: (b: Q.CreateHai | Q.UpdateHai) => (initial ? api.quality.hai.update(initial.id, b as Q.UpdateHai) : api.quality.hai.create(b as Q.CreateHai)),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['quality'] });
       onDone();
     },
   });
-  const body = (): Q.CreateHai => ({
-        patientId: patient?.id ?? '',
+  const body = (): Q.CreateHai | Q.UpdateHai => {
+    const common = {
         infectionType: f.infectionType as Q.HaiType,
-        ward: f.ward || undefined,
+        ward: f.ward,
         onsetDate: f.onsetDate,
-        deviceInsertedOn: f.deviceInsertedOn || undefined,
-        procedureName: f.procedureName || undefined,
-        organism: f.organism || undefined,
-        cultureRef: f.cultureRef || undefined,
-        notes: f.notes || undefined,
+        procedureName: f.procedureName,
+        organism: f.organism,
+        cultureRef: f.cultureRef,
+        notes: f.notes,
         status: status || 'suspected',
-      });
+    };
+    // On edit an emptied device / surgery date is cleared; patient and case number stay.
+    return initial
+      ? { ...common, deviceInsertedOn: f.deviceInsertedOn || null }
+      : { ...common, patientId: patient?.id ?? '', deviceInsertedOn: f.deviceInsertedOn || undefined };
+  };
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Record an infection</CardTitle>
+        <CardTitle>{initial ? `Edit ${initial.caseNo}` : 'Record an infection'}</CardTitle>
       </CardHeader>
       <CardContent>
         <form
@@ -168,16 +193,23 @@ function NewCase({ onDone }: { onDone: () => void }) {
           onSubmit={(e) => {
             e.preventDefault();
             const b = body();
-            const { errors: found } = validate(Q.createHaiSchema, b);
+            const { errors: found } = validate(initial ? Q.updateHaiSchema : Q.createHaiSchema, b);
             setErrors(found ?? {});
-            if (!found) create.mutate(b);
+            setInvalid(firstError(found));
+            if (!found) save.mutate(b);
           }}
         >
           <div className="sm:col-span-3">
-            <ErrorBox error={Object.keys(errors).length ? 'Please correct the highlighted fields' : create.error} />
+            <ErrorBox error={invalid ?? save.error} />
           </div>
           <Field id="hai-patient" label="Patient *" className="sm:col-span-2">
-            <PatientPicker value={patient} onChange={setPatient} />
+            {initial ? (
+              <div className="flex h-9 items-center rounded-md border bg-muted/40 px-3 text-sm">
+                {initial.patient.name} <span className="ml-2 font-mono text-xs text-muted-foreground">{initial.patient.uhid}</span>
+              </div>
+            ) : (
+              <PatientPicker value={patient} onChange={setPatient} />
+            )}
           </Field>
           <Field id="hai-type" label="Infection *">
             <EnumSelect id="hai-type" value={f.infectionType} onChange={(v) => setF({ ...f, infectionType: v })} options={Q.HAI_TYPES} labels={HAI_LABELS} placeholder="Choose…" />
@@ -193,24 +225,24 @@ function NewCase({ onDone }: { onDone: () => void }) {
           </Field>
           {f.infectionType === 'ssi' && (
             <Field id="hai-proc" label="Procedure">
-              <Input id="hai-proc" value={f.procedureName} onChange={set('procedureName')} />
+              <Input id="hai-proc" maxLength={200} value={f.procedureName} onChange={set('procedureName')} />
             </Field>
           )}
           <Field id="hai-org" label="Organism">
-            <Input id="hai-org" value={f.organism} onChange={set('organism')} />
+            <Input id="hai-org" maxLength={200} value={f.organism} onChange={set('organism')} />
           </Field>
           <Field id="hai-culture" label="Culture report no.">
-            <Input id="hai-culture" value={f.cultureRef} onChange={set('cultureRef')} />
+            <Input id="hai-culture" maxLength={80} value={f.cultureRef} onChange={set('cultureRef')} />
           </Field>
           <Field id="hai-status" label="Status">
             <EnumSelect id="hai-status" value={status} onChange={setStatus} options={Q.HAI_STATUSES} />
           </Field>
           <Field id="hai-notes" label="Notes" className="sm:col-span-3">
-            <Textarea id="hai-notes" value={f.notes} onChange={set('notes')} />
+            <Textarea id="hai-notes" maxLength={2000} value={f.notes} onChange={set('notes')} />
           </Field>
           <div className="flex gap-2 sm:col-span-3">
-            <Button type="submit" disabled={create.isPending || !patient || !f.infectionType}>
-              {create.isPending && <Loader2 className="animate-spin" />} Save case
+            <Button type="submit" disabled={save.isPending || !patient || !f.infectionType}>
+              {save.isPending && <Loader2 className="animate-spin" />} {initial ? 'Save changes' : 'Save case'}
             </Button>
             <Button type="button" variant="ghost" onClick={onDone}>
               Cancel

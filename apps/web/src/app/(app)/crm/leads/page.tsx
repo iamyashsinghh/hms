@@ -7,64 +7,19 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { Loader2, Plus, Search } from 'lucide-react';
 import { crm as C } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
-import { validate, type FieldErrors } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import {
-  CampSelect,
-  ErrorBox,
-  Field,
-  LEAD_SOURCE_LABELS,
-  LEAD_STATUS_LABELS,
-  LeadStatusBadge,
-  Pager,
-  ReferrerSelect,
-  Select,
-  Textarea,
-  formatDateTime,
-  fromLocalInput,
-  todayIST,
-  useDebounced,
-} from '@/modules/crm/ui';
+import { LEAD_SOURCE_LABELS, LEAD_STATUS_LABELS, LeadStatusBadge, Pager, Select, formatDateTime, useDebounced } from '@/modules/crm/ui';
+import { LeadForm } from '@/modules/crm/lead-form';
 
 const PAGE_SIZE = 25;
-
-interface Form {
-  name: string;
-  mobile: string;
-  email: string;
-  gender: string;
-  ageYears: string;
-  city: string;
-  source: C.LeadSource;
-  interest: string;
-  notes: string;
-  nextFollowUpAt: string;
-  referrerId: string;
-  campId: string;
-}
-
-const emptyForm = (): Form => ({
-  name: '',
-  mobile: '',
-  email: '',
-  gender: '',
-  ageYears: '',
-  city: '',
-  source: 'walk_in',
-  interest: '',
-  notes: '',
-  nextFollowUpAt: '',
-  referrerId: '',
-  campId: '',
-});
 
 export default function LeadsPage() {
   return (
@@ -85,8 +40,7 @@ function Leads() {
   const [source, setSource] = React.useState('');
   const [due, setDue] = React.useState(params.get('due') === 'true');
   const [page, setPage] = React.useState(1);
-  const [form, setForm] = React.useState<Form | null>(null);
-  const [errors, setErrors] = React.useState<FieldErrors>({});
+  const [adding, setAdding] = React.useState(false);
   const q = useDebounced(search.trim());
 
   const query: C.LeadQuery = {
@@ -104,24 +58,10 @@ function Leads() {
     enabled: canRead,
   });
 
-  const leadBody = (f: Form): C.LeadInput => ({
-    name: f.name,
-    mobile: f.mobile || null,
-    email: f.email || null,
-    gender: (f.gender || null) as C.LeadInput['gender'],
-    ageYears: f.ageYears ? Number(f.ageYears) : null,
-    city: f.city || null,
-    source: f.source,
-    interest: f.interest || null,
-    notes: f.notes || null,
-    nextFollowUpAt: fromLocalInput(f.nextFollowUpAt),
-    referrerId: f.referrerId || null,
-    campId: f.campId || null,
-  });
   const save = useMutation({
-    mutationFn: (f: Form) => api.crm.leads.create(leadBody(f)),
+    mutationFn: (body: C.LeadInput) => api.crm.leads.create(body),
     onSuccess: (lead) => {
-      setForm(null);
+      setAdding(false);
       queryClient.invalidateQueries({ queryKey: ['crm'] });
       router.push(`/crm/leads/${lead.id}`);
     },
@@ -138,85 +78,14 @@ function Leads() {
         description="Every call, walk-in, camp visitor and website enquiry, until they become a patient."
         actions={
           <Can permission="crm.lead.manage">
-            <Button onClick={() => setForm(emptyForm())}>
+            <Button onClick={() => setAdding(true)}>
               <Plus /> New enquiry
             </Button>
           </Can>
         }
       />
 
-      {form && canManage && (
-        <Card className="mb-6">
-          <CardHeader>
-            <CardTitle>New enquiry</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <ErrorBox error={save.error ? errorMessage(save.error) : Object.keys(errors).length ? 'Please correct the highlighted fields.' : null} />
-            <div className="grid gap-4 sm:grid-cols-4">
-              <Field id="ld-name" label="Name *" className="sm:col-span-2" error={errors.name}>
-                <Input id="ld-name" maxLength={200} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-              </Field>
-              <Field id="ld-mobile" label="Mobile" error={errors.mobile}>
-                <Input id="ld-mobile" inputMode="numeric" maxLength={10} value={form.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value.replace(/\D/g, '') })} />
-              </Field>
-              <Field id="ld-email" label="Email" error={errors.email}>
-                <Input id="ld-email" type="email" maxLength={254} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
-              </Field>
-              <Field id="ld-gender" label="Gender">
-                <Select id="ld-gender" value={form.gender} onChange={(e) => setForm({ ...form, gender: e.target.value })}>
-                  <option value="">—</option>
-                  <option value="female">Female</option>
-                  <option value="male">Male</option>
-                  <option value="other">Other</option>
-                </Select>
-              </Field>
-              <Field id="ld-age" label="Age" error={errors.ageYears}>
-                <Input id="ld-age" type="number" min={0} max={130} step={1} value={form.ageYears} onChange={(e) => setForm({ ...form, ageYears: e.target.value })} />
-              </Field>
-              <Field id="ld-city" label="City / area" error={errors.city}>
-                <Input id="ld-city" maxLength={100} value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} />
-              </Field>
-              <Field id="ld-source" label="Source">
-                <Select id="ld-source" value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value as C.LeadSource })}>
-                  {C.LEAD_SOURCES.map((s) => (
-                    <option key={s} value={s}>
-                      {LEAD_SOURCE_LABELS[s]}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-              <Field id="ld-interest" label="Looking for" className="sm:col-span-2" error={errors.interest}>
-                <Input id="ld-interest" maxLength={200} placeholder="e.g. Cataract surgery, Cardiology OPD" value={form.interest} onChange={(e) => setForm({ ...form, interest: e.target.value })} />
-              </Field>
-              <Field id="ld-next" label="Next call" error={errors.nextFollowUpAt}>
-                <Input id="ld-next" type="datetime-local" min={`${todayIST()}T00:00`} value={form.nextFollowUpAt} onChange={(e) => setForm({ ...form, nextFollowUpAt: e.target.value })} />
-              </Field>
-              <Field id="ld-ref" label="Referred by">
-                <ReferrerSelect id="ld-ref" value={form.referrerId} onChange={(referrerId) => setForm({ ...form, referrerId })} />
-              </Field>
-              <Field id="ld-camp" label="Health camp">
-                <CampSelect id="ld-camp" value={form.campId} onChange={(campId) => setForm({ ...form, campId })} />
-              </Field>
-              <Field id="ld-notes" label="Notes" className="sm:col-span-4" error={errors.notes}>
-                <Textarea id="ld-notes" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
-              </Field>
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setForm(null)}>
-                Cancel
-              </Button>
-              <Button disabled={save.isPending || !form.name.trim() || (!form.mobile && !form.email)} onClick={() => {
-                  const r = validate(C.leadInputSchema, leadBody(form));
-                  setErrors(r.errors ?? {});
-                  if (!r.errors) save.mutate(form);
-                }}>
-                {save.isPending && <Loader2 className="animate-spin" />}
-                Save enquiry
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      {adding && canManage && <LeadForm saving={save.isPending} error={save.error} onCancel={() => setAdding(false)} onSave={(b) => save.mutate(b)} />}
 
       <Card>
         <div className="flex flex-wrap items-center gap-3 border-b p-4">

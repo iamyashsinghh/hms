@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
 import { blankToUndefined, datesInOrder, END_BEFORE_START, gstin as strictGstin, hsnCode, isoDate, phoneNumber, requiredText } from '../validation';
+import { patchSchema } from '../patch';
+import type { ImportColumn } from '../imports';
 
 /**
  * Billing: permissions and API contracts (Zod schemas + types).
@@ -132,16 +134,24 @@ export const createServiceSchema = z.object({
 });
 export type CreateService = z.input<typeof createServiceSchema>;
 
-/** No defaults here: a partial update must not reset the category, GST or active flag it did not send. */
-export const updateServiceSchema = createServiceSchema
-  .omit({ code: true })
-  .extend({
-    category: z.enum(SERVICE_CATEGORIES),
-    taxRate,
-    isActive: z.boolean(),
-  })
-  .partial();
+/** No defaults (patchSchema, not .partial()): Zod 4 keeps defaults inside .partial(), so a PATCH would reset the category, GST or active flag it did not send. */
+export const updateServiceSchema = patchSchema(createServiceSchema.omit({ code: true }));
 export type UpdateService = z.input<typeof updateServiceSchema>;
+
+/** Columns of the service / price master import sheet. Packages are built on the form (they need their items). */
+export const SERVICE_IMPORT_COLUMNS: readonly ImportColumn[] = [
+  { key: 'code', header: 'Code', type: 'text', required: true, example: 'CONS-GEN' },
+  { key: 'name', header: 'Name', type: 'text', required: true, example: 'General consultation' },
+  { key: 'category', header: 'Category', type: 'enum', options: SERVICE_CATEGORIES.filter((c) => c !== 'package'), example: 'consultation' },
+  { key: 'hsnSac', header: 'HSN/SAC', type: 'text', example: '999312' },
+  { key: 'basePrice', header: 'Price', type: 'number', required: true, example: 500 },
+  { key: 'taxRate', header: 'GST %', type: 'enum', options: GST_RATES, example: 0 },
+  { key: 'isActive', header: 'Active', type: 'boolean', example: 'Yes' },
+];
+export const serviceImportRowSchema = createServiceSchema
+  .omit({ departmentId: true, packageItems: true })
+  .refine((r) => r.category !== 'package', { path: ['category'], message: 'Create packages on the service form' });
+export type ServiceImportRow = z.output<typeof serviceImportRowSchema>;
 
 export interface Service {
   id: string;
@@ -254,10 +264,11 @@ export const createInvoiceSchema = z.object({
 });
 export type CreateInvoice = z.input<typeof createInvoiceSchema>;
 
-export const updateInvoiceSchema = createInvoiceSchema
-  .pick({ supplyType: true, buyerGstin: true, notes: true, payerId: true, doctorId: true })
-  .extend({ lines: z.array(invoiceLineInputSchema).min(1).max(500) })
-  .partial();
+export const updateInvoiceSchema = patchSchema(
+  createInvoiceSchema
+    .pick({ supplyType: true, buyerGstin: true, notes: true, payerId: true, doctorId: true })
+    .extend({ lines: z.array(invoiceLineInputSchema).min(1).max(500) }),
+);
 export type UpdateInvoice = z.input<typeof updateInvoiceSchema>;
 
 export const cancelInvoiceSchema = z.object({ reason: reasonText('the reason for cancelling') });

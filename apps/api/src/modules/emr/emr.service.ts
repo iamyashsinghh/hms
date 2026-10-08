@@ -55,7 +55,7 @@ const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kol
 
 /** Follow-up dates: today or later, and not absurdly far ahead. */
 function checkFollowUpDate(date: string): void {
-  if (date < today()) throw badRequest('follow_up_in_past', 'Follow-up date cannot be in the past');
+  if (date < today()) throw badRequest('invalid_follow_up', 'Follow-up date cannot be in the past');
   const limit = new Date(`${today()}T00:00:00Z`);
   limit.setUTCFullYear(limit.getUTCFullYear() + 2);
   if (date > limit.toISOString().slice(0, 10)) throw badRequest('follow_up_too_far', 'Follow-up date can be at most 2 years ahead');
@@ -196,6 +196,7 @@ export class EmrService {
       if (input.notes !== undefined) values.notes = clean({ ...(enc.notes as EncounterNotes), ...input.notes });
       if (input.followUpDate !== undefined) {
         // Only a new or changed date is checked, so re-saving notes on an older consultation still works.
+        // Today or later also means never before the day of the consultation (IST).
         if (input.followUpDate && input.followUpDate !== enc.followUpDate) checkFollowUpDate(input.followUpDate);
         values.followUpDate = input.followUpDate;
       }
@@ -564,6 +565,19 @@ export class EmrService {
     return this.tx(async (tx) =>
       toFavourite(await this.repo.insertFavourite(tx, { tenantId: ctx.tenantId!, doctorId: ctx.userId!, name: parsed.name, lines: parsed.lines })),
     );
+  }
+
+  /** Doctors can only change their own favourites. */
+  updateFavourite(id: string, input: emr.UpdateFavourite): Promise<Favourite> {
+    const d = emr.updateFavouriteSchema.parse(input);
+    return this.tx(async (tx) => {
+      const row = await this.repo.updateFavourite(tx, id, currentContext()!.userId!, {
+        ...(d.name !== undefined && { name: d.name }),
+        ...(d.lines !== undefined && { lines: d.lines }),
+      });
+      if (!row) throw notFound('Favourite');
+      return toFavourite(row);
+    });
   }
 
   deleteFavourite(id: string): Promise<void> {
