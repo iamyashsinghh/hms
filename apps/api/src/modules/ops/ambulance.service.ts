@@ -62,11 +62,15 @@ export class AmbulanceService {
     });
   }
 
-  updateVehicle(id: string, input: Partial<VehicleIn>): Promise<O.Vehicle> {
+  updateVehicle(id: string, input: z.output<typeof O.updateVehicleSchema>): Promise<O.Vehicle> {
     return this.db.tx(async (tx) => {
       const [v] = await tx.select().from(opsVehicles).where(eq(opsVehicles.id, id)).for('update');
       if (!v) throw notFound('Ambulance');
       if (input.status && v.status === 'on_trip') throw conflict('vehicle_on_trip', `${v.registrationNo} is on a trip; complete or cancel it first`);
+      if (input.registrationNo && input.registrationNo !== v.registrationNo) {
+        const [dup] = await tx.select({ id: opsVehicles.id }).from(opsVehicles).where(eq(opsVehicles.registrationNo, input.registrationNo));
+        if (dup) throw conflict('duplicate_vehicle', `${input.registrationNo} is already registered`);
+      }
       const [row] = await tx
         .update(opsVehicles)
         .set(
@@ -74,7 +78,7 @@ export class AmbulanceService {
             registrationNo: input.registrationNo,
             type: input.type,
             status: input.status,
-            driverName: input.driverName,
+            driverName: input.driverName === undefined ? undefined : input.driverName || null,
             driverMobile: input.driverMobile,
             ratePerKm: dec(input.ratePerKm),
             baseCharge: dec(input.baseCharge),

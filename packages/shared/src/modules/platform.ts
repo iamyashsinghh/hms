@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { patchSchema } from '../patch';
 
 /**
  * SaaS Platform: hospital signup, plans, subscriptions, entitlements, super-admin console,
@@ -100,7 +101,7 @@ export const upsertPlanSchema = z.object({
   sortOrder: z.number().int().default(0),
 });
 export type UpsertPlan = z.input<typeof upsertPlanSchema>;
-export const updatePlanSchema = upsertPlanSchema.omit({ code: true }).partial();
+export const updatePlanSchema = patchSchema(upsertPlanSchema.omit({ code: true }));
 export type UpdatePlan = z.input<typeof updatePlanSchema>;
 
 export interface Entitlements {
@@ -298,7 +299,7 @@ export const upsertAnnouncementSchema = z.object({
   isPublished: z.boolean().default(true),
 });
 export type UpsertAnnouncement = z.input<typeof upsertAnnouncementSchema>;
-export const updateAnnouncementSchema = upsertAnnouncementSchema.partial();
+export const updateAnnouncementSchema = patchSchema(upsertAnnouncementSchema);
 export type UpdateAnnouncement = z.input<typeof updateAnnouncementSchema>;
 
 export interface HelpArticle {
@@ -329,7 +330,7 @@ export const upsertHelpArticleSchema = z.object({
   isPublished: z.boolean().default(true),
 });
 export type UpsertHelpArticle = z.input<typeof upsertHelpArticleSchema>;
-export const updateHelpArticleSchema = upsertHelpArticleSchema.partial();
+export const updateHelpArticleSchema = patchSchema(upsertHelpArticleSchema);
 export type UpdateHelpArticle = z.input<typeof updateHelpArticleSchema>;
 
 // ---------- Support tickets ----------

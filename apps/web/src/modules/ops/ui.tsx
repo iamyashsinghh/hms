@@ -5,6 +5,7 @@ import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight, Search, X } from 'lucide-react';
 import type { ops as O, Patient } from '@hms/shared';
+import type { z } from 'zod';
 import { api } from '@/lib/api';
 import { fullName } from '@/lib/format';
 import { cn } from '@/lib/utils';
@@ -322,3 +323,13 @@ export function PatientPicker({ value, onChange, label = 'Patient' }: { value: P
 export const num = (s: string) => (s.trim() === '' ? undefined : Number(s));
 /** Optional string from a text input value. */
 export const opt = (s: string) => (s.trim() === '' ? undefined : s.trim());
+
+/** First validation problem from a shared Zod schema, as one readable line (null when the body is valid). */
+export function firstIssue(schema: z.ZodType, body: unknown, labels: Record<string, string> = {}): string | null {
+  const r = schema.safeParse(body);
+  if (r.success) return null;
+  const issue = r.error.issues[0]!;
+  const key = String(issue.path[0] ?? '');
+  const label = labels[key] ?? key;
+  return label ? `${label}: ${issue.message}` : issue.message;
+}

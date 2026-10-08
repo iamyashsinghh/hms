@@ -189,6 +189,10 @@ export class ReferralsService {
     const d = crm.commissionRuleInputSchema.parse(input);
     return this.db.tx(async (tx) => {
       const name = d.referrerId ? (await this.referrerRow(tx, d.referrerId)).name : null;
+      const [current] = await tx.select({ effectiveFrom: crmCommissionRules.effectiveFrom }).from(crmCommissionRules).where(eq(crmCommissionRules.id, id)).limit(1);
+      if (!current) throw notFound('Commission rule');
+      const from = d.effectiveFrom ?? current.effectiveFrom;
+      if (d.effectiveTo && d.effectiveTo < from) throw badRequest('invalid_dates', 'End date is before the start date');
       const [row] = await tx
         .update(crmCommissionRules)
         .set({

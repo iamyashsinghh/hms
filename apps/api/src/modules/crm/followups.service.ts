@@ -1,12 +1,12 @@
 import { Inject, Injectable, Logger, OnApplicationBootstrap, OnApplicationShutdown } from '@nestjs/common';
-import { and, count, crmFollowUps, crmLeads, desc, eq, iso, patients, sql, tenants, type Tx } from '@hms/db';
+import { and, count, crmFollowUps, crmLeads, desc, eq, iso, patients, sql, tenants, users, type Tx } from '@hms/db';
 import { crm, type Paginated } from '@hms/shared';
 import { APP_CONFIG, type AppConfig } from '../../config';
 import { DbService } from '../../common/db/db.service';
 import { currentContext } from '../../common/context/request-context';
-import { conflict, notFound } from '../../common/errors/errors';
+import { badRequest, conflict, notFound } from '../../common/errors/errors';
 import { CrmMessenger } from './crm.messenger';
-import { actor, addDays, personName, tenantId, todayIST } from './crm.util';
+import { actor, addDays, checkAssignee, personName, tenantId, todayIST } from './crm.util';
 
 type FollowUpRow = typeof crmFollowUps.$inferSelect;
 
@@ -82,7 +82,9 @@ export class FollowUpsService implements OnApplicationBootstrap, OnApplicationSh
 
   create(input: crm.FollowUpInput): Promise<crm.FollowUp> {
     const d = crm.followUpInputSchema.parse(input);
+    if (d.dueDate < todayIST()) throw badRequest('due_date_past', 'The due date cannot be in the past');
     return this.db.tx(async (tx) => {
+      await checkAssignee(tx, d.assignedTo);
       if (d.patientId) {
         const [p] = await tx.select({ id: patients.id }).from(patients).where(eq(patients.id, d.patientId));
         if (!p) throw notFound('Patient');
@@ -116,6 +118,8 @@ export class FollowUpsService implements OnApplicationBootstrap, OnApplicationSh
     return this.db.tx(async (tx) => {
       const f = await this.row(tx, id);
       if (f.status !== 'pending') throw conflict('follow_up_closed', `This follow-up is already ${f.status}`);
+      if (d.dueDate && d.dueDate !== f.dueDate && d.dueDate < todayIST()) throw badRequest('due_date_past', 'The due date cannot be in the past');
+      await checkAssignee(tx, d.assignedTo);
       await tx.update(crmFollowUps).set({ ...d, updatedBy: actor() }).where(eq(crmFollowUps.id, id));
       return this.detail(tx, id);
     });
@@ -254,10 +258,12 @@ export class FollowUpsService implements OnApplicationBootstrap, OnApplicationSh
         leadName: crmLeads.name,
         leadMobile: crmLeads.mobile,
         leadEmail: crmLeads.email,
+        assignedToName: users.name,
       })
       .from(crmFollowUps)
       .leftJoin(patients, and(eq(patients.tenantId, crmFollowUps.tenantId), eq(patients.id, crmFollowUps.patientId)))
-      .leftJoin(crmLeads, and(eq(crmLeads.tenantId, crmFollowUps.tenantId), eq(crmLeads.id, crmFollowUps.leadId)));
+      .leftJoin(crmLeads, and(eq(crmLeads.tenantId, crmFollowUps.tenantId), eq(crmLeads.id, crmFollowUps.leadId)))
+      .leftJoin(users, and(eq(users.tenantId, crmFollowUps.tenantId), eq(users.id, crmFollowUps.assignedTo)));
   }
 
   private async detail(tx: Tx, id: string): Promise<crm.FollowUp> {
@@ -276,6 +282,7 @@ type QueryRow = {
   leadName: string | null;
   leadMobile: string | null;
   leadEmail: string | null;
+  assignedToName: string | null;
 };
 
 function dto(x: QueryRow): crm.FollowUp {
@@ -295,6 +302,7 @@ function dto(x: QueryRow): crm.FollowUp {
     sourceRef: f.sourceRef,
     status: f.status as crm.FollowUpStatus,
     assignedTo: f.assignedTo,
+    assignedToName: x.assignedToName,
     reminderCount: f.reminderCount,
     lastRemindedAt: f.lastRemindedAt ? iso(f.lastRemindedAt) : null,
     outcome: f.outcome,

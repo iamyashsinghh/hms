@@ -77,7 +77,8 @@ export class HaiService {
     const ctx = currentContext()!;
     return this.db.tx(async (tx) => {
       const row = await this.find(tx, id);
-      checkDates({ onsetDate: input.onsetDate ?? row.onsetDate, deviceInsertedOn: input.deviceInsertedOn ?? row.deviceInsertedOn ?? undefined });
+      const deviceInsertedOn = input.deviceInsertedOn === undefined ? row.deviceInsertedOn : input.deviceInsertedOn || null;
+      checkDates({ onsetDate: input.onsetDate ?? row.onsetDate, deviceInsertedOn });
       const patch: Partial<typeof qualityHaiCases.$inferInsert> = { updatedBy: ctx.userId };
       for (const k of ['infectionType', 'onsetDate', 'status'] as const) if (input[k] !== undefined) patch[k] = input[k];
       for (const k of ['ward', 'deviceInsertedOn', 'procedureName', 'organism', 'cultureRef', 'notes'] as const) {

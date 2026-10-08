@@ -283,6 +283,7 @@ export class AdminService {
   }
 
   async updatePlan(admin: PlatformPrincipal, code: string, p: UpdatePlan): Promise<Plan> {
+    if (p.modules && p.modules.length === 0) throw badRequest('modules_required', 'A plan must include at least one module');
     const [row] = await this.db.global.update(platformPlans).set(planColumns(p)).where(eq(platformPlans.code, code)).returning();
     if (!row) throw notFound('Plan');
     this.ent.invalidate();
@@ -348,6 +349,7 @@ export class AdminService {
   }
 
   async createAnnouncement(admin: PlatformPrincipal, a: UpsertAnnouncement): Promise<Announcement> {
+    await this.checkAnnouncement(a, new Date().toISOString());
     const [row] = await this.db.global
       .insert(platformAnnouncements)
       .values({ ...announcementColumns(a), title: a.title, body: a.body, createdBy: admin.id })
@@ -357,10 +359,29 @@ export class AdminService {
   }
 
   async updateAnnouncement(admin: PlatformPrincipal, id: string, a: UpdateAnnouncement): Promise<Announcement> {
+    const [current] = await this.db.global.select().from(platformAnnouncements).where(eq(platformAnnouncements.id, id)).limit(1);
+    if (!current) throw notFound('Announcement');
+    await this.checkAnnouncement(
+      { ...a, endsAt: a.endsAt === undefined ? (current.endsAt ? iso(current.endsAt) : null) : a.endsAt },
+      a.startsAt ?? iso(current.startsAt),
+    );
     const [row] = await this.db.global.update(platformAnnouncements).set(announcementColumns(a)).where(eq(platformAnnouncements.id, id)).returning();
     if (!row) throw notFound('Announcement');
     await this.audit(admin, 'announcement.updated', null, { id });
     return toAnnouncement(row);
+  }
+
+  /** The end must come after the start, and targeted plans must exist. */
+  private async checkAnnouncement(a: UpdateAnnouncement, startsAt: string) {
+    const start = a.startsAt ?? startsAt;
+    if (a.endsAt && new Date(a.endsAt).getTime() <= new Date(start).getTime()) {
+      throw badRequest('invalid_dates', 'The end date must be after the start date');
+    }
+    if (a.planCodes?.length) {
+      const known = new Set((await this.db.global.select({ code: platformPlans.code }).from(platformPlans)).map((r) => r.code));
+      const unknown = a.planCodes.filter((c) => !known.has(c));
+      if (unknown.length) throw badRequest('unknown_plan', `Unknown plan: ${unknown.join(', ')}`);
+    }
   }
 
   // ---------- help ----------
@@ -378,6 +399,14 @@ export class AdminService {
   }
 
   async updateHelp(admin: PlatformPrincipal, id: string, h: UpdateHelpArticle): Promise<HelpArticle> {
+    if (h.slug) {
+      const [taken] = await this.db.global
+        .select({ id: platformHelpArticles.id })
+        .from(platformHelpArticles)
+        .where(and(eq(platformHelpArticles.slug, h.slug), sql`${platformHelpArticles.id} <> ${id}`))
+        .limit(1);
+      if (taken) throw conflict('slug_taken', 'An article with this slug already exists');
+    }
     const [row] = await this.db.global.update(platformHelpArticles).set(h).where(eq(platformHelpArticles.id, id)).returning();
     if (!row) throw notFound('Help article');
     await this.audit(admin, 'help.updated', null, { id });

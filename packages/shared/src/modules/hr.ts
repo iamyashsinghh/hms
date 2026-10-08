@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineModule } from '../manifest';
+import { patchSchema } from '../patch';
 
 /**
  * HR & Roster: permissions and API contracts (Zod schemas + types).
@@ -149,13 +150,14 @@ export const createEmployeeSchema = z.object({
 });
 export type CreateEmployee = z.input<typeof createEmployeeSchema>;
 
-export const updateEmployeeSchema = z
-  .object({
+// patchSchema, not .partial(): Zod 4 keeps defaults inside .partial(), so a partial update would reset them.
+export const updateEmployeeSchema = patchSchema(
+  z.object({
     ...employeeFields,
     status: z.enum(EMPLOYEE_STATUSES),
     dateOfExit: blankToUndef(isoDate.nullable().optional()),
-  })
-  .partial();
+  }),
+);
 export type UpdateEmployee = z.input<typeof updateEmployeeSchema>;
 export type EmployeeValues = z.output<typeof updateEmployeeSchema>;
 
@@ -265,7 +267,7 @@ export const shiftInputSchema = z.object({
   isActive: z.boolean().default(true),
 });
 export type ShiftInput = z.input<typeof shiftInputSchema>;
-export const updateShiftSchema = shiftInputSchema.omit({ code: true }).partial();
+export const updateShiftSchema = patchSchema(shiftInputSchema.omit({ code: true }));
 export type UpdateShift = z.input<typeof updateShiftSchema>;
 
 export interface Shift {
@@ -413,7 +415,7 @@ export const leaveTypeInputSchema = z.object({
   isActive: z.boolean().default(true),
 });
 export type LeaveTypeInput = z.input<typeof leaveTypeInputSchema>;
-export const updateLeaveTypeSchema = leaveTypeInputSchema.omit({ code: true }).partial();
+export const updateLeaveTypeSchema = patchSchema(leaveTypeInputSchema.omit({ code: true }));
 export type UpdateLeaveType = z.input<typeof updateLeaveTypeSchema>;
 
 export interface LeaveType {

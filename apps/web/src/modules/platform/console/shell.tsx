@@ -23,6 +23,7 @@ const LINKS = [
   { href: '/admin/invoices', label: 'Invoices' },
   { href: '/admin/plans', label: 'Plans' },
   { href: '/admin/announcements', label: 'Announcements' },
+  { href: '/admin/help', label: 'Help articles' },
   { href: '/admin/users', label: 'Platform users', superOnly: true },
 ];
 

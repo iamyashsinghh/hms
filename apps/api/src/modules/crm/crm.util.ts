@@ -1,3 +1,5 @@
+import { eq, users, type Tx } from '@hms/db';
+import { badRequest } from '../../common/errors/errors';
 import { currentContext } from '../../common/context/request-context';
 
 /** numeric(14,2) string from Postgres -> number of rupees. */
@@ -31,3 +33,10 @@ export function tenantId(): string {
 }
 
 export const personName = (first: string, last: string | null) => (last ? `${first} ${last}` : first);
+
+/** An assignee must be an active staff user of this hospital (RLS scopes the lookup to the tenant). */
+export async function checkAssignee(tx: Tx, userId: string | null | undefined): Promise<void> {
+  if (!userId) return;
+  const [u] = await tx.select({ status: users.status }).from(users).where(eq(users.id, userId)).limit(1);
+  if (!u || u.status !== 'active') throw badRequest('invalid_assignee', 'Pick an active staff member to assign');
+}

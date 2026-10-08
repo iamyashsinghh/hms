@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ErrorBox, Field, LINEN_KIND_LABELS, MessageRow, Pager, formatDateTime, opt } from '@/modules/ops/ui';
+import { ErrorBox, Field, LINEN_KIND_LABELS, MessageRow, Pager, firstIssue, formatDateTime, opt } from '@/modules/ops/ui';
 
 interface ItemForm {
   id?: string;
@@ -28,6 +28,8 @@ function ItemFormCard({ initial, onDone }: { initial: ItemForm; onDone: () => vo
   const save = useMutation({
     mutationFn: () => {
       const body = { name: f.name.trim(), parLevel: Number(f.parLevel || 0), isActive: f.isActive };
+      const problem = firstIssue(O.linenItemInputSchema, body, { name: 'Item name', parLevel: 'Par level' });
+      if (problem) throw new Error(problem);
       return f.id ? api.ops.linen.updateItem(f.id, body) : api.ops.linen.createItem(body);
     },
     onSuccess: () => {
@@ -55,7 +57,7 @@ function ItemFormCard({ initial, onDone }: { initial: ItemForm; onDone: () => vo
             <Input id="li-name" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="e.g. Bedsheet (single)" required />
           </Field>
           <Field id="li-par" label="Par level (min clean stock)">
-            <Input id="li-par" type="number" min={0} value={f.parLevel} onChange={(e) => setF({ ...f, parLevel: e.target.value })} />
+            <Input id="li-par" type="number" min={0} step={1} value={f.parLevel} onChange={(e) => setF({ ...f, parLevel: e.target.value })} />
           </Field>
           <label className="flex items-center gap-2 pt-7 text-sm">
             <input type="checkbox" checked={f.isActive} onChange={(e) => setF({ ...f, isActive: e.target.checked })} /> Active

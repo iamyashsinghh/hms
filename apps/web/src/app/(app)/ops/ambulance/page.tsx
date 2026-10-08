@@ -30,6 +30,7 @@ import {
   formatINR,
   num,
   opt,
+  firstIssue,
   todayIST,
 } from '@/modules/ops/ui';
 
@@ -48,6 +49,7 @@ const blankVehicle: VehicleForm = { registrationNo: '', type: 'bls', driverName:
 function VehicleFormCard({ initial, onDone }: { initial: VehicleForm; onDone: () => void }) {
   const queryClient = useQueryClient();
   const [f, setF] = React.useState(initial);
+  const labels = { registrationNo: 'Registration no.', driverMobile: 'Driver mobile', driverName: 'Driver', ratePerKm: 'Rate per km', baseCharge: 'Base charge' };
   const save = useMutation({
     mutationFn: () => {
       const body: O.VehicleInput = {
@@ -59,7 +61,16 @@ function VehicleFormCard({ initial, onDone }: { initial: VehicleForm; onDone: ()
         baseCharge: num(f.baseCharge),
         status: f.status || undefined,
       };
-      return f.id ? api.ops.ambulance.updateVehicle(f.id, body) : api.ops.ambulance.createVehicle(body);
+      if (!f.id) {
+        const problem = firstIssue(O.vehicleInputSchema, body, labels);
+        if (problem) throw new Error(problem);
+        return api.ops.ambulance.createVehicle(body);
+      }
+      // On edit an emptied driver name / mobile is cleared, not kept.
+      const patch: O.UpdateVehicle = { ...body, driverName: opt(f.driverName) ?? null, driverMobile: opt(f.driverMobile) ?? null };
+      const problem = firstIssue(O.updateVehicleSchema, patch, labels);
+      if (problem) throw new Error(problem);
+      return api.ops.ambulance.updateVehicle(f.id, patch);
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['ops'] });

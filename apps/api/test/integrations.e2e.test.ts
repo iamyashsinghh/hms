@@ -376,3 +376,16 @@ describe('integrations: hospital isolation', () => {
     expect((await call(null, 'POST', `/integrations/callbacks/abdm/${otherTenantId}/profile-share`, body, { 'x-abdm-signature': sig })).statusCode).toBe(404);
   });
 });
+
+describe('editing a lab device', () => {
+  it('keeps a deactivated device inactive when only its name changes', async () => {
+    const code = `EDIT${run}`.slice(0, 20).toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+    const dev = (await call(admin, 'POST', '/integrations/devices', { code, name: 'Analyser A', model: 'A-1' })).json();
+    const off = await call(admin, 'PATCH', `/integrations/devices/${dev.id}`, { isActive: false });
+    expect(off.statusCode, off.body).toBe(200);
+    const renamed = (await call(admin, 'PATCH', `/integrations/devices/${dev.id}`, { name: 'Analyser A (bench 2)' })).json();
+    expect(renamed).toMatchObject({ name: 'Analyser A (bench 2)', isActive: false, model: 'A-1' });
+    expect((await call(admin, 'PATCH', `/integrations/devices/${dev.id}`, { name: 'x' })).statusCode).toBe(400);
+    expect((await call(reception, 'PATCH', `/integrations/devices/${dev.id}`, { name: 'Nope nope' })).statusCode).toBe(403);
+  });
+});
