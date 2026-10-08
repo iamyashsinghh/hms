@@ -104,11 +104,11 @@ export default function SalesPage() {
                       <Badge variant={s.type === 'rx' ? 'default' : 'secondary'}>{s.type.toUpperCase()}</Badge>
                     </TableCell>
                     <TableCell>{s.customerName ?? (s.patientId ? 'Registered patient' : 'Walk-in')}</TableCell>
-                    <TableCell className="uppercase">{s.paymentMode ?? '—'}</TableCell>
+                    <TableCell className="uppercase">{s.onIpdBill ? 'IPD bill' : (s.paymentMode ?? '—')}</TableCell>
                     <TableCell className="text-right tabular-nums">{inr(s.total)}</TableCell>
                     <TableCell>
                       {s.status === 'completed' ? (
-                        <Badge variant="secondary">Paid</Badge>
+                        <Badge variant="secondary">{s.onIpdBill ? 'On IPD bill' : 'Paid'}</Badge>
                       ) : (
                         <Badge variant="destructive">{s.status === 'returned' ? 'Returned' : `Returned ${inr(s.returnedAmount)}`}</Badge>
                       )}

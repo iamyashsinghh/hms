@@ -185,6 +185,9 @@ export default function NewSalePage() {
                 ))}
               </Select>
               {errors.paymentMode && <p className="mt-1 text-xs text-destructive">{errors.paymentMode}</p>}
+              {patient && (
+                <p className="mt-1 text-xs text-muted-foreground">If this patient is admitted, the medicines go on their IPD bill (per the hospital&apos;s billing rules) and nothing is collected here.</p>
+              )}
             </div>
             {needsRx && (
               <label className="flex items-start gap-2 rounded-md border border-accent/40 bg-accent/10 p-3 text-sm">

@@ -15,6 +15,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { expiryLabel } from '@/modules/pharmacy/format';
+import type { ipd } from '@hms/shared';
+import { AdmittedPatientPicker } from '@/modules/inventory/admitted-patient-picker';
 import { Notice, StatusBadge } from '@/modules/inventory/ui';
 
 export default function IndentPage({ params }: { params: Promise<{ id: string }> }) {
@@ -26,6 +28,8 @@ export default function IndentPage({ params }: { params: Promise<{ id: string }>
   const queryClient = useQueryClient();
   const [qty, setQty] = React.useState<Record<string, string>>({});
   const [qtyError, setQtyError] = React.useState<string | null>(null);
+  /** Issued for an admitted patient: consumables used on them (charged per the hospital's billing rules). */
+  const [forPatient, setForPatient] = React.useState<ipd.AdmissionSummary | null>(null);
 
   const indent = useQuery({ queryKey: ['inventory', 'indents', id], queryFn: () => api.inventory.indents.get(id), enabled: canRead });
   const data = indent.data;
@@ -37,6 +41,7 @@ export default function IndentPage({ params }: { params: Promise<{ id: string }>
 
   const onDone = () => {
     setQty({});
+    setForPatient(null);
     queryClient.invalidateQueries({ queryKey: ['inventory', 'indents'] });
     queryClient.invalidateQueries({ queryKey: ['pharmacy'] });
   };
@@ -51,6 +56,7 @@ export default function IndentPage({ params }: { params: Promise<{ id: string }>
   const issue = useMutation({
     mutationFn: () =>
       api.inventory.indents.issue(id, {
+        admissionId: forPatient?.id,
         lines: entries()
           .filter(([, q]) => Number(q) > 0)
           .map(([indentLineId, q]) => ({ indentLineId, qty: Number(q) })),
@@ -187,7 +193,20 @@ export default function IndentPage({ params }: { params: Promise<{ id: string }>
             </div>
           )}
           {mode === 'issue' && (
-            <div className="flex items-center justify-end gap-4">
+            <div className="space-y-1">
+              <label htmlFor="issue-patient" className="text-sm font-medium">
+                For a patient <span className="font-normal text-muted-foreground">(optional)</span>
+              </label>
+              <div className="max-w-xl">
+                <AdmittedPatientPicker value={forPatient} onChange={setForPatient} />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Consumables used on an admitted patient go on their IPD bill at the sale rate, unless the hospital treats them as its own cost.
+              </p>
+            </div>
+          )}
+          {mode === 'issue' && (
+            <div className="flex flex-wrap items-center justify-end gap-4">
               <span className="text-xs text-muted-foreground">Batches are picked first-expiry-first-out from {data.fromStoreName}.</span>
               <Button disabled={issue.isPending || !entries().some(([, q]) => Number(q) > 0)} onClick={() => {
                   const problem = checkQty();
@@ -222,7 +241,14 @@ export default function IndentPage({ params }: { params: Promise<{ id: string }>
               {data.issues.flatMap((iss) =>
                 iss.lines.map((l, i) => (
                   <TableRow key={l.id}>
-                    <TableCell className="font-mono text-xs">{i === 0 ? iss.number : ''}</TableCell>
+                    <TableCell className="text-xs">
+                      {i === 0 && (
+                        <>
+                          <span className="font-mono">{iss.number}</span>
+                          {iss.patientName && <div className="text-muted-foreground">For {iss.patientName}</div>}
+                        </>
+                      )}
+                    </TableCell>
                     <TableCell>{i === 0 ? formatDate(iss.createdAt) : ''}</TableCell>
                     <TableCell>{lines.find((x) => x.id === l.indentLineId)?.itemName}</TableCell>
                     <TableCell className="font-mono text-xs">{l.batchNo}</TableCell>

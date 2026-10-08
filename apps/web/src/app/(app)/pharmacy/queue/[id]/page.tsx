@@ -198,6 +198,7 @@ export default function DispensePage({ params }: { params: Promise<{ id: string 
               {dispense.isPending && <Loader2 className="animate-spin" />} Dispense &amp; bill
             </Button>
             {short && <p className="w-full text-right text-sm text-destructive">Not enough stock for one or more lines; lower the quantity or give partly.</p>}
+            <p className="w-full text-right text-xs text-muted-foreground">For an admitted patient the medicines go on the IPD bill (per the hospital&apos;s billing rules); nothing is collected here.</p>
             {(dispense.error || cancel.error) && <p className="w-full text-right text-sm text-destructive">{errorMessage(dispense.error ?? cancel.error)}</p>}
           </CardContent>
         </Card>

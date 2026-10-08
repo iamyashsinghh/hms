@@ -86,7 +86,14 @@ export default function SaleDetailPage({ params }: { params: Promise<{ id: strin
           <div className="text-right text-sm">
             <div className="font-mono text-base font-semibold">{sale.number}</div>
             <div>{formatDate(sale.createdAt)}</div>
-            {sale.invoiceNumber && <div className="text-muted-foreground">Invoice {sale.invoiceNumber}</div>}
+            {sale.onIpdBill ? (
+              <div className="text-muted-foreground">
+                <Badge variant="secondary">On IPD bill</Badge>
+                <div>{sale.invoiceNumber ? `IPD bill ${sale.invoiceNumber}` : 'Billed with the stay at discharge'}</div>
+              </div>
+            ) : (
+              sale.invoiceNumber && <div className="text-muted-foreground">Invoice {sale.invoiceNumber}</div>
+            )}
             {sale.status !== 'completed' && <Badge variant="destructive">{sale.status === 'returned' ? 'Fully returned' : 'Partly returned'}</Badge>}
           </div>
         </CardHeader>
@@ -159,7 +166,7 @@ export default function SaleDetailPage({ params }: { params: Promise<{ id: strin
               </>
             )}
             <dt className="text-muted-foreground">Paid by</dt>
-            <dd className="text-right uppercase">{sale.paymentMode ?? '—'}</dd>
+            <dd className="text-right uppercase">{sale.onIpdBill ? 'IPD bill' : (sale.paymentMode ?? '—')}</dd>
           </dl>
         </CardContent>
       </Card>

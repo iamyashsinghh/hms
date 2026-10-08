@@ -1,4 +1,4 @@
-import type { ImportRequest, ImportResult, inventory, Paginated } from '@hms/shared';
+import type { ImportRequest, ImportResult, inventory, ipd, Paginated } from '@hms/shared';
 import type { Http } from '../http';
 
 /** Inventory & Procurement endpoints. Owned by the "inventory" workstream. Types come from @hms/shared (inventory.*). */
@@ -42,5 +42,7 @@ export const inventoryApi = (http: Http) => ({
     cancel: (id: string) => http.post<inventory.Indent>(`/inventory/indents/${id}/cancel`),
     close: (id: string, body: inventory.CloseIndent) => http.post<inventory.Indent>(`/inventory/indents/${id}/close`, body),
     issue: (id: string, body: inventory.IssueIndent) => http.post<inventory.Indent>(`/inventory/indents/${id}/issue`, body),
+    /** Admitted patients to issue consumables for. */
+    admittedPatients: (q?: string) => http.get<Paginated<ipd.AdmissionSummary>>('/inventory/indents/admitted-patients', q ? { q } : {}),
   },
 });

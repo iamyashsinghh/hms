@@ -157,7 +157,8 @@ export function PreauthForm({ policy, preauth, onCancel }: { policy: I.Policy; p
           </Field>
         )}
         <Field id="ref" error={errors.admissionRef} label="Admission / IP number">
-          <Input id="ref" maxLength={100} value={v.admissionRef} onChange={set('admissionRef')} />
+          <Input id="ref" maxLength={100} value={v.admissionRef} onChange={set('admissionRef')} placeholder="e.g. IP000123" />
+          <p className="mt-1 text-xs text-muted-foreground">With the IPD number, the approved amount shows on that stay&apos;s running bill.</p>
         </Field>
         <Field id="notes" error={errors.notes} label="Notes" className="sm:col-span-2">
           <Input id="notes" maxLength={1000} value={v.notes} onChange={set('notes')} />
