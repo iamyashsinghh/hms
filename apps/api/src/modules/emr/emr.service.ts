@@ -53,6 +53,14 @@ import { matchAllergies } from './allergy';
 const num = (v: string | null): number | null => (v === null ? null : Number(v));
 const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
+/** Follow-up dates: today or later, and not absurdly far ahead. */
+function checkFollowUpDate(date: string): void {
+  if (date < today()) throw badRequest('follow_up_in_past', 'Follow-up date cannot be in the past');
+  const limit = new Date(`${today()}T00:00:00Z`);
+  limit.setUTCFullYear(limit.getUTCFullYear() + 2);
+  if (date > limit.toISOString().slice(0, 10)) throw badRequest('follow_up_too_far', 'Follow-up date can be at most 2 years ahead');
+}
+
 /** Payload of frontoffice.visit.checked_in (owned by frontoffice; see PARALLEL_PLAN.md section 4). */
 export interface VisitCheckedIn {
   visitId: string;
@@ -186,7 +194,11 @@ export class EmrService {
     return this.mutate(id, { doctorOnly: true }, async (tx, enc) => {
       const values: Partial<EncounterRow> = { ...startIfWaiting(enc), updatedBy: currentContext()!.userId };
       if (input.notes !== undefined) values.notes = clean({ ...(enc.notes as EncounterNotes), ...input.notes });
-      if (input.followUpDate !== undefined) values.followUpDate = input.followUpDate;
+      if (input.followUpDate !== undefined) {
+        // Only a new or changed date is checked, so re-saving notes on an older consultation still works.
+        if (input.followUpDate && input.followUpDate !== enc.followUpDate) checkFollowUpDate(input.followUpDate);
+        values.followUpDate = input.followUpDate;
+      }
       if (input.followUpNotes !== undefined) values.followUpNotes = input.followUpNotes || null;
       return this.repo.updateEncounter(tx, id, values);
     });

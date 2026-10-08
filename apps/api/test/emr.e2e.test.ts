@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { EventBus } from '../src/common/events/event-bus';
 import { DbService } from '../src/common/db/db.service';
 import { sql } from '@hms/db';
+import { todayIso } from '@hms/shared';
 import { bearer, bootApp, login } from './helpers';
 
 let app: NestFastifyApplication;
@@ -17,6 +18,8 @@ let pharmacist: string;
 let otherHospital: string;
 let patientId: string;
 let allergicPatientId: string;
+const FOLLOW_UP = todayIso(30);
+const QUICK_FOLLOW_UP = todayIso(14);
 
 const inject = (method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', url: string, token: string, payload?: object) =>
   app.inject({ method, url: `/api/v1${url}`, headers: bearer(token), payload });
@@ -78,7 +81,7 @@ describe('emr consultation flow', () => {
   it('saves notes, ICD-10 diagnoses, orders and starts the consultation', async () => {
     let res = await inject('PATCH', `/emr/encounters/${encounterId}`, doctor, {
       notes: { chiefComplaints: 'Fever and sore throat for 3 days', examination: 'Throat congested' },
-      followUpDate: '2026-12-01',
+      followUpDate: FOLLOW_UP,
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().status).toBe('in_progress');
@@ -154,7 +157,7 @@ describe('emr consultation flow', () => {
     expect(rxEvent).toMatchObject({ doctorId, doctorName: 'Dr. Asha Rao' });
     expect(new Date(rxEvent.createdAt).toISOString()).toBe(rxEvent.createdAt);
     const signedEvent = topics.find((t) => t.topic === 'emr.encounter.signed')!.payload;
-    expect(signedEvent).toMatchObject({ followUpDate: '2026-12-01', followUpNotes: null });
+    expect(signedEvent).toMatchObject({ followUpDate: FOLLOW_UP, followUpNotes: null });
   });
 
   it('blocks direct database changes to a signed consultation (trigger)', async () => {
@@ -227,14 +230,14 @@ describe('emr quick prescription, favourites, certificates', () => {
       patientId,
       lines: [{ drugName: 'Cetirizine 10', dose: '1 tab', frequency: '0-0-1', days: 5 }],
       advice: 'Steam inhalation',
-      followUpDate: '2026-11-01',
+      followUpDate: QUICK_FOLLOW_UP,
       sign: true,
     });
     expect(res.statusCode).toBe(201);
     const { encounterId, prescriptionId, rxNo } = res.json();
     expect(rxNo).toMatch(/^RX/);
     const enc = (await inject('GET', `/emr/encounters/${encounterId}`, doctor)).json();
-    expect(enc).toMatchObject({ status: 'completed', followUpDate: '2026-11-01', notes: { advice: 'Steam inhalation' } });
+    expect(enc).toMatchObject({ status: 'completed', followUpDate: QUICK_FOLLOW_UP, notes: { advice: 'Steam inhalation' } });
     expect(enc.prescription.id).toBe(prescriptionId);
     expect(enc.prescription.lines[0].qty).toBe(5);
   });
@@ -254,7 +257,7 @@ describe('emr quick prescription, favourites, certificates', () => {
   it('issues a sick-leave certificate', async () => {
     const bad = await inject('POST', '/emr/certificates', doctor, { patientId, kind: 'sick_leave' });
     expect(bad.statusCode).toBe(400);
-    const res = await inject('POST', '/emr/certificates', doctor, { patientId, kind: 'sick_leave', fromDate: '2026-10-07', toDate: '2026-10-09', diagnosis: 'Acute pharyngitis' });
+    const res = await inject('POST', '/emr/certificates', doctor, { patientId, kind: 'sick_leave', fromDate: todayIso(-1), toDate: todayIso(1), diagnosis: 'Acute pharyngitis' });
     expect(res.statusCode).toBe(201);
     expect(res.json().certificateNo).toMatch(/^MC\d{6}$/);
     const list = await inject('GET', `/emr/patients/${patientId}/certificates`, reception);
@@ -346,5 +349,76 @@ describe('emr hospital isolation', () => {
         tx.execute(sql`insert into clinical.encounter_addenda (tenant_id, encounter_id, text) values (${tenantId}, ${enc.id}, 'x')`),
       ),
     ).rejects.toThrow();
+  });
+});
+
+describe('emr validations', () => {
+  let encounterId: string;
+  const msg = (res: { json: () => { error: { message: string } } }) => res.json().error.message;
+
+  beforeAll(async () => {
+    encounterId = (await inject('POST', '/emr/encounters', doctor, { patientId })).json().id;
+  });
+
+  it('refuses vitals out of range, half-entered BP and an empty reading', async () => {
+    const pulse = await inject('POST', `/emr/encounters/${encounterId}/vitals`, nurse, { pulse: 300 });
+    expect(pulse.statusCode).toBe(400);
+    expect(msg(pulse)).toContain('Pulse must be between 20 and 250');
+    const spo2 = await inject('POST', `/emr/encounters/${encounterId}/vitals`, nurse, { spo2: 120 });
+    expect(spo2.statusCode).toBe(400);
+    expect(msg(spo2)).toContain('SpO2 must be between 40 and 100');
+    const half = await inject('POST', `/emr/encounters/${encounterId}/vitals`, nurse, { bpSystolic: 120 });
+    expect(half.statusCode).toBe(400);
+    expect(msg(half)).toContain('Enter both systolic and diastolic BP');
+    const upside = await inject('POST', `/emr/encounters/${encounterId}/vitals`, nurse, { bpSystolic: 80, bpDiastolic: 120 });
+    expect(msg(upside)).toContain('Diastolic BP must be lower than systolic BP');
+    const empty = await inject('POST', `/emr/encounters/${encounterId}/vitals`, nurse, { notes: 'nothing measured' });
+    expect(empty.statusCode).toBe(400);
+    expect(msg(empty)).toContain('Enter at least one reading');
+    const ok = await inject('POST', `/emr/encounters/${encounterId}/vitals`, nurse, { bpSystolic: 120, bpDiastolic: 80, pulse: 78, temperatureC: 37.2, spo2: 98, weightKg: 70, heightCm: 170 });
+    expect(ok.statusCode).toBe(201);
+    expect(ok.json().vitals.at(-1).bmi).toBe(24.2);
+  });
+
+  it('refuses a follow-up date in the past but keeps an old one on re-save', async () => {
+    const past = await inject('PATCH', `/emr/encounters/${encounterId}`, doctor, { followUpDate: todayIso(-1) });
+    expect(past.statusCode).toBe(400);
+    expect(msg(past)).toBe('Follow-up date cannot be in the past');
+    const far = await inject('PATCH', `/emr/encounters/${encounterId}`, doctor, { followUpDate: todayIso(365 * 3) });
+    expect(msg(far)).toBe('Follow-up date can be at most 2 years ahead');
+    const bad = await inject('PATCH', `/emr/encounters/${encounterId}`, doctor, { followUpDate: '2026-02-30' });
+    expect(bad.statusCode).toBe(400);
+    const ok = await inject('PATCH', `/emr/encounters/${encounterId}`, doctor, { followUpDate: todayIso() });
+    expect(ok.statusCode).toBe(200);
+    const again = await inject('PATCH', `/emr/encounters/${encounterId}`, doctor, { followUpDate: todayIso(), notes: { advice: 'Rest' } });
+    expect(again.statusCode).toBe(200);
+    const quick = await inject('POST', '/emr/prescriptions', doctor, { patientId, lines: [{ drugName: 'ORS', dose: '1 sachet', frequency: 'TDS' }], followUpDate: todayIso(-2) });
+    expect(quick.statusCode).toBe(400);
+    expect(msg(quick)).toContain('Follow-up date cannot be in the past');
+  });
+
+  it('refuses prescription lines without dose, with negative days or a short override reason', async () => {
+    const noDose = await inject('PUT', `/emr/encounters/${encounterId}/prescription`, doctor, { lines: [{ drugName: 'Paracetamol 650', dose: '', frequency: 'TDS' }] });
+    expect(noDose.statusCode).toBe(400);
+    expect(msg(noDose)).toContain('Enter the dose');
+    const days = await inject('PUT', `/emr/encounters/${encounterId}/prescription`, doctor, { lines: [{ drugName: 'Paracetamol 650', dose: '1 tab', frequency: 'TDS', days: -2 }] });
+    expect(msg(days)).toContain('Days cannot be negative');
+    const reason = await inject('PUT', `/emr/encounters/${encounterId}/prescription`, doctor, { lines: [{ drugName: 'Amoxicillin 500', dose: '1 cap', frequency: 'TDS', allergyOverrideReason: 'ok' }] });
+    expect(msg(reason)).toContain('at least 3 characters');
+    const ok = await inject('PUT', `/emr/encounters/${encounterId}/prescription`, doctor, { lines: [{ drugName: 'Paracetamol 650', dose: '1 tab', frequency: 'TDS', days: 5 }] });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().prescription.lines[0].qty).toBe(15);
+  });
+
+  it('checks certificate dates', async () => {
+    const reversed = await inject('POST', '/emr/certificates', doctor, { patientId, kind: 'sick_leave', fromDate: todayIso(2), toDate: todayIso() });
+    expect(reversed.statusCode).toBe(400);
+    expect(msg(reversed)).toContain('End date is before start date');
+    const old = await inject('POST', '/emr/certificates', doctor, { patientId, kind: 'medical', fromDate: todayIso(-400) });
+    expect(msg(old)).toContain('From date can be at most 90 days in the past');
+    const noTo = await inject('POST', '/emr/certificates', doctor, { patientId, kind: 'sick_leave', fromDate: todayIso() });
+    expect(msg(noTo)).toContain('Sick leave needs a to date');
+    const fit = await inject('POST', '/emr/certificates', doctor, { patientId, kind: 'fitness', fromDate: todayIso(-3) });
+    expect(fit.statusCode).toBe(201);
   });
 });

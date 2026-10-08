@@ -62,6 +62,11 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
   const open = order.status !== 'cancelled';
   const changed = order.results.filter((r) => r.status !== 'verified' && ((draft[r.id]?.value ?? '') !== (r.value ?? '') || (draft[r.id]?.remarks ?? '') !== (r.remarks ?? '')));
   const entered = order.results.filter((r) => r.status === 'entered');
+  const notANumber = (r: L.Result) => {
+    const v = draft[r.id]?.value?.trim() ?? '';
+    return r.resultType === 'numeric' && v !== '' && !L.isNumericResult(v);
+  };
+  const badValues = changed.filter(notANumber);
   const unmatched = order.items.filter((i) => i.kind === 'unmatched');
   const sampleOf = (r: L.Result) => order.samples.find((s) => s.id === r.sampleId);
 
@@ -126,7 +131,10 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
                 variant="ghost"
                 onClick={() => {
                   const reason = window.prompt('Why is this order being cancelled?');
-                  if (reason && reason.trim().length >= 3) act.mutate(() => api.lab.orders.cancel(id, { reason }));
+                  if (reason !== null) {
+                    if (reason.trim().length >= 3) act.mutate(() => api.lab.orders.cancel(id, { reason }));
+                    else window.alert('Give a reason of at least 3 characters');
+                  }
                 }}
               >
                 <Ban /> Cancel
@@ -200,7 +208,10 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
                           variant="ghost"
                           onClick={() => {
                             const reason = window.prompt('Reason for rejecting this sample (haemolysed, clotted, insufficient…)');
-                            if (reason && reason.trim().length >= 3) act.mutate(() => api.lab.samples.reject(s.id, { reason }));
+                            if (reason !== null) {
+                              if (reason.trim().length >= 3) act.mutate(() => api.lab.samples.reject(s.id, { reason }));
+                              else window.alert('Give a reason of at least 3 characters');
+                            }
                           }}
                         >
                           Reject
@@ -224,9 +235,10 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
         <CardHeader className="flex flex-row items-center justify-between gap-2">
           <CardTitle>Results</CardTitle>
           {open && (
-            <div className="flex gap-2">
+            <div className="flex items-center gap-2">
+              {badValues.length > 0 && <span className="text-xs text-destructive">{badValues[0]!.name}: enter a number</span>}
               {canEnter && (
-                <Button size="sm" variant="outline" disabled={!changed.length || act.isPending} onClick={saveResults}>
+                <Button size="sm" variant="outline" disabled={!changed.length || badValues.length > 0 || act.isPending} onClick={saveResults}>
                   {act.isPending ? <Loader2 className="animate-spin" /> : <Save />} Save results
                 </Button>
               )}
@@ -288,8 +300,11 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
                                 inputMode={r.resultType === 'numeric' ? 'decimal' : 'text'}
                                 disabled={!editable}
                                 value={d.value}
+                                maxLength={500}
+                                aria-invalid={notANumber(r)}
+                                title={notANumber(r) ? 'Enter a number, e.g. 12.5 or <0.1' : undefined}
                                 onChange={(e) => set({ value: e.target.value })}
-                                className={flag && flag !== 'normal' ? 'border-destructive font-semibold text-destructive' : ''}
+                                className={flag && flag !== 'normal' ? 'border-destructive font-semibold text-destructive' : notANumber(r) ? 'border-destructive' : ''}
                               />
                             )}
                             <FlagMark flag={flag} />
@@ -298,7 +313,7 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
                         <TableCell className="text-sm text-muted-foreground">{r.unit}</TableCell>
                         <TableCell className="text-sm text-muted-foreground">{rangeText(r)}</TableCell>
                         <TableCell>
-                          <Input aria-label={`${r.name} remarks`} disabled={!editable} value={d.remarks} onChange={(e) => set({ remarks: e.target.value })} />
+                          <Input aria-label={`${r.name} remarks`} disabled={!editable} maxLength={500} value={d.remarks} onChange={(e) => set({ remarks: e.target.value })} />
                         </TableCell>
                         <TableCell>
                           {r.status === 'verified' ? (
@@ -310,7 +325,10 @@ export default function LabOrderPage({ params }: { params: Promise<{ id: string 
                                   variant="ghost"
                                   onClick={() => {
                                     const reason = window.prompt(`Why does ${r.name} need correcting?`);
-                                    if (reason && reason.trim().length >= 3) act.mutate(() => api.lab.orders.amend(id, { resultId: r.id, reason }));
+                                    if (reason !== null) {
+                                      if (reason.trim().length >= 3) act.mutate(() => api.lab.orders.amend(id, { resultId: r.id, reason }));
+                                      else window.alert('Give a reason of at least 3 characters');
+                                    }
                                   }}
                                 >
                                   Amend

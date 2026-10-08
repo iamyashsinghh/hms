@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Pencil, Plus, Sparkles } from 'lucide-react';
 import { radiology } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { firstError, validate } from '@/lib/validate';
 import { usePermission } from '@/lib/auth';
 import { NoAccess } from '@/components/no-access';
 import { PageHeader } from '@/components/page-header';
@@ -18,6 +19,17 @@ import { Textarea, rupees } from '@/modules/radiology/ui';
 import { cn } from '@/lib/utils';
 
 type Tab = 'tests' | 'modalities' | 'templates';
+
+/** A form-level message from checking the values with the shared schema before saving. */
+function useCheck() {
+  const [message, setMessage] = React.useState<string | null>(null);
+  const check = (schema: Parameters<typeof validate>[0], values: unknown, extra?: string | null) => {
+    const msg = firstError(validate(schema, values).errors) ?? extra ?? null;
+    setMessage(msg);
+    return !msg;
+  };
+  return { message, check };
+}
 
 function useSaver<T>(fn: (v: T) => Promise<unknown>, onDone: () => void) {
   const qc = useQueryClient();
@@ -51,16 +63,17 @@ function ModalityForm({ initial, onDone }: { initial?: radiology.Modality; onDon
     isActive: initial?.isActive ?? true,
   });
   const save = useSaver(() => (initial ? api.radiology.updateModality(initial.id, f) : api.radiology.createModality(f)), onDone);
+  const { message, check } = useCheck();
   return (
     <form
       className="grid gap-3 border-b bg-muted/30 p-4 sm:grid-cols-6"
       onSubmit={(e) => {
         e.preventDefault();
-        save.mutate(undefined);
+        if (check(initial ? radiology.updateModalitySchema : radiology.modalityInputSchema, f)) save.mutate(undefined);
       }}
     >
-      <Field label="Code"><Input value={f.code} onChange={(e) => setF({ ...f, code: e.target.value })} placeholder="CT1" /></Field>
-      <Field label="Name" className="sm:col-span-2"><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="CT scanner 16 slice" /></Field>
+      <Field label="Code"><Input maxLength={20} value={f.code} onChange={(e) => setF({ ...f, code: e.target.value })} placeholder="CT1" /></Field>
+      <Field label="Name" className="sm:col-span-2"><Input maxLength={100} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="CT scanner 16 slice" /></Field>
       <Field label="Type">
         <Select value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value as radiology.ModalityInput['kind'] })}>
           {radiology.MODALITY_KINDS.map((k) => (
@@ -68,15 +81,15 @@ function ModalityForm({ initial, onDone }: { initial?: radiology.Modality; onDon
           ))}
         </Select>
       </Field>
-      <Field label="Room"><Input value={f.room ?? ''} onChange={(e) => setF({ ...f, room: e.target.value })} /></Field>
-      <Field label="PACS AE title"><Input value={f.aeTitle ?? ''} onChange={(e) => setF({ ...f, aeTitle: e.target.value })} /></Field>
+      <Field label="Room"><Input maxLength={60} value={f.room ?? ''} onChange={(e) => setF({ ...f, room: e.target.value })} /></Field>
+      <Field label="PACS AE title"><Input maxLength={16} value={f.aeTitle ?? ''} onChange={(e) => setF({ ...f, aeTitle: e.target.value })} /></Field>
       <label className="flex items-center gap-2 text-sm sm:col-span-6">
         <input type="checkbox" checked={f.isActive} onChange={(e) => setF({ ...f, isActive: e.target.checked })} /> In use
       </label>
       <div className="flex items-center gap-2 sm:col-span-6">
         <Button type="submit" disabled={save.isPending}>{save.isPending && <Loader2 className="animate-spin" />} Save</Button>
         <Button type="button" variant="ghost" onClick={onDone}>Close</Button>
-        {save.error && <span className="text-sm text-destructive">{errorMessage(save.error)}</span>}
+        {(message || save.error) && <span className="text-sm text-destructive">{message ?? errorMessage(save.error)}</span>}
       </div>
     </form>
   );
@@ -149,16 +162,18 @@ function TestForm({ initial, onDone }: { initial?: radiology.RadiologyTest; onDo
     defaultTemplateId: f.defaultTemplateId || null,
   });
   const save = useSaver(() => (initial ? api.radiology.updateTest(initial.id, body()) : api.radiology.createTest(body())), onDone);
+  const { message, check } = useCheck();
   return (
     <form
       className="grid gap-3 border-b bg-muted/30 p-4 sm:grid-cols-6"
       onSubmit={(e) => {
         e.preventDefault();
-        save.mutate(undefined);
+        const noPrice = !f.serviceCode.trim() && f.price.trim() === '' ? 'Give a price or a billing service code' : null;
+        if (check(initial ? radiology.updateTestSchema : radiology.testInputSchema, body(), noPrice)) save.mutate(undefined);
       }}
     >
-      <Field label="Code"><Input value={f.code} onChange={(e) => setF({ ...f, code: e.target.value })} placeholder="USG-ABD" /></Field>
-      <Field label="Name" className="sm:col-span-3"><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="USG whole abdomen" /></Field>
+      <Field label="Code"><Input maxLength={30} value={f.code} onChange={(e) => setF({ ...f, code: e.target.value })} placeholder="USG-ABD" /></Field>
+      <Field label="Name" className="sm:col-span-3"><Input maxLength={200} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="USG whole abdomen" /></Field>
       <Field label="Machine" className="sm:col-span-2">
         <Select value={f.modalityId} onChange={(e) => setF({ ...f, modalityId: e.target.value })}>
           <option value="">Pick</option>
@@ -176,7 +191,7 @@ function TestForm({ initial, onDone }: { initial?: radiology.RadiologyTest; onDo
           {templates.data?.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
         </Select>
       </Field>
-      <Field label="Patient preparation" className="sm:col-span-6"><Input value={f.preparation} onChange={(e) => setF({ ...f, preparation: e.target.value })} placeholder="6 hours fasting" /></Field>
+      <Field label="Patient preparation" className="sm:col-span-6"><Input maxLength={500} value={f.preparation} onChange={(e) => setF({ ...f, preparation: e.target.value })} placeholder="6 hours fasting" /></Field>
       <div className="flex flex-wrap gap-4 text-sm sm:col-span-6">
         <label className="flex items-center gap-2"><input type="checkbox" checked={f.contrast} onChange={(e) => setF({ ...f, contrast: e.target.checked })} /> With contrast</label>
         <label className="flex items-center gap-2"><input type="checkbox" checked={f.isActive} onChange={(e) => setF({ ...f, isActive: e.target.checked })} /> In use</label>
@@ -184,7 +199,7 @@ function TestForm({ initial, onDone }: { initial?: radiology.RadiologyTest; onDo
       <div className="flex items-center gap-2 sm:col-span-6">
         <Button type="submit" disabled={save.isPending}>{save.isPending && <Loader2 className="animate-spin" />} Save</Button>
         <Button type="button" variant="ghost" onClick={onDone}>Close</Button>
-        {save.error && <span className="text-sm text-destructive">{errorMessage(save.error)}</span>}
+        {(message || save.error) && <span className="text-sm text-destructive">{message ?? errorMessage(save.error)}</span>}
       </div>
     </form>
   );
@@ -249,15 +264,16 @@ function TemplateForm({ initial, onDone }: { initial?: radiology.ReportTemplate;
   });
   const body = (): radiology.TemplateInput => ({ ...f, modalityId: f.modalityId || null });
   const save = useSaver(() => (initial ? api.radiology.updateTemplate(initial.id, body()) : api.radiology.createTemplate(body())), onDone);
+  const { message, check } = useCheck();
   return (
     <form
       className="grid gap-3 border-b bg-muted/30 p-4 sm:grid-cols-2"
       onSubmit={(e) => {
         e.preventDefault();
-        save.mutate(undefined);
+        if (check(initial ? radiology.updateTemplateSchema : radiology.templateInputSchema, body())) save.mutate(undefined);
       }}
     >
-      <Field label="Name"><Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="USG abdomen normal" /></Field>
+      <Field label="Name"><Input maxLength={120} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="USG abdomen normal" /></Field>
       <Field label="Machine">
         <Select value={f.modalityId} onChange={(e) => setF({ ...f, modalityId: e.target.value })}>
           <option value="">Any machine</option>
@@ -273,7 +289,7 @@ function TemplateForm({ initial, onDone }: { initial?: radiology.ReportTemplate;
       <div className="flex items-center gap-2 sm:col-span-2">
         <Button type="submit" disabled={save.isPending}>{save.isPending && <Loader2 className="animate-spin" />} Save</Button>
         <Button type="button" variant="ghost" onClick={onDone}>Close</Button>
-        {save.error && <span className="text-sm text-destructive">{errorMessage(save.error)}</span>}
+        {(message || save.error) && <span className="text-sm text-destructive">{message ?? errorMessage(save.error)}</span>}
       </div>
     </form>
   );

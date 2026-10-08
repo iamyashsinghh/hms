@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Plus, Search, Sparkles, Trash2 } from 'lucide-react';
 import { lab as L } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { validate, type FieldErrors } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
 import { PageHeader } from '@/components/page-header';
 import { NoAccess } from '@/components/no-access';
@@ -75,7 +76,44 @@ const blankTest: TestForm = {
 const blankPanel: PanelForm = { code: '', name: '', price: '', serviceCode: '', isActive: true, testIds: [] };
 
 const optNum = (v: string) => (v.trim() === '' ? undefined : Number(v));
+/** Blank stays blank (the default applies); anything else must parse as a number. */
+const num = (v: string, fallback: number) => (v.trim() === '' ? fallback : Number(v));
 const str = (v: number | null) => (v === null ? '' : String(v));
+
+function testBody(f: TestForm) {
+  return {
+    name: f.name,
+    section: f.section,
+    sampleType: f.sampleType,
+    container: f.container,
+    unit: f.unit,
+    method: f.method,
+    resultType: f.resultType,
+    options: f.resultType === 'option' ? f.options.split(',').map((o) => o.trim()).filter(Boolean) : [],
+    decimals: num(f.decimals, 0),
+    price: num(f.price, 0),
+    serviceCode: f.serviceCode,
+    tatHours: num(f.tatHours, 0),
+    isActive: f.isActive,
+    ranges: f.ranges.map((r) => ({
+      gender: r.gender,
+      ageMinYears: num(r.ageMinYears, 0),
+      ageMaxYears: num(r.ageMaxYears, 150),
+      low: optNum(r.low),
+      high: optNum(r.high),
+      criticalLow: optNum(r.criticalLow),
+      criticalHigh: optNum(r.criticalHigh),
+      text: r.text || undefined,
+    })),
+  };
+}
+
+/** First problem as one readable line; range errors say which range ("Range 2: …"). */
+function describe(errors: FieldErrors): string {
+  const [key, msg] = Object.entries(errors)[0] ?? ['', 'Check the form'];
+  const m = /^ranges\.(\d+)/.exec(key);
+  return m ? `Range ${Number(m[1]) + 1}: ${msg}` : msg;
+}
 
 export default function LabCataloguePage() {
   const canRead = usePermission('lab.test.read');
@@ -86,6 +124,11 @@ export default function LabCataloguePage() {
   const q = useDebounced(search.trim());
   const [testForm, setTestForm] = React.useState<TestForm | null>(null);
   const [panelForm, setPanelForm] = React.useState<PanelForm | null>(null);
+  // A client-side check message belongs to the form that was open when it was shown.
+  const openForm = `${testForm ? (testForm.id ?? 'new') : ''}|${panelForm ? (panelForm.id ?? 'new') : ''}`;
+  const [checkError, setCheckError] = React.useState<{ form: string; message: string } | null>(null);
+  const formError = checkError?.form === openForm ? checkError.message : null;
+  const setFormError = (message: string | null) => setCheckError(message ? { form: openForm, message } : null);
 
   const tests = useQuery({ queryKey: ['lab', 'tests', q], queryFn: () => api.lab.tests.list({ q: q || undefined, active: 'all' }), enabled: canRead });
   const panels = useQuery({ queryKey: ['lab', 'panels', q], queryFn: () => api.lab.panels.list({ q: q || undefined, active: 'all' }), enabled: canRead });
@@ -96,31 +139,7 @@ export default function LabCataloguePage() {
 
   const saveTest = useMutation({
     mutationFn: (f: TestForm) => {
-      const body = {
-        name: f.name,
-        section: f.section,
-        sampleType: f.sampleType,
-        container: f.container,
-        unit: f.unit,
-        method: f.method,
-        resultType: f.resultType,
-        options: f.resultType === 'option' ? f.options.split(',').map((o) => o.trim()).filter(Boolean) : [],
-        decimals: Number(f.decimals || 0),
-        price: Number(f.price || 0),
-        serviceCode: f.serviceCode,
-        tatHours: Number(f.tatHours || 0),
-        isActive: f.isActive,
-        ranges: f.ranges.map((r) => ({
-          gender: r.gender,
-          ageMinYears: Number(r.ageMinYears || 0),
-          ageMaxYears: Number(r.ageMaxYears || 150),
-          low: optNum(r.low),
-          high: optNum(r.high),
-          criticalLow: optNum(r.criticalLow),
-          criticalHigh: optNum(r.criticalHigh),
-          text: r.text || undefined,
-        })),
-      };
+      const body = testBody(f);
       return f.id ? api.lab.tests.update(f.id, body) : api.lab.tests.create({ ...body, code: f.code });
     },
     onSuccess: () => {
@@ -131,7 +150,7 @@ export default function LabCataloguePage() {
 
   const savePanel = useMutation({
     mutationFn: (f: PanelForm) => {
-      const body = { name: f.name, price: Number(f.price || 0), serviceCode: f.serviceCode, isActive: f.isActive, testIds: f.testIds };
+      const body = { name: f.name, price: num(f.price, 0), serviceCode: f.serviceCode, isActive: f.isActive, testIds: f.testIds };
       return f.id ? api.lab.panels.update(f.id, body) : api.lab.panels.create({ ...body, code: f.code });
     },
     onSuccess: () => {
@@ -205,17 +224,21 @@ export default function LabCataloguePage() {
               className="grid gap-4 sm:grid-cols-4"
               onSubmit={(e) => {
                 e.preventDefault();
+                const body = testBody(testForm);
+                const checked = testForm.id ? validate(L.updateTestSchema, body) : validate(L.testInputSchema, { ...body, code: testForm.code });
+                if (checked.errors) return setFormError(describe(checked.errors));
+                setFormError(null);
                 saveTest.mutate(testForm);
               }}
             >
               <div className="sm:col-span-4">
-                <ErrorBox error={saveTest.error ? errorMessage(saveTest.error) : null} />
+                <ErrorBox error={formError ?? (saveTest.error ? errorMessage(saveTest.error) : null)} />
               </div>
               <Field id="t-code" label="Code *">
-                <Input id="t-code" required disabled={!!testForm.id} value={testForm.code} onChange={(e) => setTestForm({ ...testForm, code: e.target.value.toUpperCase() })} placeholder="e.g. TSH" />
+                <Input id="t-code" required disabled={!!testForm.id} maxLength={30} value={testForm.code} onChange={(e) => setTestForm({ ...testForm, code: e.target.value.toUpperCase() })} placeholder="e.g. TSH" />
               </Field>
               <Field id="t-name" label="Name *" className="sm:col-span-2">
-                <Input id="t-name" required value={testForm.name} onChange={(e) => setTestForm({ ...testForm, name: e.target.value })} />
+                <Input id="t-name" required maxLength={200} value={testForm.name} onChange={(e) => setTestForm({ ...testForm, name: e.target.value })} />
               </Field>
               <Field id="t-section" label="Section">
                 <Select id="t-section" value={testForm.section} onChange={(e) => setTestForm({ ...testForm, section: e.target.value as L.LabSection })}>
@@ -261,13 +284,13 @@ export default function LabCataloguePage() {
                 </Field>
               )}
               <Field id="t-price" label="Price (₹)">
-                <Input id="t-price" type="number" min={0} step="0.01" value={testForm.price} onChange={(e) => setTestForm({ ...testForm, price: e.target.value })} />
+                <Input id="t-price" type="number" min={0} max={10000000} step="0.01" value={testForm.price} onChange={(e) => setTestForm({ ...testForm, price: e.target.value })} />
               </Field>
               <Field id="t-svc" label="Billing service code">
                 <Input id="t-svc" value={testForm.serviceCode} onChange={(e) => setTestForm({ ...testForm, serviceCode: e.target.value.toUpperCase() })} placeholder="Optional" />
               </Field>
               <Field id="t-tat" label="Turnaround (hours)">
-                <Input id="t-tat" type="number" min={0} value={testForm.tatHours} onChange={(e) => setTestForm({ ...testForm, tatHours: e.target.value })} />
+                <Input id="t-tat" type="number" min={0} max={1440} step={1} value={testForm.tatHours} onChange={(e) => setTestForm({ ...testForm, tatHours: e.target.value })} />
               </Field>
               <label className="flex items-center gap-2 pt-7 text-sm">
                 <input type="checkbox" checked={testForm.isActive} onChange={(e) => setTestForm({ ...testForm, isActive: e.target.checked })} /> Active
@@ -285,12 +308,12 @@ export default function LabCataloguePage() {
                           <option value="male">Male</option>
                           <option value="female">Female</option>
                         </Select>
-                        <Input aria-label="Age from (years)" placeholder="Age from" value={r.ageMinYears} onChange={(e) => set({ ageMinYears: e.target.value })} />
-                        <Input aria-label="Age to (years)" placeholder="Age to" value={r.ageMaxYears} onChange={(e) => set({ ageMaxYears: e.target.value })} />
-                        <Input aria-label="Low" placeholder="Low" value={r.low} onChange={(e) => set({ low: e.target.value })} />
-                        <Input aria-label="High" placeholder="High" value={r.high} onChange={(e) => set({ high: e.target.value })} />
-                        <Input aria-label="Critical low" placeholder="Crit. low" value={r.criticalLow} onChange={(e) => set({ criticalLow: e.target.value })} />
-                        <Input aria-label="Critical high" placeholder="Crit. high" value={r.criticalHigh} onChange={(e) => set({ criticalHigh: e.target.value })} />
+                        <Input aria-label="Age from (years)" placeholder="Age from" inputMode="decimal" value={r.ageMinYears} onChange={(e) => set({ ageMinYears: e.target.value })} />
+                        <Input aria-label="Age to (years)" placeholder="Age to" inputMode="decimal" value={r.ageMaxYears} onChange={(e) => set({ ageMaxYears: e.target.value })} />
+                        <Input aria-label="Low" placeholder="Low" inputMode="decimal" value={r.low} onChange={(e) => set({ low: e.target.value })} />
+                        <Input aria-label="High" placeholder="High" inputMode="decimal" value={r.high} onChange={(e) => set({ high: e.target.value })} />
+                        <Input aria-label="Critical low" placeholder="Crit. low" inputMode="decimal" value={r.criticalLow} onChange={(e) => set({ criticalLow: e.target.value })} />
+                        <Input aria-label="Critical high" placeholder="Crit. high" inputMode="decimal" value={r.criticalHigh} onChange={(e) => set({ criticalHigh: e.target.value })} />
                         <Input aria-label="Text shown on report" placeholder="Text (optional)" value={r.text} onChange={(e) => set({ text: e.target.value })} />
                         <Button type="button" variant="ghost" size="sm" aria-label="Remove range" onClick={() => setTestForm({ ...testForm, ranges: testForm.ranges.filter((_, j) => j !== i) })}>
                           <Trash2 />
@@ -328,20 +351,24 @@ export default function LabCataloguePage() {
               className="grid gap-4 sm:grid-cols-4"
               onSubmit={(e) => {
                 e.preventDefault();
+                const body = { name: panelForm.name, price: num(panelForm.price, 0), serviceCode: panelForm.serviceCode, isActive: panelForm.isActive, testIds: panelForm.testIds };
+                const checked = panelForm.id ? validate(L.updatePanelSchema, body) : validate(L.panelInputSchema, { ...body, code: panelForm.code });
+                if (checked.errors) return setFormError(describe(checked.errors));
+                setFormError(null);
                 savePanel.mutate(panelForm);
               }}
             >
               <div className="sm:col-span-4">
-                <ErrorBox error={savePanel.error ? errorMessage(savePanel.error) : null} />
+                <ErrorBox error={formError ?? (savePanel.error ? errorMessage(savePanel.error) : null)} />
               </div>
               <Field id="p-code" label="Code *">
-                <Input id="p-code" required disabled={!!panelForm.id} value={panelForm.code} onChange={(e) => setPanelForm({ ...panelForm, code: e.target.value.toUpperCase() })} placeholder="e.g. LFT" />
+                <Input id="p-code" required disabled={!!panelForm.id} maxLength={30} value={panelForm.code} onChange={(e) => setPanelForm({ ...panelForm, code: e.target.value.toUpperCase() })} placeholder="e.g. LFT" />
               </Field>
               <Field id="p-name" label="Name *" className="sm:col-span-2">
-                <Input id="p-name" required value={panelForm.name} onChange={(e) => setPanelForm({ ...panelForm, name: e.target.value })} />
+                <Input id="p-name" required maxLength={200} value={panelForm.name} onChange={(e) => setPanelForm({ ...panelForm, name: e.target.value })} />
               </Field>
               <Field id="p-price" label="Price (₹)">
-                <Input id="p-price" type="number" min={0} step="0.01" value={panelForm.price} onChange={(e) => setPanelForm({ ...panelForm, price: e.target.value })} />
+                <Input id="p-price" type="number" min={0} max={10000000} step="0.01" value={panelForm.price} onChange={(e) => setPanelForm({ ...panelForm, price: e.target.value })} />
               </Field>
               <Field id="p-svc" label="Billing service code">
                 <Input id="p-svc" value={panelForm.serviceCode} onChange={(e) => setPanelForm({ ...panelForm, serviceCode: e.target.value.toUpperCase() })} placeholder="Optional" />

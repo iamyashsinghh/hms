@@ -38,10 +38,14 @@ async function newOrder(token = reception, extra: object = {}) {
   return res.json();
 }
 
-/** A far-future slot unique to this run so repeated runs never clash on the shared demo hospital. */
+/**
+ * A future slot for this run (slots may be booked at most a year ahead). Each run makes its own
+ * machine, so runs never clash; the day still varies so a run never lands on a past time.
+ */
 const slotBase = (() => {
-  const base = new Date(Date.UTC(2030 + (Date.now() % 60), 0, 1, 4, 0, 0));
-  base.setUTCDate(base.getUTCDate() + (Math.floor(Date.now() / 1000) % 300));
+  const base = new Date();
+  base.setUTCHours(4, 0, 0, 0);
+  base.setUTCDate(base.getUTCDate() + 2 + (Math.floor(Date.now() / 1000) % 300));
   return base.getTime();
 })();
 function slot(minutesFromBase: number) {
@@ -318,5 +322,50 @@ describe('radiology plan check and hospital isolation', () => {
         tx.execute(sql`insert into radiology.modalities (tenant_id, code, name, kind) values (${tenantId}, 'HACK', 'x', 'XR')`),
       ),
     ).rejects.toThrow();
+  });
+});
+
+describe('radiology validations', () => {
+  const msg = (res: { json: () => { error: { message: string } } }) => res.json().error.message;
+
+  it('keeps slot length between 5 and 480 minutes and GST sensible', async () => {
+    for (const durationMinutes of [2, 500]) {
+      const res = await inject('POST', '/radiology/tests', admin, { code: `V-${durationMinutes}-${suffix}`, name: 'Slot check', modalityId, price: 100, durationMinutes });
+      expect(res.statusCode).toBe(400);
+      expect(msg(res)).toContain('Slot length must be between 5 and 480 minutes');
+    }
+    const gst = await inject('POST', '/radiology/tests', admin, { code: `V-GST-${suffix}`, name: 'GST check', modalityId, price: 100, taxRate: 30 });
+    expect(msg(gst)).toContain('GST can be at most 28%');
+    const noMachine = await inject('POST', '/radiology/tests', admin, { code: `V-NM-${suffix}`, name: 'No machine', price: 100 });
+    expect(msg(noMachine)).toContain('Pick the machine');
+    const ae = await inject('POST', '/radiology/modalities', admin, { code: `VAE${suffix}`.slice(0, 20), name: 'AE check', kind: 'XR', aeTitle: 'BAD\\AE' });
+    expect(msg(ae)).toContain('no backslash');
+  });
+
+  it('refuses a slot in the past or more than a year ahead', async () => {
+    const order = await newOrder();
+    const past = await inject('POST', `/radiology/orders/${order.id}/schedule`, reception, { scheduledAt: new Date(Date.now() - 3 * 3_600_000).toISOString() });
+    expect(past.statusCode).toBe(400);
+    expect(msg(past)).toContain('Slot time cannot be in the past');
+    const far = await inject('POST', `/radiology/orders/${order.id}/schedule`, reception, { scheduledAt: new Date(Date.now() + 400 * 86_400_000).toISOString() });
+    expect(msg(far)).toContain('at most a year ahead');
+    const ok = await inject('POST', `/radiology/orders/${order.id}/schedule`, reception, { scheduledAt: slot(1500) });
+    expect(ok.statusCode).toBe(200);
+  });
+
+  it('checks the PACS link and study UID', async () => {
+    const order = await newOrder();
+    await inject('POST', `/radiology/orders/${order.id}/start`, reception);
+    const bad = await inject('POST', `/radiology/orders/${order.id}/complete`, radiologist, { imagesUrl: 'not a url' });
+    expect(bad.statusCode).toBe(400);
+    expect(msg(bad)).toContain('Enter a valid link starting with http:// or https://');
+    const ftp = await inject('POST', `/radiology/orders/${order.id}/complete`, radiologist, { imagesUrl: 'javascript:alert(1)' });
+    expect(ftp.statusCode).toBe(400);
+    const uid = await inject('POST', `/radiology/orders/${order.id}/complete`, radiologist, { studyUid: 'abc' });
+    expect(msg(uid)).toContain('Study UID is digits separated by dots');
+    const ok = await inject('POST', `/radiology/orders/${order.id}/complete`, radiologist, { studyUid: '1.2.3.4', imagesUrl: 'https://pacs.example/1' });
+    expect(ok.statusCode).toBe(200);
+    const cancel = await inject('POST', `/radiology/orders/${(await newOrder()).id}/cancel`, reception, { reason: 'no' });
+    expect(msg(cancel)).toContain('A reason needs at least 3 characters');
   });
 });

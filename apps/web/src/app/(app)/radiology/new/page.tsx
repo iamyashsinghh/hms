@@ -171,6 +171,7 @@ function NewOrder() {
                     id={doctors.data?.length ? 'ref-outside' : 'ref'}
                     className="mt-1.5"
                     placeholder="Outside doctor's name"
+                    maxLength={120}
                     value={referrer}
                     onChange={(e) => setReferrer(e.target.value)}
                   />
@@ -179,7 +180,7 @@ function NewOrder() {
             </div>
             <div>
               <Label htmlFor="notes">Clinical notes</Label>
-              <Textarea id="notes" className="mt-1.5" rows={3} placeholder="Reason for the study, history" value={notes} onChange={(e) => setNotes(e.target.value)} />
+              <Textarea id="notes" className="mt-1.5" rows={3} maxLength={1000} placeholder="Reason for the study, history" value={notes} onChange={(e) => setNotes(e.target.value)} />
             </div>
             {(problem || create.error) && <p className="text-sm text-destructive">{problem ?? errorMessage(create.error)}</p>}
             <Button type="submit" disabled={create.isPending}>

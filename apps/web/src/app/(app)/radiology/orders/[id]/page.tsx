@@ -5,8 +5,9 @@ import { use } from 'react';
 import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, ArrowLeft, CalendarClock, CheckCircle2, ExternalLink, FileSignature, Loader2, Play, Printer, ReceiptIndianRupee, X } from 'lucide-react';
-import type { radiology } from '@hms/shared';
+import { radiology as R, type radiology } from '@hms/shared';
 import { api, errorMessage } from '@/lib/api';
+import { firstError, validate } from '@/lib/validate';
 import { Can, usePermission } from '@/lib/auth';
 import { NoAccess } from '@/components/no-access';
 import { PageHeader } from '@/components/page-header';
@@ -15,7 +16,7 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input, Select } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { OrderStatusBadge, PriorityBadge, Textarea, dateTime, localToIso, patientLine, rupees } from '@/modules/radiology/ui';
+import { OrderStatusBadge, PriorityBadge, Textarea, dateTime, localInputValue, localToIso, patientLine, rupees } from '@/modules/radiology/ui';
 
 type OrderWithReports = radiology.OrderWithReports;
 type Order = radiology.RadiologyOrder;
@@ -75,11 +76,25 @@ function ScanActions({ order }: { order: Order }) {
   const [studyUid, setStudyUid] = React.useState('');
   const [imagesUrl, setImagesUrl] = React.useState('');
   const [cancelReason, setCancelReason] = React.useState<string | null>(null);
-  const schedule = useOrderMutation(order.id, () => api.radiology.schedule(order.id, { scheduledAt: localToIso(when), modalityId: modalityId || undefined }));
+  const [checkError, setCheckError] = React.useState<string | null>(null);
+  const schedule = useOrderMutation(order.id, (body: radiology.ScheduleOrder) => api.radiology.schedule(order.id, body));
   const start = useOrderMutation(order.id, () => api.radiology.start(order.id));
-  const complete = useOrderMutation(order.id, () => api.radiology.complete(order.id, { studyUid: studyUid || undefined, imagesUrl: imagesUrl || undefined }));
+  const complete = useOrderMutation(order.id, (body: radiology.CompleteScan) => api.radiology.complete(order.id, body));
   const cancel = useOrderMutation(order.id, () => api.radiology.cancel(order.id, { reason: cancelReason ?? '' }));
   const error = schedule.error ?? start.error ?? complete.error ?? cancel.error;
+
+  // Check with the shared schema first, so a past slot or a bad link never leaves the page.
+  const book = () => {
+    if (Number.isNaN(new Date(when).getTime())) return setCheckError('Pick the slot date and time');
+    const checked = validate(R.scheduleOrderSchema, { scheduledAt: localToIso(when), modalityId: modalityId || undefined });
+    setCheckError(firstError(checked.errors));
+    if (checked.data) schedule.mutate(checked.data);
+  };
+  const done = () => {
+    const checked = validate(R.completeScanSchema, { studyUid: studyUid.trim() || undefined, imagesUrl: imagesUrl.trim() || undefined });
+    setCheckError(firstError(checked.errors));
+    if (checked.data) complete.mutate(checked.data);
+  };
   const canBook = order.status === 'ordered' || order.status === 'scheduled';
   const canScan = canBook || order.status === 'in_progress';
   const canCancel = !['finalized', 'cancelled'].includes(order.status);
@@ -96,7 +111,7 @@ function ScanActions({ order }: { order: Order }) {
               <div className="grid gap-2 sm:grid-cols-2">
               <div>
                 <Label htmlFor="when">{order.status === 'scheduled' ? 'Move slot to' : 'Book slot'}</Label>
-                <Input id="when" type="datetime-local" className="mt-1.5" value={when} onChange={(e) => setWhen(e.target.value)} />
+                <Input id="when" type="datetime-local" className="mt-1.5" min={localInputValue()} max={localInputValue(R.SCHEDULE_MAX_DAYS_AHEAD * 24 * 60)} value={when} onChange={(e) => setWhen(e.target.value)} />
               </div>
               <div>
                 <Label htmlFor="machine">Machine</Label>
@@ -109,7 +124,7 @@ function ScanActions({ order }: { order: Order }) {
                 </Select>
               </div>
               </div>
-              <Button variant="outline" disabled={!when || schedule.isPending} onClick={() => schedule.mutate(undefined)}>
+              <Button variant="outline" disabled={!when || schedule.isPending} onClick={book}>
                 <CalendarClock /> {order.status === 'scheduled' ? 'Move slot' : 'Book slot'}
               </Button>
             </div>
@@ -124,10 +139,10 @@ function ScanActions({ order }: { order: Order }) {
                 </Button>
               )}
               <div className="space-y-2">
-                <Input placeholder="Study UID from the machine (optional)" value={studyUid} onChange={(e) => setStudyUid(e.target.value)} />
-                <Input placeholder="PACS viewer link (optional)" value={imagesUrl} onChange={(e) => setImagesUrl(e.target.value)} />
+                <Input placeholder="Study UID from the machine (optional)" maxLength={64} value={studyUid} onChange={(e) => setStudyUid(e.target.value)} />
+                <Input type="url" inputMode="url" placeholder="PACS viewer link, https://… (optional)" maxLength={1000} value={imagesUrl} onChange={(e) => setImagesUrl(e.target.value)} />
               </div>
-              <Button disabled={complete.isPending} onClick={() => complete.mutate(undefined)}>
+              <Button disabled={complete.isPending} onClick={done}>
                 <CheckCircle2 /> Scan done, send for reporting
               </Button>
             </div>
@@ -141,7 +156,7 @@ function ScanActions({ order }: { order: Order }) {
               </Button>
             ) : (
               <div className="flex gap-2">
-                <Input autoFocus placeholder="Why is it cancelled?" value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} />
+                <Input autoFocus placeholder="Why is it cancelled? (at least 3 characters)" maxLength={500} value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} />
                 <Button variant="destructive" disabled={cancelReason.trim().length < 3 || cancel.isPending} onClick={() => cancel.mutate(undefined)}>
                   Cancel order
                 </Button>
@@ -153,7 +168,7 @@ function ScanActions({ order }: { order: Order }) {
           </Can>
         )}
         {!canScan && <p className="text-sm text-muted-foreground">Scan done{order.acquiredAt ? ` on ${dateTime(order.acquiredAt)}` : ''}.</p>}
-        {error && <p className="text-sm text-destructive">{errorMessage(error)}</p>}
+        {(checkError || error) && <p className="text-sm text-destructive">{checkError ?? errorMessage(error)}</p>}
       </CardContent>
     </Card>
   );
