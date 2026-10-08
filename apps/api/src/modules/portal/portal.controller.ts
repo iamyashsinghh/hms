@@ -83,6 +83,11 @@ export class PortalController {
     return this.portal.prescriptions(p, q.patientId);
   }
 
+  @Get('bills/pending')
+  pendingCharges(@Patient() p: PatientPrincipal, @Query(new ZodPipe(portal.recordQuerySchema)) q: portal.RecordQuery): Promise<portal.PortalPendingCharges[]> {
+    return this.portal.pendingCharges(p, q.patientId);
+  }
+
   @Get('bills')
   bills(@Patient() p: PatientPrincipal, @Query(new ZodPipe(portal.recordQuerySchema)) q: portal.RecordQuery) {
     return this.portal.bills(p, q.patientId);

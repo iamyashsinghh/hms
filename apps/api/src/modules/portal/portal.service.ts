@@ -152,6 +152,20 @@ export class PortalService {
     });
   }
 
+  /** What the hospital has charged but not billed yet (read-only; paid once the desk makes the bill). */
+  async pendingCharges(p: PatientPrincipal, patientId?: string): Promise<portal.PortalPendingCharges[]> {
+    const scope = await this.patients.scope(p.accountId, patientId);
+    if (!scope.size) return [];
+    const pending = await this.gateway.pendingCharges([...scope.keys()]);
+    return [...pending.entries()].map(([id, c]) => ({
+      patientId: id,
+      patientName: scope.get(id) ?? '',
+      count: c.count,
+      total: (c.paise / 100).toFixed(2),
+      oldestDate: c.oldestDate,
+    }));
+  }
+
   async reports(p: PatientPrincipal, patientId?: string): Promise<portal.PortalReport[]> {
     const scope = await this.patients.scope(p.accountId, patientId);
     if (!scope.size) return [];
